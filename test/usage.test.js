@@ -6,13 +6,16 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 
 const {
+  clearSessionUsage,
   creditRateOf,
   describeContextWindow,
+  formatCredits,
   formatUsageReport,
   parseAccountUsage,
   readMeter,
   readModelDetails,
   readUsageCommand,
+  SESSION_USAGE_KEYS,
 } = require("../out/usage");
 
 const USAGE_DATA = {
@@ -167,4 +170,69 @@ test("windows line endings and thousands separators are handled", () => {
 test("numbers away from the word credit are never treated as a balance", () => {
   assert.deepEqual(parseAccountUsage("Session id 4821 / 9000\nModel: sonnet"), {});
   assert.deepEqual(parseAccountUsage("Not signed in."), {});
+});
+
+// ---- the two scopes ---------------------------------------------------
+
+/*
+ * `contextPercent` and `sessionCredits` describe the conversation in front of
+ * you; the other four describe the account and are true however many chats
+ * you start. They live in one flat object because that is what the panel
+ * draws from, and a reset that could not tell them apart cost twice: a new
+ * chat wiped the plan figures you had just fetched, and opening a past chat
+ * reset nothing, so one conversation's credits were shown against another.
+ */
+const BOTH_SCOPES = {
+  contextPercent: 42,
+  sessionCredits: 2.47,
+  planName: "KIRO PRO+",
+  accountCreditsUsed: 1234,
+  accountCreditsLimit: 5000,
+  accountResetsOn: "2026-10-01",
+};
+
+test("ending a conversation drops its numbers and keeps the account's", () => {
+  assert.deepEqual(clearSessionUsage(BOTH_SCOPES), {
+    planName: "KIRO PRO+",
+    accountCreditsUsed: 1234,
+    accountCreditsLimit: 5000,
+    accountResetsOn: "2026-10-01",
+  });
+});
+
+test("the session-scoped keys are named, not guessed at", () => {
+  assert.deepEqual([...SESSION_USAGE_KEYS], ["contextPercent", "sessionCredits"]);
+});
+
+test("clearing does not mutate what it was given", () => {
+  const before = { ...BOTH_SCOPES };
+  clearSessionUsage(BOTH_SCOPES);
+  assert.deepEqual(BOTH_SCOPES, before, "the caller's object is left alone");
+});
+
+test("clearing an empty or account-only picture is a no-op", () => {
+  assert.deepEqual(clearSessionUsage({}), {});
+  const account = { planName: "Free", accountCreditsUsed: 3 };
+  assert.deepEqual(clearSessionUsage(account), account);
+});
+
+// ---- how a credit figure reads ---------------------------------------
+
+/*
+ * Session credits were fixed at two decimals and account credits were not
+ * formatted at all, so a plan total arrived as "1234.5678901234 credits on
+ * Pro" on a strip sized for a sidebar.
+ */
+test("a credit figure is at most two decimals, with no trailing zeros", () => {
+  assert.equal(formatCredits(1234.5678901234), "1234.57");
+  assert.equal(formatCredits(1234), "1234", "a whole number stays whole");
+  assert.equal(formatCredits(2.4), "2.4", "and 2.40 is not more precise than 2.4");
+  assert.equal(formatCredits(2.469), "2.47");
+  assert.equal(formatCredits(0), "0", "zero is a figure, not a missing one");
+});
+
+test("a figure that is not one is not invented", () => {
+  assert.equal(formatCredits(undefined), "");
+  assert.equal(formatCredits(NaN), "");
+  assert.equal(formatCredits(Infinity), "");
 });

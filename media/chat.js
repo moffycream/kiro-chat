@@ -1060,7 +1060,7 @@
       line.appendChild(document.createTextNode("This chat has used "));
       const amount = document.createElement("span");
       amount.className = "model-foot-credits";
-      amount.textContent = usage.sessionCredits.toFixed(2) + " credits";
+      amount.textContent = credits(usage.sessionCredits) + " credits";
       line.appendChild(amount);
       line.appendChild(document.createTextNode("."));
     } else {
@@ -1072,10 +1072,10 @@
       const account = document.createElement("div");
       const total =
         typeof usage.accountCreditsLimit === "number"
-          ? " of " + usage.accountCreditsLimit
+          ? " of " + credits(usage.accountCreditsLimit)
           : "";
       account.textContent =
-        (usage.planName || "Your plan") + ": " + usage.accountCreditsUsed + total +
+        (usage.planName || "Your plan") + ": " + credits(usage.accountCreditsUsed) + total +
         " credits used" +
         (usage.accountResetsOn ? ", renews " + usage.accountResetsOn : "") + ".";
       foot.appendChild(account);
@@ -1460,8 +1460,9 @@
     refresh.className = "ghost usage-refresh";
     refresh.textContent = usageReport ? "Refresh" : "Check account usage";
     refresh.addEventListener("click", () => {
-      usageLoading = true;
-      renderUsagePanel();
+      // Only asks. `usageReportLoading` comes straight back and is what puts
+      // the spinner up — setting it here as well gave one flag two writers,
+      // and the click had already decided before the extension was consulted.
       vscode.postMessage({ type: "refreshUsage" });
     });
     usagePanel.appendChild(refresh);
@@ -1487,24 +1488,47 @@
 
   usageBar.addEventListener("click", toggleUsagePanel);
 
+  /**
+   * A credit figure as it should be read.
+   *
+   * Session credits were fixed at two decimals and account credits were not
+   * formatted at all, so a plan total arrived as "1234.5678901234 credits on
+   * Pro" on a strip sized for a sidebar. Two decimals is as fine as a credit
+   * gets, and trailing zeros on a whole number are noise. Mirrors
+   * `formatCredits` in usage.ts; the webview has no build step and cannot
+   * import it.
+   */
+  function credits(value) {
+    if (typeof value !== "number" || !isFinite(value)) return "";
+    return String(Number(value.toFixed(2)));
+  }
+
   function renderUsage(next) {
     usage = next || {};
     const parts = [];
 
     if (typeof usage.sessionCredits === "number") {
-      parts.push(`${usage.sessionCredits.toFixed(2)} credits this chat`);
+      parts.push(`${credits(usage.sessionCredits)} credits this chat`);
     }
     if (typeof usage.accountCreditsUsed === "number") {
       const total =
         typeof usage.accountCreditsLimit === "number"
-          ? `/${usage.accountCreditsLimit}`
+          ? `/${credits(usage.accountCreditsLimit)}`
           : "";
-      parts.push(`${usage.accountCreditsUsed}${total} credits on ${usage.planName || "your plan"}`);
+      parts.push(
+        `${credits(usage.accountCreditsUsed)}${total} credits on ${usage.planName || "your plan"}`
+      );
     }
     if (typeof usage.contextPercent === "number") {
       parts.push(`context ${usage.contextPercent.toFixed(0)}% full`);
       usageFill.style.width = `${Math.min(100, Math.max(0, usage.contextPercent))}%`;
       usageFill.classList.toggle("warn", usage.contextPercent > 80);
+    } else {
+      // Emptied, not left where the last chat put it. The fill was only ever
+      // assigned, so a new conversation's bar flashed the old one's fullness
+      // before its first meter arrived.
+      usageFill.style.width = "0%";
+      usageFill.classList.remove("warn");
     }
 
     // Credits arrive throughout a turn. Only redraw the list underneath when

@@ -1065,6 +1065,71 @@ test("the mode picker carries the workflow, the supervision and what is sent", (
 });
 
 /*
+ * Two scopes, two different resets.
+ *
+ * `newSession` did `usage = {}`, so the plan figures you had just fetched
+ * vanished for pressing "+" — they describe the account and were still true.
+ * `loadSession` reset nothing at all, so "2.47 credits this chat" stayed on
+ * the strip while you read a different conversation: a specific claim about
+ * the chat in front of you, made about the one you just left.
+ */
+test("the session's numbers end with the session; the account's do not", () => {
+  const session = fs.readFileSync(path.join(root, "src", "kiroSession.ts"), "utf8");
+  for (const method of ["async newSession()", "async loadSession(sessionId: string)"]) {
+    const at = session.indexOf(method);
+    assert.ok(at > -1, `${method} should exist`);
+    const body = session.slice(at, session.indexOf("\n  }", at));
+    assert.match(
+      body,
+      /this\.usage = clearSessionUsage\(this\.usage\);/,
+      `${method} must clear only what belonged to the conversation`
+    );
+    assert.match(body, /this\.events\.onUsage\(\{ \.\.\.this\.usage \}\);/, "and report what is left");
+  }
+  assert.doesNotMatch(session, /this\.usage = \{\};/, "nothing wipes both scopes any more");
+});
+
+/*
+ * Session credits were fixed at two decimals and account credits were not
+ * formatted at all, so a plan total arrived as "1234.5678901234 credits on
+ * Pro" on a strip sized for a sidebar.
+ */
+test("every credit figure goes through one formatter", () => {
+  assert.match(js, /function credits\(value\) \{/, "the webview needs its own, having no build step");
+  assert.doesNotMatch(js, /sessionCredits\.toFixed\(2\)/, "and nothing formats itself");
+  assert.doesNotMatch(js, /\+ usage\.accountCreditsUsed \+/, "nor goes unformatted");
+  // Mirrored in usage.ts, which is where the extension side reads them.
+  const usage = fs.readFileSync(path.join(root, "src", "usage.ts"), "utf8");
+  assert.match(usage, /export function formatCredits\(/);
+});
+
+/*
+ * The fill was only ever assigned, never emptied, so a new conversation's bar
+ * flashed the last one's fullness until its first meter arrived.
+ */
+test("the context bar empties when there is no context to report", () => {
+  const render = js.slice(js.indexOf("function renderUsage(next)"));
+  const body = render.slice(0, render.indexOf("\n  function "));
+  assert.match(body, /usageFill\.style\.width = "0%";/);
+  assert.match(body, /usageFill\.classList\.remove\("warn"\);/);
+});
+
+/*
+ * One flag, one writer. The click used to set `usageLoading` itself as well
+ * as asking the extension, so it had decided the panel was loading before
+ * anything was consulted.
+ */
+test("the usage spinner is put up by the extension, not by the click", () => {
+  const panel = js.slice(js.indexOf("function renderUsagePanel()"));
+  const body = panel.slice(0, panel.indexOf("\n  function "));
+  const click = body.slice(body.indexOf('refresh.addEventListener("click"'));
+  assert.match(click, /vscode\.postMessage\(\{ type: "refreshUsage" \}\)/, "it only asks");
+  assert.doesNotMatch(click, /usageLoading = true/, "and does not answer itself");
+  assert.match(js, /case "usageReportLoading":\s*\n\s*usageLoading = true;/);
+  assert.match(provider, /this\.post\(\{ type: "usageReportLoading" \}\);/);
+});
+
+/*
  * A toggle is a switch, not a character.
  *
  * It was a "✓" / "○" in front of the label — a glyph pretending to be a

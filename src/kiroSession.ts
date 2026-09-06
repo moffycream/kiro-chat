@@ -15,6 +15,7 @@ import {
   describeContextWindow,
   formatUsageReport,
   parseAccountUsage,
+  clearSessionUsage,
   readMeter,
   readModelDetails,
   readUsageCommand,
@@ -309,6 +310,16 @@ export class KiroSession {
         30000
       );
       this.sessionId = sessionId;
+      /*
+       * A different conversation, so this one's meter is not ours.
+       *
+       * Nothing reset it here, and the strip goes on saying "2.47 credits
+       * this chat" — a claim about the chat in front of you, made about the
+       * one you just left. A past chat's own credits are not stored anywhere,
+       * so there is no number to put back; showing none is the honest answer.
+       */
+      this.usage = clearSessionUsage(this.usage);
+      this.events.onUsage({ ...this.usage });
       // Loading answers with the same model block a new session does — which
       // means it carries no credit rate either. Rebuilding the list from it
       // would drop the rates the picker shows, so ask for them again.
@@ -591,8 +602,11 @@ export class KiroSession {
     this.sessionId = undefined;
     this.client?.stop();
     this.client = undefined;
-    this.usage = {};
-    this.events.onUsage({});
+    // Only what belonged to the conversation that just ended. The plan
+    // figures describe the account and are still true; wiping them made the
+    // credits you had just fetched vanish for pressing "+".
+    this.usage = clearSessionUsage(this.usage);
+    this.events.onUsage({ ...this.usage });
     this.setStatus("stopped");
     await this.ensureReady();
   }

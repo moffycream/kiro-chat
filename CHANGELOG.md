@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.28.0
+
+- **The usage strip no longer shows one chat's credits against another.** Opening a past
+  chat loaded that conversation but reset nothing, so the strip went on saying "2.47 credits
+  this chat" — a claim about the chat in front of you, made about the one you just left. A
+  past chat's own credits are not stored anywhere, so none is shown rather than a wrong one.
+
+- **Starting a new chat no longer wipes your plan figures.** They describe your account, not
+  the conversation, so `1234/5000 credits on Pro` survives pressing **+**; only the
+  session's own numbers are cleared. The two kinds shared one bag with nothing marking which
+  was which, so a reset could not tell them apart and took both.
+
+- **Credit figures are formatted.** A plan total was concatenated straight in, so it could
+  arrive as `1234.5678901234 credits on Pro` on a strip sized for a sidebar. Every figure is
+  now at most two decimals, with no trailing zeros on a whole number.
+
+- **The context bar empties between chats.** Its fill was only ever assigned, never reset,
+  so a new conversation briefly showed the last one's fullness.
+
 ## 0.27.0
 
 - **Manual, Review or Autopilot — in the mode picker, beside the workflow.** Choosing how

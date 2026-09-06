@@ -542,6 +542,22 @@ fixed a way Kiro was told something untrue, and all three are load-bearing:
 
 `usage.ts` is deliberately defensive and **never invents a number**: a multiplier is only read as a credit rate when it sits next to the word "credit", and prose parsing only considers lines that mention credits. Preserve that when touching it.
 
+**`UsageInfo` holds two scopes, and which is which is written down.**
+`contextPercent` and `sessionCredits` describe the conversation in front of you;
+`planName` and the three `account*` fields describe the account and survive any number of
+chats. They share one flat object because that is what the panel draws from, so
+`SESSION_USAGE_KEYS` and `clearSessionUsage` are what let a reset tell them apart. Not
+having that cost twice: `newSession` did `usage = {}` and wiped the plan figures you had
+just fetched, and `loadSession` reset nothing, so "2.47 credits this chat" stayed on the
+strip while you read a different conversation. Both call `clearSessionUsage` now. A past
+chat's own credits are not stored anywhere, so nothing is put back in their place — no
+number is honest where a wrong one is not.
+
+**Every credit figure goes through one formatter.** `formatCredits` (and its twin
+`credits()` in `chat.js`, which cannot import it — no build step) rounds to at most two
+decimals and drops trailing zeros. Session credits used to be `toFixed(2)` and account
+credits were concatenated raw, so a plan total arrived as `1234.5678901234 credits on Pro`.
+
 ## Webview constraints
 
 **The webview tests are static analysis.** `test/webview.test.js` reads `media/chat.css`, `media/chat.js` and `src/chatViewProvider.ts` as *text* and asserts invariants with regex. Editing markup or CSS can therefore break tests in non-obvious ways. Current invariants:

@@ -17,6 +17,47 @@ export interface UsageInfo {
   accountResetsOn?: string;
 }
 
+/**
+ * Two scopes in one object, and which is which has to be written down.
+ *
+ * `contextPercent` and `sessionCredits` describe the conversation in front of
+ * you. The other four describe your account and are true no matter how many
+ * chats you start. Kept in one flat object because that is what the panel
+ * draws from, but a reset has to be able to tell them apart — and could not,
+ * which cost twice:
+ *
+ * - Starting a new chat did `usage = {}`, so the plan figures you had just
+ *   fetched vanished from the strip along with the session's own numbers.
+ * - Opening a past chat reset nothing at all, so "2.47 credits this chat"
+ *   stayed on screen while you read a different conversation — a specific
+ *   claim about the chat in front of you, made about another one.
+ */
+export const SESSION_USAGE_KEYS = ["contextPercent", "sessionCredits"] as const;
+
+/**
+ * Everything a conversation ending does not invalidate. There is no attempt
+ * to restore a past chat's own credits: they are not stored anywhere, and no
+ * number is honest where a wrong one is not.
+ */
+export function clearSessionUsage(usage: UsageInfo): UsageInfo {
+  const out: UsageInfo = { ...usage };
+  for (const key of SESSION_USAGE_KEYS) delete out[key];
+  return out;
+}
+
+/**
+ * A credit figure as it should be read.
+ *
+ * Session credits were fixed at two decimals and account credits were not
+ * formatted at all, so a plan total came out as `1234.5678901234 credits on
+ * Pro` on a strip sized for a sidebar. Two decimals is as fine as a credit
+ * gets; trailing zeros on a whole number are noise.
+ */
+export function formatCredits(value: number | undefined): string {
+  if (typeof value !== "number" || !Number.isFinite(value)) return "";
+  return String(Number(value.toFixed(2)));
+}
+
 export function numberFrom(value: unknown): number | undefined {
   if (typeof value === "number" && Number.isFinite(value)) return value;
   if (typeof value === "string") {
