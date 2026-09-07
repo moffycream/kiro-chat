@@ -26,6 +26,28 @@ export function needsShell(command: string): boolean {
   return /\.(cmd|bat)$/i.test(command.trim());
 }
 
+/**
+ * The command line, with each kind of argument on the side of `acp` it works on.
+ *
+ * There are two kinds and they are not interchangeable. `launch` comes from
+ * `findKiro` and is how the binary is reached at all — for WSL that is the
+ * literal `kiro-cli`, which has to precede the subcommand or nothing runs.
+ * `user` is `kiroChat.args`, and every option anybody would put there
+ * (`--agent`, `--model`, `--effort`, `--trust-tools`, `-v`) belongs to `acp`
+ * and is rejected before it:
+ *
+ *   kiro-cli --agent my-agent acp
+ *   error: unexpected argument '--agent' found
+ *   tip: 'acp --agent' exists
+ *
+ * Both were concatenated in front of `acp`, so the example the setting itself
+ * documented could not start Kiro at all — and `--agent` is the one route to
+ * an agent config, which is where a `resources` list of memory files lives.
+ */
+export function acpArgs(launch: string[], user: string[]): string[] {
+  return [...(launch ?? []), "acp", ...(user ?? [])];
+}
+
 /** Wrap in double quotes for cmd.exe when there is anything to protect. */
 export function quote(value: string): string {
   if (!value || /^".*"$/.test(value)) return value;

@@ -1,5 +1,176 @@
 # Changelog
 
+## 0.29.0
+
+- **The mode picker now shows what Kiro already knows about your project.** A new group,
+  **What Kiro always knows**, lists the memory files being read and opens one for editing —
+  **Add project memory** for this folder, **Add global memory** for all of them. Also on
+  the Command Palette as *Kiro Chat: Edit Project Memory*.
+
+  This adds no memory system, because Kiro CLI already has one and a second would pay for
+  the same text twice — once in Kiro's context and again in ours. Measured against
+  `kiro-cli acp` 2.20.2 rather than read from documentation: a fact placed in
+  `.kiro/steering/*.md`, in `~/.kiro/steering/*.md`, or in `AGENTS.md` is answered with
+  **zero tool calls**, which is what proves the text is already in the prompt rather than
+  fetched on demand. The frontmatter turns out to be optional too — a bare `.md` in the
+  steering folder is loaded — and editing a file mid-chat changes the *next* answer in the
+  same session, so nothing here asks you to start a new one.
+
+  The gap was never the feature. It was that nothing in the panel said these files existed.
+
+- **Fixed: the local-memory row made an ordinary committable file.** The message
+  handler read `scope === "global" ? "global" : "project"` — correct while there were two
+  targets, silently wrong the moment there were three. `"private"` is not `"global"`, so it
+  became `"project"`: the button created a plain `memory.md`, wrote no git rule, and produced
+  exactly the file it had promised not to. The target is now validated against the three
+  known names and an unrecognised one is refused rather than rounded, the way `gatesForMode`
+  already refuses a mode it does not know.
+
+  The old test asserted that a `case "openMemory"` existed. It did — and was wrong inside.
+  Two tests replace it: every name the panel can offer must be one the extension accepts, and
+  the handler must route through that check rather than narrowing by hand. Both were
+  confirmed by putting the original bug back and watching them fail.
+
+- **Instructions — how you always want Kiro to work, with no file anywhere.** A full-width
+  box opened from the **Instructions** group in the mode menu. Whatever you write there is
+  put in front of every message: "always reply in Bahasa Malaysia", "use tabs, never spaces", "write the
+  test before the fix".
+
+  This is a different thing from memory, and the difference is the point. A memory file
+  holds *facts* Kiro should know, and lives on disk because that is the only thing Kiro
+  reads. An instruction is a *directive* it should follow, and needs no file at all — the
+  extension already puts instruction text in front of a message, which is exactly how the
+  Spec and Bug Fix workflows work. This is the same mechanism with the user holding the pen,
+  stored in `kiroChat.instructions`, so it syncs with Settings Sync and can be edited from
+  the settings UI too.
+
+  The block wraps the workflow block rather than splitting it: `applyChatMode`'s text ends
+  "The user's request follows", and anything inserted between the two makes that untrue.
+  Empty instructions add no block at all — an empty one is a line of prompt saying nothing,
+  charged for on every turn.
+
+  The menu row shows the instructions themselves — the first one as its label, the rest
+  beneath. There is no "Your instructions" label above them: the group heading already says
+  it, and repeating it spends the row’s most readable line saying nothing while the thing
+  worth reading is pushed into small grey text. With nothing set the row reads **Add
+  instructions**, an invitation rather than a statement, the way the memory rows do. It clips
+  between instructions rather than mid-sentence, since a preview that stops half way is a
+  preview of something you did not write.
+
+  Unlike a memory file, which Kiro reads when it wants it, this rides in *every* message, so
+  there is a 4000-character cap. Past it the
+  count appears and turns red rather than the tail being dropped in silence.
+
+  Saving posts and closes; the configuration watcher posts the text back. A box that kept
+  what it had just sent would show instructions the settings do not hold if the write
+  failed — the permission card's rule, applied to a textarea. Enter makes a new line, since
+  this is a list typed over several lines and the composer's Enter-to-send habit would throw
+  away the rest; Ctrl+Enter saves and Escape closes.
+
+  Cancel is painted as a secondary button, which needed fixing: it was first given a class
+  the stylesheet does not define, so the global `button` rule made it the same primary blue
+  as Save — two identical buttons, one of which throws the edit away.
+
+- **Removed the "Remember something…" row.** It appended a typed line to a memory file as a
+  bullet, and answered the wrong question: what was wanted was a standing instruction, not a
+  stored fact.
+
+- **The three rows are named project, local and global.** Two of them sit in the same folder
+  and differ only by file name, and they read as near-identical if the difference is buried
+  mid-label — so the one that needs a qualifier carries it where it cannot be missed:
+  **Add local memory (not committed)**. Global memory is not committed either, but for
+  another reason entirely, so its row says *this machine only* rather than letting that
+  qualifier imply it is.
+
+- **Local memory, which stays in the folder but never gets committed.** A third
+  row makes `.kiro/steering/memory.local.md` and adds it to `.git/info/exclude`. That file
+  lives inside `.git`, which is never committed by definition — so unlike a `.gitignore`
+  line, the rule itself never reaches anyone. In a shared repository you get team memory and
+  your own notes side by side, and only one of them is everybody's.
+
+  Verified against real repositories rather than reasoned about: the file sits in the
+  steering folder where Kiro reads it, `git status` is clean, `git add .` cannot stage it,
+  and `git ls-files` shows only the shared file.
+
+  **The exclude entry is written before the file is opened.** The gap between creating it and
+  hiding it is a gap in which `git add .` commits the thing the row promised to hold back.
+
+  **The path comes from `git rev-parse --git-common-dir`, never from joining `.git` onto the
+  workspace root.** In a worktree `.git` is a *file* holding a pointer, that directory does
+  not exist, and the worktree's own gitdir has no `info/` at all — git reads the common
+  directory's exclude. Measured: the naive path is absent in a worktree, so a hand-built one
+  would fail there while working perfectly on the machine it was written on, and the file
+  would silently stay committable.
+
+  **The row asks git rather than assuming.** A file that is already tracked is not ignored by
+  any rule, which is precisely the case where a reassuring label would be false, so
+  `git check-ignore` decides between "not committed" and "git can see this". Where
+  the folder is not a repository at all, it says so instead of claiming privacy there was
+  never anything to protect.
+
+- **Each file is its own row, with a × to remove it.** Removing asks first, names the full
+  path, and sends the file to the recycle bin rather than unlinking it — a menu is a careless
+  place, this row sits directly under rows that merely open a file, and "I meant the other
+  `memory.md`" must not be answered with "it is gone". Both scopes can hold a file of that
+  name, so every row says which chats it steers underneath it; two identical rows with a
+  delete button each is a trap, not a list.
+
+  The panel never strikes a row out on click. It asks, and redraws from what the extension
+  reports — the confirmation can be cancelled and the delete can fail, and a row that
+  announced its own removal would be claiming an outcome it cannot know. The same rule the
+  permission card follows.
+
+  A path arriving in a message is not a licence to delete a file, so the extension rebuilds
+  the listing at the moment of the click and refuses anything that is not in it.
+
+- **The rows report; they do not switch anything on.** They carry neither the selection
+  highlight nor a drawn switch, because a memory row is an action and not a state — the row
+  says which chats its file steers, and clicking opens it. Kiro is reading them either way.
+
+- **`kiroChat.args` now reaches `kiro-cli`.** Its own documented example could not start
+  Kiro: arguments were concatenated in front of the subcommand, and `--agent` is an option
+  *of* `acp`.
+
+  ```
+  kiro-cli --agent my-agent acp
+  error: unexpected argument '--agent' found
+    tip: 'acp --agent' exists
+  ```
+
+  They now go after `acp`, where every option anybody would put there belongs — `--agent`,
+  `--model`, `--effort`, `--trust-tools`, `-v`. What it takes to *reach* the binary still
+  comes first, because the WSL route runs `wsl kiro-cli acp` and the name is an argument of
+  `wsl`. This matters here because an agent config is the other route to memory: its
+  `resources` list names files to load.
+
+- **`AGENTS.md` is listed even though the button never creates one.** Kiro reads it, so a
+  panel saying "None yet" beside a project that has one would be exactly the confusion this
+  is meant to remove. New files are made in `.kiro/steering/`, which is unambiguously Kiro's;
+  creating a root-level file somebody then commits is a larger side effect than a menu click
+  implies.
+
+- **Neither dropdown calls itself a listbox any more, because neither was one.** Both the
+  workflow menu and the model menu declared `role="listbox"` while holding things a listbox
+  may not contain: group headings, notes, switches, a memory row carrying two buttons — and,
+  in the model menu, a footer with a **Check account usage** button buried inside it. A
+  screen reader was told to expect a list of options and handed something else.
+
+  The fix is *no* container role rather than a different one. `listbox`, `menu` and
+  `radiogroup` all promise arrow-key navigation this does not implement, and declaring one
+  puts a reader into a mode where Tab — the navigation that does work, since every row is a
+  real `<button>` — stops working. A plain container of buttons announces each control
+  correctly and keeps the keyboard behaviour the code actually has.
+
+  A one-of row now says `aria-current="true"` instead of `role="option"` with
+  `aria-selected`, which meant nothing outside the listbox that was never there. Toggles keep
+  `role="switch"` and `aria-checked` — valid on a button, and `.menu-switch` is still painted
+  from that same attribute, so what is announced and what is drawn cannot drift apart.
+  Nothing changed visually.
+
+- **The counts are read when the menu opens, not watched.** The global folder sits outside
+  every workspace root, so a file watcher would keep one scope current and let the other go
+  stale — and nothing on screen would say which was which.
+
 ## 0.28.0
 
 - **The usage strip no longer shows one chat's credits against another.** Opening a past

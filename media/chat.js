@@ -17,6 +17,9 @@
   const modeBtn = el("mode-btn");
   const modeLabel = el("mode-label");
   const modeMenu = el("mode-menu");
+  const instructionsPanel = el("instructions-panel");
+  const instructionsText = el("instructions-text");
+  const instructionsCount = el("instructions-count");
   const modelBtn = el("model-btn");
   const modelLabel = el("model-label");
   const modelMenu = el("model-menu");
@@ -64,6 +67,20 @@
   let settings = {};
   /** Which supervision mode those settings add up to, or "custom" for none. */
   let editMode = "custom";
+  /**
+   * The memory files Kiro reads on every turn, and the ones that could still
+   * be created. Kiro loads these itself; the panel only points at them, so
+   * this is a report and never a setting.
+   */
+  let memory = { files: [], add: [] };
+  /**
+   * How you always want Kiro to work, as the extension last reported it.
+   * Unlike a memory file this rides in every message, which is why the box
+   * says so and the count turns red past the cap.
+   */
+  let instructions = "";
+  let instructionsRow = { label: "Add instructions", detail: "" };
+  const MAX_INSTRUCTIONS = 4000;
   /** The file the editor is showing, sent with the message like Copilot does. */
   let activeFile = null;
   let includeActiveFile = true;
@@ -1114,8 +1131,13 @@
       const row = document.createElement("button");
       row.type = "button";
       row.className = "model-row";
-      row.setAttribute("role", "option");
-      if (m.modelId === currentModelId) row.classList.add("selected");
+      // Not an option: this menu is not a listbox either, and cannot be — it
+      // holds an empty-state note and a footer with a button in it. Same
+      // reasoning as `menuRow`.
+      if (m.modelId === currentModelId) {
+        row.setAttribute("aria-current", "true");
+        row.classList.add("selected");
+      }
       row.dataset.modelId = m.modelId;
 
       const main = document.createElement("div");
@@ -1177,8 +1199,27 @@
     row.type = "button";
     row.className = "mode-row";
     const toggle = options.role === "switch";
-    row.setAttribute("role", toggle ? "switch" : "option");
-    row.setAttribute(toggle ? "aria-checked" : "aria-selected", options.on ? "true" : "false");
+    /*
+     * A toggle is a switch; a one-of row is the current choice.
+     *
+     * `role="switch"` is valid on a button and is what makes "on"/"off" come
+     * out of a screen reader — and `.menu-switch` is drawn from the same
+     * `aria-checked`, so the state has one source.
+     *
+     * The one-of rows were `role="option"` with `aria-selected`, which only
+     * mean anything inside a listbox; the container is not one, and could not
+     * be. `aria-current` is valid on any element, says exactly what is true
+     * of the row — this is the one in use — and leaves the button announcing
+     * itself as a button, which is what it is. Nothing is set when the row is
+     * not current: `aria-current="false"` is announced by some readers as
+     * though it were a state worth mentioning.
+     */
+    if (toggle) {
+      row.setAttribute("role", "switch");
+      row.setAttribute("aria-checked", options.on ? "true" : "false");
+    } else if (options.on) {
+      row.setAttribute("aria-current", "true");
+    }
     /*
      * The two indicators are different on purpose.
      *
@@ -1283,6 +1324,134 @@
       row.dataset.setting = item.key;
       modeMenu.appendChild(row);
     }
+
+    /*
+     * What Kiro knows before you say anything.
+     *
+     * These rows open a file; they do not switch anything on. Kiro CLI reads
+     * .kiro/steering/*.md and AGENTS.md into every turn on its own, so there
+     * is nothing here for the panel to enable — the gap was that nothing on
+     * screen said the files existed. They therefore carry neither the
+     * selection highlight nor a switch, because they are not a state: the
+     * description says what is being read right now.
+     */
+    // The one thing the heading has to say that the rows cannot: an edit lands
+    // on the next message, so nothing here asks you to start a new chat.
+    menuHeading("What Kiro always knows", "Read every turn. Edits apply to your next message.");
+    for (const file of memory.files) modeMenu.appendChild(memoryFileRow(file));
+    /*
+     * No empty state. An "Add project memory" row standing alone already says
+     * there is none, and a line of prose above it saying the same thing is the
+     * menu explaining itself twice. Where a folder is not open the extension
+     * simply does not offer that row.
+     */
+    for (const item of memory.add) {
+      const row = menuRow({
+        label: ADD_MEMORY_LABELS[item.scope] || "Add memory",
+        description: item.path,
+      });
+      row.dataset.memoryScope = item.scope;
+      modeMenu.appendChild(row);
+    }
+
+    renderInstructionsRow();
+
+  }
+
+  /*
+   * How you always want Kiro to work — a different question from what it
+   * knows about the project, so a group of its own.
+   *
+   * No file anywhere: this is instruction text put in front of the message,
+   * the same mechanism the workflows above already use, with the user holding
+   * the pen. That also means it is paid for on every turn, which the row and
+   * the box both say, because nothing else in the panel behaves that way.
+   */
+  function renderInstructionsRow() {
+    menuHeading("Instructions");
+    /*
+     * No "Your instructions" label. The heading above already says it, and
+     * repeating it costs the row's most readable line to say nothing — while
+     * the thing worth reading, what is actually applied to every message, is
+     * pushed into the small grey text underneath.
+     */
+    const row = menuRow({
+      label: instructionsRow.label,
+      description: instructionsRow.detail,
+    });
+    row.dataset.instructions = "edit";
+    modeMenu.appendChild(row);
+  }
+
+  /**
+   * Offered only where the file is missing, so the label never lies.
+   *
+   * Project, local and global — one word each, and the one that needs a
+   * qualifier gets it. Two of these read as near-identical without care:
+   * "project memory" and "local memory" sit in the same folder and differ
+   * only by file name, so "(not committed)" is what separates them and it
+   * goes where it cannot be missed.
+   *
+   * "Not committed" rather than "private", because that is the part that is
+   * actually true: git cannot see the file, but it is as readable as any
+   * other to anyone at this machine.
+   */
+  const ADD_MEMORY_LABELS = {
+    project: "Add project memory",
+    private: "Add local memory (not committed)",
+    global: "Add global memory",
+  };
+
+  /**
+   * One memory file: a wide button that opens it, and a × that removes it.
+   *
+   * Built like a history row rather than with `menuRow`, for a plain reason —
+   * `menuRow` returns a `<button>`, and a button cannot contain another one.
+   * The × is revealed on hover and focus, the way forgetting a chat is, so
+   * the destructive control is not the first thing the eye lands on in a
+   * menu whose other rows merely open things.
+   */
+  function memoryFileRow(file) {
+    const row = document.createElement("div");
+    row.className = "memory-row";
+
+    const open = document.createElement("button");
+    open.type = "button";
+    open.className = "memory-open";
+    open.dataset.memoryAct = "open";
+    open.dataset.path = file.path;
+    open.title = file.path;
+
+    const name = document.createElement("div");
+    name.className = "mode-name";
+    name.textContent = file.label;
+    open.appendChild(name);
+
+    /*
+     * Which chats it steers, under the name.
+     *
+     * Both scopes can hold a `memory.md`, so without this the menu shows two
+     * identical rows with a delete button each — and the user picks by guess.
+     */
+    if (file.detail) {
+      const detail = document.createElement("div");
+      detail.className = "mode-desc";
+      detail.textContent = file.detail;
+      open.appendChild(detail);
+    }
+    row.appendChild(open);
+
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "memory-delete";
+    remove.dataset.memoryAct = "remove";
+    remove.dataset.path = file.path;
+    remove.textContent = "×";
+    remove.title = "Remove " + file.label + " from Kiro's memory";
+    remove.setAttribute("aria-label", "Remove " + file.label + " from Kiro's memory");
+    row.appendChild(remove);
+
+    return row;
   }
 
   /**
@@ -1360,7 +1529,66 @@
     button.setAttribute("aria-expanded", open ? "true" : "false");
   }
 
+  /*
+   * Opening puts the box in the state the settings are actually in, never a
+   * half-typed draft from last time. A box that reopened showing text the
+   * extension had refused would be claiming a state the settings are not in —
+   * the permission card's rule, applied to a textarea.
+   */
+  function openInstructions() {
+    instructionsText.value = instructions;
+    updateInstructionsCount();
+    instructionsPanel.hidden = false;
+    instructionsText.focus();
+  }
+
+  function closeInstructions() {
+    instructionsPanel.hidden = true;
+  }
+
+  /*
+   * The count is silent until it matters. A running character total beside a
+   * box you are typing into is noise; past the cap it is the only warning
+   * that the tail is about to be dropped, so it appears and turns red.
+   */
+  function updateInstructionsCount() {
+    const over = instructionsText.value.length - MAX_INSTRUCTIONS;
+    instructionsCount.classList.toggle("over", over > 0);
+    instructionsCount.textContent =
+      over > 0 ? over + " characters over the limit — the end will be cut" : "";
+  }
+
+  instructionsText.addEventListener("input", updateInstructionsCount);
+
+  instructionsText.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      closeInstructions();
+      return;
+    }
+    // Enter makes a new line here, unlike the composer: this is a list of
+    // instructions and a stray Enter must not submit it.
+    if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
+      event.preventDefault();
+      saveInstructions();
+    }
+  });
+
+  function saveInstructions() {
+    /*
+     * Posted and then closed, with nothing written to the local copy. The
+     * extension writes the setting and the configuration watcher posts it
+     * back, so the row's summary and the box's contents can only ever show
+     * what the settings really hold.
+     */
+    vscode.postMessage({ type: "setInstructions", text: instructionsText.value });
+    closeInstructions();
+  }
+
+  el("instructions-save").addEventListener("click", saveInstructions);
+  el("instructions-cancel").addEventListener("click", closeInstructions);
+
   function closeMenus() {
+    closeInstructions();
     setMenu(modeMenu, modeBtn, false);
     setMenu(modelMenu, modelBtn, false);
     setMenu(attachMenu, attachBtn, false);
@@ -1369,11 +1597,36 @@
   modeBtn.addEventListener("click", () => {
     const open = modeMenu.hidden;
     closeMenus();
-    if (open) renderModeMenu();
+    // Counted on the way in rather than watched: the global folder is outside
+    // every workspace root, so a file watcher would keep one scope current
+    // and quietly let the other go stale. This is the moment it is read.
+    if (open) {
+      vscode.postMessage({ type: "requestMemory" });
+      renderModeMenu();
+    }
     setMenu(modeMenu, modeBtn, open);
   });
 
   modeMenu.addEventListener("click", (event) => {
+    /*
+     * A memory file row is not a `.mode-row`: it holds two buttons, and a
+     * button cannot nest inside one. Answered before the lookup below, which
+     * would otherwise find nothing and drop the click.
+     */
+    const act = event.target.closest("[data-memory-act]");
+    if (act) {
+      if (act.dataset.memoryAct === "remove") {
+        // The panel does not decide this. The extension confirms it, checks
+        // the path is really one of the files it just listed, and redraws —
+        // so a refused or cancelled removal cannot leave a row already gone.
+        vscode.postMessage({ type: "removeMemory", path: act.dataset.path });
+        return;
+      }
+      vscode.postMessage({ type: "openFile", path: act.dataset.path });
+      setMenu(modeMenu, modeBtn, false);
+      return;
+    }
+
     const row = event.target.closest(".mode-row");
     if (!row) return;
 
@@ -1381,6 +1634,24 @@
       setMode(row.dataset.modeId);
       // Picking a workflow is the whole errand; the menu has done its job.
       setMenu(modeMenu, modeBtn, false);
+      return;
+    }
+
+    /*
+     * Opening a memory file closes the menu, for the reason a workflow does:
+     * the answer to the click is an editor tab, and a menu left hanging over
+     * the file it just opened is in the way of the thing you asked for.
+     */
+    if (row.dataset.memoryScope) {
+      vscode.postMessage({ type: "openMemory", scope: row.dataset.memoryScope });
+      setMenu(modeMenu, modeBtn, false);
+      return;
+    }
+
+    // The box opens where the menu was, so the menu closes first.
+    if (row.dataset.instructions) {
+      setMenu(modeMenu, modeBtn, false);
+      openInstructions();
       return;
     }
 
@@ -2746,6 +3017,15 @@
         // Derived by the extension from those same settings, so it can never
         // disagree with them.
         editMode = message.editMode || "custom";
+        instructions = typeof message.instructions === "string" ? message.instructions : "";
+        instructionsRow = message.instructionsRow || { label: "Add instructions", detail: "" };
+        // Only when the box is open and untouched: overwriting text somebody
+        // is in the middle of typing, because an unrelated setting changed,
+        // would throw their work away.
+        if (!instructionsPanel.hidden && instructionsText.value === "") {
+          instructionsText.value = instructions;
+          updateInstructionsCount();
+        }
         if (typeof settings.sendSelection === "boolean") {
           includeSelection = settings.sendSelection;
         }
@@ -2754,6 +3034,18 @@
         modeLabel.textContent = modeButtonLabel();
         renderModeMenu();
         renderChips();
+        break;
+
+      case "openInstructions":
+        closeMenus();
+        openInstructions();
+        break;
+
+      case "memory":
+        memory = { files: message.files || [], add: message.add || [] };
+        // Only redraw what is on screen. The counts arrive just after the
+        // menu opens, so the rows fill in rather than appearing empty.
+        if (!modeMenu.hidden) renderModeMenu();
         break;
 
       case "attachments":

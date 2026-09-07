@@ -1,5 +1,7 @@
 import * as vscode from "vscode";
+import * as path from "node:path";
 import { randomBytes } from "node:crypto";
+import { execFile } from "node:child_process";
 import {
   formatUsageReport,
   KiroSession,
@@ -18,6 +20,23 @@ import {
 import { ActiveFile, attachmentsForMessage } from "./activeFile";
 import { EditGates, editModeOf, gatesForMode } from "./editModes";
 import { parseDroppedPaths } from "./dropped";
+import {
+  MemoryFile,
+  MemoryScope,
+  MemoryTarget,
+  isListedMemory,
+  isPrivateMemory,
+  localLabel,
+  memoryDir,
+  memoryTarget,
+  memoryFilesIn,
+  memoryTemplate,
+  scopeLabel,
+  targetPath,
+  targetScope,
+} from "./memory";
+import { addExcludeEntry, excludeEntryFor, excludeFileIn } from "./gitExclude";
+import { samePath } from "./paths";
 import { findKiro } from "./findKiro";
 import { SetupWatcher } from "./setupWatcher";
 import {
@@ -31,6 +50,7 @@ import {
   upsertRecord,
 } from "./history";
 import { applyChatMode, chatMode } from "./chatModes";
+import { applyInstructions, instructionsRow, normaliseInstructions } from "./instructions";
 
 /** Past chats are kept here, across windows and restarts. */
 const HISTORY_KEY = "kiroChat.history";
@@ -303,6 +323,48 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
           break;
         case "openSettings":
           void vscode.commands.executeCommand("workbench.action.openSettings", "kiroChat");
+          break;
+        /*
+         * Counted when the menu opens rather than watched.
+         *
+         * The global steering folder is outside every workspace root, so a
+         * FileSystemWatcher would keep the project count fresh and let the
+         * global one go stale — a number that is right for one scope and
+         * wrong for the other is worse than no number at all.
+         */
+        case "requestMemory":
+          await this.postMemory();
+          break;
+        case "openMemory": {
+          // Never narrowed by hand: the two-way conditional that used to be
+          // here turned "private" into "project" the moment a third target
+          // existed, and made a committable file out of one promised not to
+          // be. An unknown target is refused rather than rounded.
+          const target = memoryTarget(message.scope);
+          if (!target) {
+            this.output.appendLine(`Ignored openMemory for unknown target ${message.scope}.`);
+            break;
+          }
+          await this.openMemory(target);
+          break;
+        }
+        case "setInstructions":
+          /*
+           * Written, then nothing posted. The configuration watcher sees the
+           * write land and re-posts, so a failed save cannot leave the box
+           * showing text the settings do not hold — the same rule the toggles
+           * and the permission card follow.
+           */
+          await vscode.workspace
+            .getConfiguration("kiroChat")
+            .update(
+              "instructions",
+              normaliseInstructions(message.text),
+              vscode.ConfigurationTarget.Global
+            );
+          break;
+        case "removeMemory":
+          await this.removeMemory(String(message.path ?? ""));
           break;
         case "showLog":
           this.output.show(true);
@@ -721,11 +783,314 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     for (const key of PANEL_SETTINGS) settings[key] = Boolean(config.get<boolean>(key));
     // Derived here rather than stored, so it cannot disagree with the settings
     // it describes — and reported as `custom` when it matches no mode.
+    const instructions = config.get<string>("instructions", "");
     this.post({
       type: "settings",
       settings,
       editMode: editModeOf(settings as unknown as EditGates),
+      // The text itself, so the box opens with what is actually in force,
+      // plus the two slots the menu row draws — worked out here so the panel
+      // never has to decide what a preview looks like.
+      instructions,
+      instructionsRow: instructionsRow(instructions),
     });
+  }
+
+  /**
+   * The memory files Kiro is reading, for the menu.
+   *
+   * Kiro loads these itself — this only looks. Confirmed against
+   * `kiro-cli acp` 2.20.2: a fact placed in any of these files is answered
+   * with zero tool calls, and editing one mid-chat changes the next answer in
+   * the *same* session, so nothing here needs to restart anything.
+   */
+  private async listMemory(scope: MemoryScope): Promise<MemoryFile[]> {
+    const root = this.workspaceCwd();
+    if (scope === "project" && !root) return [];
+    const dir = memoryDir(scope, root);
+    let files: MemoryFile[] = [];
+    try {
+      const entries = await vscode.workspace.fs.readDirectory(vscode.Uri.file(dir));
+      const names = entries
+        .filter(([, type]) => (type & vscode.FileType.File) !== 0)
+        .map(([name]) => name);
+      files = memoryFilesIn(dir, names, scope);
+    } catch {
+      // No folder yet is the ordinary case, not a failure.
+    }
+    // Two scopes can hold a `memory.md` each, so the name alone does not say
+    // which row is which — and one of the things you can do to a row is
+    // delete it.
+    for (const file of files) file.detail = scopeLabel(scope);
+
+    /*
+     * A private file says whether it is really private, and asks git rather
+     * than assuming.
+     *
+     * The row is a claim about someone else's repository. The exclude entry
+     * can be missing — a file made by hand, a clone taken before it was added
+     * — and a file that is already *tracked* is not ignored by any rule, so
+     * the reassuring label would be the one case where it is false. Saying
+     * "git can see this" is the useful half of the answer.
+     */
+    for (const file of files) {
+      if (!isPrivateMemory(file.path)) continue;
+      file.detail = localLabel(await this.isIgnoredByGit(file.path));
+    }
+
+    /*
+     * AGENTS.md is memory too, and hiding it would be a lie.
+     *
+     * Kiro reads it from the project root alongside the steering folder
+     * (measured, same probe). The button does not create it — see
+     * MEMORY_FILENAME — but a panel reporting "none yet" while Kiro is
+     * reading one is exactly the confusion this feature exists to remove.
+     */
+    if (scope === "project" && root) {
+      const agents = vscode.Uri.joinPath(vscode.Uri.file(root), "AGENTS.md");
+      try {
+        await vscode.workspace.fs.stat(agents);
+        files.push({
+          scope,
+          path: agents.fsPath,
+          label: "AGENTS.md",
+          detail: `${scopeLabel(scope)} · repo root`,
+        });
+      } catch {
+        // Not there. Nothing to say.
+      }
+    }
+    return files;
+  }
+
+  /**
+   * Run one `git` command in the workspace, or report that there is no answer.
+   *
+   * Every use here is a question — where is the git directory, does git ignore
+   * this file — and a missing git, a folder that is not a repository, and a
+   * command that hangs all mean the same thing to the caller: nothing can be
+   * claimed. So there is one failure value rather than three.
+   */
+  private git(args: string[]): Promise<string | undefined> {
+    const cwd = this.workspaceCwd();
+    if (!cwd) return Promise.resolve(undefined);
+    return new Promise((resolve) => {
+      execFile("git", args, { cwd, timeout: 5000, windowsHide: true }, (err, stdout) => {
+        resolve(err ? undefined : String(stdout ?? "").trim() || "");
+      });
+    });
+  }
+
+  /**
+   * Whether git really cannot see this file.
+   *
+   * Asked rather than assumed, because the label is a promise about someone
+   * else's repository. The exclude entry can be absent (an older file, a
+   * clone made after the fact), the file can already be tracked — in which
+   * case an ignore rule does nothing at all — or this may not be a repository.
+   * A row that says "not committed" when git can see the file is the one
+   * failure here that actually costs something.
+   */
+  private async isIgnoredByGit(filePath: string): Promise<boolean> {
+    // check-ignore exits non-zero when the path is *not* ignored, which the
+    // helper reports as undefined. Nothing else is needed from it.
+    const answer = await this.git(["check-ignore", filePath]);
+    return answer !== undefined;
+  }
+
+  /**
+   * Put the file in `.git/info/exclude`, so it stays here without being
+   * committed. Reports what actually happened; the caller says so out loud.
+   */
+  private async excludeFromGit(filePath: string): Promise<"excluded" | "already" | "no-repo"> {
+    // --git-common-dir, not --git-dir: in a worktree `.git` is a file, and git
+    // reads the *common* directory's info/exclude. See gitExclude.ts.
+    const common = await this.git(["rev-parse", "--git-common-dir"]);
+    if (common === undefined) return "no-repo";
+
+    const root = this.workspaceCwd();
+    const dir = path.isAbsolute(common) ? common : path.join(root, common);
+    const excludeFile = excludeFileIn(dir);
+    const entry = excludeEntryFor(root, filePath);
+    if (!entry) return "no-repo";
+
+    let existing = "";
+    try {
+      existing = Buffer.from(
+        await vscode.workspace.fs.readFile(vscode.Uri.file(excludeFile))
+      ).toString("utf8");
+    } catch {
+      // Not every clone has one. Writing it is enough to create it.
+    }
+
+    const next = addExcludeEntry(existing, entry);
+    if (!next.changed) return "already";
+    try {
+      await vscode.workspace.fs.createDirectory(vscode.Uri.file(path.dirname(excludeFile)));
+      await vscode.workspace.fs.writeFile(
+        vscode.Uri.file(excludeFile),
+        Buffer.from(next.contents, "utf8")
+      );
+    } catch (err) {
+      this.output.appendLine(`Could not write ${excludeFile}: ${String(err)}`);
+      return "no-repo";
+    }
+    return "excluded";
+  }
+
+  /** Both scopes, project first, as one list the menu can draw straight down. */
+  private async allMemory(): Promise<MemoryFile[]> {
+    const [project, global] = await Promise.all([
+      this.listMemory("project"),
+      this.listMemory("global"),
+    ]);
+    return [...project, ...global];
+  }
+
+  private async postMemory(): Promise<void> {
+    const files = await this.allMemory();
+    const hasWorkspace = this.workspaceCwd() !== "";
+
+    /*
+     * An "add" row is offered only where its file does not exist yet.
+     *
+     * A row saying "Add project memory" that opens a file already listed two
+     * rows above it is a control describing something other than what it
+     * does. Where the file is there, the file's own row is the whole
+     * interface — open it, or remove it.
+     */
+    const add: Array<{ scope: MemoryTarget; path: string }> = [];
+    for (const scope of ["project", "private", "global"] as MemoryTarget[]) {
+      if (scope !== "global" && !hasWorkspace) continue;
+      const target = targetPath(scope, this.workspaceCwd());
+      if (!isListedMemory(target, files)) add.push({ scope, path: target });
+    }
+
+    // `hasWorkspace` stays here rather than going to the panel: it decides
+    // whether the project row is offered at all, and the panel has nothing
+    // left to say about it once that decision is made.
+    this.post({ type: "memory", files, add });
+  }
+
+  /**
+   * Open the instructions box from the command palette.
+   *
+   * Focus first, then post: the panel may be closed or in another view
+   * container, and a message to a webview that does not exist yet is dropped
+   * in silence. The wait is the same one `sendFromEditor` already takes for
+   * the same reason.
+   */
+  async editInstructions(): Promise<void> {
+    this.focus();
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    this.post({ type: "openInstructions" });
+  }
+
+  /**
+   * Delete a memory file, once the user has said so.
+   *
+   * Two things make this safe enough to put in a menu. The path is checked
+   * against the folders *now* rather than trusted from the message, so
+   * neither a stale panel nor a crafted message can name a file that is not
+   * memory. And it goes to the recycle bin rather than being unlinked, so the
+   * answer to "I meant the other one" is not "it is gone" — a menu is a
+   * careless place, and this row sits under two rows that merely open a file.
+   */
+  private async removeMemory(target: string): Promise<void> {
+    if (!target) return;
+    const files = await this.allMemory();
+    if (!isListedMemory(target, files)) {
+      this.output.appendLine(`Refused to remove ${target}: not a memory file.`);
+      return;
+    }
+
+    const file = files.find((f) => samePath(f.path, target));
+    const name = file?.label ?? target;
+    const answer = await vscode.window.showWarningMessage(
+      `Remove ${name} from Kiro's memory?`,
+      {
+        modal: true,
+        detail: `${target}\n\nIt goes to the recycle bin, and Kiro stops reading it from your next message.`,
+      },
+      "Remove"
+    );
+    if (answer !== "Remove") return;
+
+    try {
+      await vscode.workspace.fs.delete(vscode.Uri.file(target), { useTrash: true });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      vscode.window.showErrorMessage(`Could not remove ${name}: ${message}`);
+    }
+    // Posted either way: a failed delete must not leave the row gone from a
+    // menu that has already redrawn without it.
+    await this.postMemory();
+  }
+
+  /**
+   * Open the memory file, making one from the template if there is none.
+   *
+   * Creating on click is the point: the folder does not exist in a fresh
+   * project, and a row that opened nothing when there was nothing would be a
+   * dead control precisely when it is most needed.
+   */
+  async openMemory(scope: MemoryTarget): Promise<void> {
+    const root = this.workspaceCwd();
+    if (scope !== "global" && !root) {
+      vscode.window.showWarningMessage(
+        "Open a folder first — project memory lives in .kiro/steering inside it."
+      );
+      return;
+    }
+
+    const target = vscode.Uri.file(targetPath(scope, root));
+    let created = false;
+    try {
+      await vscode.workspace.fs.stat(target);
+    } catch {
+      // Missing, so write the starter. createDirectory is recursive and does
+      // not mind a folder that is already there.
+      try {
+        await vscode.workspace.fs.createDirectory(
+          vscode.Uri.file(memoryDir(targetScope(scope), root))
+        );
+        await vscode.workspace.fs.writeFile(target, Buffer.from(memoryTemplate(scope), "utf8"));
+        created = true;
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        vscode.window.showErrorMessage(`Could not create the memory file: ${message}`);
+        return;
+      }
+    }
+
+    /*
+     * Hide it from git before it is ever shown to the user.
+     *
+     * Ordered this way on purpose: the window between creating a private file
+     * and excluding it is a window in which `git add .` would commit the very
+     * thing the row promised to keep back. The result is said out loud rather
+     * than assumed — "no-repo" is an ordinary outcome (a folder that is not a
+     * repository has nothing to commit to), but it is not privacy, and the
+     * row must not go on to claim it is.
+     */
+    if (scope === "private") {
+      const outcome = await this.excludeFromGit(target.fsPath);
+      if (created) {
+        if (outcome === "excluded") {
+          vscode.window.showInformationMessage(
+            "Private memory added to .git/info/exclude — it stays here but is never committed."
+          );
+        } else if (outcome === "no-repo") {
+          vscode.window.showInformationMessage(
+            "Private memory created. This folder is not a git repository, so there was nothing to exclude it from."
+          );
+        }
+      }
+    }
+
+    await this.openPath(target.fsPath);
+    // Creating one has just changed the count the menu is showing.
+    await this.postMemory();
   }
 
   private requestPermissionInChat(request: {
@@ -1047,9 +1412,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
           : undefined,
     });
 
-    const blocks = applyChatMode(
-      buildBlocks(trimmed, attached, this.selection, includeSelection),
-      mode
+    /*
+     * Standing instructions wrap the workflow block, never split it.
+     *
+     * `applyChatMode`'s block ends "The user's request follows", so anything
+     * inserted between it and the message makes that sentence untrue. Applied
+     * outside, the workflow still sits against the request it introduces.
+     */
+    const blocks = applyInstructions(
+      applyChatMode(buildBlocks(trimmed, attached, this.selection, includeSelection), mode),
+      vscode.workspace.getConfiguration("kiroChat").get<string>("instructions", "")
     );
 
     /*
@@ -1280,6 +1652,23 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
   <div id="dropzone" class="dropzone" hidden><span>Drop anywhere here to attach</span></div>
 
   <form id="composer" class="composer">
+    <!--
+      The instructions box: a panel over the transcript rather than a row in
+      the menu, because the menu scrolls and closes on a click and a textarea
+      inside it would fight both. Anchored on .composer, not .mode-wrap, so it
+      spans the panel instead of the width of one small button.
+    -->
+    <div id="instructions-panel" class="instructions-panel" hidden>
+      <label class="instructions-label" for="instructions-text">Instructions</label>
+      <div class="instructions-note">Added to the front of every message.</div>
+      <textarea id="instructions-text" class="instructions-text" rows="6" spellcheck="false" placeholder="Always reply in Bahasa Malaysia.&#10;Use tabs, never spaces.&#10;Write the test before the fix."></textarea>
+      <div class="instructions-foot">
+        <span id="instructions-count" class="instructions-count"></span>
+        <span class="spacer"></span>
+        <button type="button" id="instructions-cancel" class="instructions-cancel">Cancel</button>
+        <button type="button" id="instructions-save" class="primary">Save</button>
+      </div>
+    </div>
     <div id="permission-bar" class="permission-bar" hidden></div>
     <div id="change-bar" class="change-bar" hidden></div>
     <div id="chips" class="chips" hidden></div>
@@ -1298,18 +1687,34 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         </div>
       </div>
       <div class="mode-wrap">
-        <button type="button" id="mode-btn" class="mode-btn" title="Workflow" aria-haspopup="listbox" aria-expanded="false">
+        <button type="button" id="mode-btn" class="mode-btn" title="Workflow" aria-haspopup="true" aria-expanded="false">
           <svg class="btn-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M2 4.5A.5.5 0 0 1 2.5 4h5a.5.5 0 0 1 0 1h-5a.5.5 0 0 1-.5-.5Zm0 3.5a.5.5 0 0 1 .5-.5h11a.5.5 0 0 1 0 1h-11A.5.5 0 0 1 2 8Zm0 3.5a.5.5 0 0 1 .5-.5h8a.5.5 0 0 1 0 1h-8a.5.5 0 0 1-.5-.5Z"/></svg>
           <span id="mode-label">Default</span>
         </button>
-        <div id="mode-menu" class="mode-menu" hidden role="listbox"></div>
+        <!--
+          No container role, deliberately. This holds group headings, notes,
+          one-of rows, switches and a file row carrying two buttons, and there
+          is no ARIA container that admits that mixture: a listbox takes only
+          options, and it said "listbox" while holding none of the above.
+          Every role that would fit — listbox, menu, radiogroup — also promises
+          arrow-key navigation this does not implement, and declaring one puts
+          a screen reader into a mode where Tab stops working, which is the
+          navigation that does. A plain container of real <button>s announces
+          each control correctly and keeps the keyboard behaviour the code
+          actually has. Claiming a state we are not in is the mistake this
+          codebase keeps paying for elsewhere.
+        -->
+        <div id="mode-menu" class="mode-menu" hidden></div>
       </div>
       <div class="model-wrap">
-        <button type="button" id="model-btn" class="model-btn" title="Model" aria-haspopup="listbox" aria-expanded="false" disabled>
+        <button type="button" id="model-btn" class="model-btn" title="Model" aria-haspopup="true" aria-expanded="false" disabled>
           <svg class="btn-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M6 1.5a.5.5 0 0 1 1 0V3h2V1.5a.5.5 0 0 1 1 0V3h.5A1.5 1.5 0 0 1 12 4.5V5h1.5a.5.5 0 0 1 0 1H12v2h1.5a.5.5 0 0 1 0 1H12v.5a1.5 1.5 0 0 1-1.5 1.5H10v1.5a.5.5 0 0 1-1 0V11H7v1.5a.5.5 0 0 1-1 0V11h-.5A1.5 1.5 0 0 1 4 9.5V9H2.5a.5.5 0 0 1 0-1H4V6H2.5a.5.5 0 0 1 0-1H4v-.5A1.5 1.5 0 0 1 5.5 3H6V1.5ZM5 4.5v5a.5.5 0 0 0 .5.5h5a.5.5 0 0 0 .5-.5v-5a.5.5 0 0 0-.5-.5h-5a.5.5 0 0 0-.5.5Z"/></svg>
           <span id="model-label">Default model</span>
         </button>
-        <div id="model-menu" class="model-menu" hidden role="listbox"></div>
+        <!-- Same reasoning, and it was worse here: this one holds an empty-state
+             note and a footer with a "Check account usage" *button* inside it,
+             none of which a listbox may contain. -->
+        <div id="model-menu" class="model-menu" hidden></div>
       </div>
       <span class="spacer"></span>
       <button type="button" id="stop" class="icon danger" hidden title="Stop this reply" aria-label="Stop this reply">

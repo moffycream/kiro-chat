@@ -1517,6 +1517,178 @@ button:disabled {
   color: var(--vscode-list-activeSelectionForeground);
 }
 
+/*
+ * The standing-instructions box.
+ *
+ * A popup anchored in .mode-wrap, like the menus, so a narrow sidebar cannot
+ * push it off screen. It opens upward — `bottom: 100%` — because the mode
+ * button sits on the composer row at the bottom of the panel, and a box
+ * dropping downward from there would be mostly off screen.
+ */
+.instructions-panel {
+  position: absolute;
+  bottom: 100%;
+  /*
+   * The full width of the panel, not of the button that opens it. Anchored on
+   * .composer rather than .mode-wrap for exactly this: a wrap is only as wide
+   * as its control, and a fixed 320px box was both too narrow to read a list
+   * of instructions in and too wide for a narrow sidebar.
+   */
+  left: 0;
+  right: 0;
+  z-index: 30;
+  padding: 10px 12px;
+  border-top: 1px solid var(--vscode-panel-border);
+  border-bottom: 1px solid var(--vscode-panel-border);
+  background: var(--vscode-dropdown-background, var(--vscode-editor-background));
+  box-shadow: 0 -4px 12px rgba(0, 0, 0, 0.35);
+}
+
+.instructions-label {
+  display: block;
+  font-size: 0.92em;
+  font-weight: 600;
+}
+
+.instructions-note {
+  margin: 3px 0 7px;
+  font-size: 0.8em;
+  line-height: 1.4;
+  opacity: 0.75;
+}
+
+.instructions-text {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  resize: vertical;
+  padding: 6px 8px;
+  border: 1px solid var(--vscode-input-border, transparent);
+  border-radius: 3px;
+  background: var(--vscode-input-background);
+  color: var(--vscode-input-foreground);
+  font-family: inherit;
+  font-size: 0.92em;
+  line-height: 1.5;
+}
+
+.instructions-text:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: -1px;
+}
+
+.instructions-foot {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.instructions-count {
+  font-size: 0.78em;
+  opacity: 0.7;
+}
+
+/*
+ * Cancel must not read as the recommended action.
+ *
+ * It was given a class this stylesheet does not define, so the global
+ * `button` rule painted it the same primary blue as Save — two identical
+ * buttons, one of which throws the edit away. That is the permission card's
+ * rule in another place: only one button in a pair may look like the answer,
+ * and it has to be the one that keeps the work.
+ */
+.instructions-cancel {
+  color: var(--vscode-button-secondaryForeground);
+  background: var(--vscode-button-secondaryBackground);
+}
+
+.instructions-cancel:hover {
+  background: var(--vscode-button-secondaryHoverBackground);
+}
+
+/* Said only when it is true, and it is a warning rather than a note. */
+.instructions-count.over {
+  color: var(--vscode-errorForeground);
+  opacity: 1;
+}
+
+/*
+ * A memory file: the row opens it, the × removes it.
+ *
+ * Two buttons, so the row itself is a div — a button cannot nest inside one.
+ * The delete is hidden until the row is hovered or holds focus, exactly as
+ * forgetting a chat is: every other row in this menu merely opens or selects
+ * something, and a column of × down a menu makes deletion look like the
+ * ordinary thing to do here.
+ */
+.memory-row {
+  display: flex;
+  align-items: center;
+  border-radius: 3px;
+}
+
+.memory-row:hover {
+  background: var(--vscode-list-hoverBackground);
+}
+
+.memory-open {
+  flex: 1;
+  min-width: 0;
+  padding: 8px 10px;
+  border: none;
+  border-radius: 3px;
+  text-align: left;
+  background: none;
+  color: var(--vscode-dropdown-foreground);
+}
+
+/*
+ * The row carries the hover tint, so the button inside must not paint a
+ * second one over it — but it still has to cancel `button:hover`, which is a
+ * type plus a pseudo-class and outranks any single class. Without this it
+ * sits transparent at rest and turns solid primary blue under the pointer.
+ */
+.memory-open:hover {
+  background: none;
+}
+
+.memory-open:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: -1px;
+}
+
+.memory-delete {
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  margin-right: 6px;
+  padding: 0;
+  border: none;
+  border-radius: 5px;
+  background: none;
+  color: var(--vscode-descriptionForeground);
+  font: inherit;
+  line-height: 1;
+  cursor: pointer;
+  visibility: hidden;
+}
+
+.memory-row:hover .memory-delete,
+.memory-row:focus-within .memory-delete {
+  visibility: visible;
+}
+
+.memory-delete:hover {
+  background: var(--vscode-toolbar-hoverBackground, var(--vscode-list-hoverBackground));
+  color: var(--vscode-errorForeground);
+}
+
+.memory-delete:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: -1px;
+}
+
 .mode-name {
   font-size: 0.92em;
   font-weight: 600;

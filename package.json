@@ -2,7 +2,7 @@
   "name": "kiro-chat",
   "displayName": "Kiro Chat",
   "description": "Chat with the Kiro agent inside VS Code, like Copilot Chat.",
-  "version": "0.28.0",
+  "version": "0.29.0",
   "publisher": "local",
   "license": "MIT",
   "engines": {
@@ -89,6 +89,22 @@
         "command": "kiroChat.showHistory",
         "title": "Kiro Chat: Past Chats",
         "icon": "$(history)"
+      },
+      {
+        "command": "kiroChat.openMemory",
+        "title": "Kiro Chat: Edit Project Memory"
+      },
+      {
+        "command": "kiroChat.openGlobalMemory",
+        "title": "Kiro Chat: Edit Global Memory"
+      },
+      {
+        "command": "kiroChat.openPrivateMemory",
+        "title": "Kiro Chat: Edit Local Memory (not committed)"
+      },
+      {
+        "command": "kiroChat.editInstructions",
+        "title": "Kiro Chat: Your Instructions"
       }
     ],
     "menus": {
@@ -168,7 +184,7 @@
             "type": "string"
           },
           "default": [],
-          "markdownDescription": "Extra arguments added before `acp`, for example `[\"--agent\", \"my-agent\"]`."
+          "markdownDescription": "Extra arguments for `kiro-cli acp`, for example `[\"--agent\", \"my-agent\"]` to start with a saved agent config — which is where a `resources` list of memory files lives. Added **after** `acp`, since that is where its options belong: `kiro-cli --agent x acp` is rejected outright."
         },
         "kiroChat.askBeforeEdits": {
           "type": "boolean",
@@ -202,6 +218,12 @@
             "type": "string"
           },
           "description": "Extra environment variables for the Kiro process."
+        },
+        "kiroChat.instructions": {
+          "type": "string",
+          "default": "",
+          "editPresentation": "multilineText",
+          "markdownDescription": "How you always want Kiro to work — \"always reply in Bahasa Malaysia\", \"use tabs, never spaces\". Added to the front of **every** message, so unlike a memory file it is paid for on every turn; keep it short. Edit it from the mode menu under **Your instructions**."
         },
         "kiroChat.model": {
           "type": "string",

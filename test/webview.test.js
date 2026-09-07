@@ -1980,6 +1980,362 @@ test("the webview handles every change message the provider posts", () => {
   assert.match(js, /function renderChangeBar\(/, "the bar has to be drawn somewhere");
 });
 
+/*
+ * Every row the panel can offer must be a target the extension accepts.
+ *
+ * This is the test that was missing when "Add private project memory" shipped
+ * making an ordinary committable `memory.md`. The old check only asserted that
+ * a `case "openMemory"` existed — it did — while the case itself narrowed the
+ * value by hand and turned "private" into "project". Checking that both halves
+ * exist is not the same as checking they agree about what may be sent.
+ */
+test("the panel cannot offer a memory target the extension would not accept", () => {
+  const { MEMORY_TARGETS } = require("../out/memory");
+  const labels = js.slice(js.indexOf("const ADD_MEMORY_LABELS = {"));
+  const block = labels.slice(0, labels.indexOf("};"));
+  const offered = (block.match(/^\s*(\w+):/gm) || []).map((k) => k.trim().replace(":", ""));
+
+  assert.ok(offered.length > 0, "the labels must be found, or this checks nothing");
+  for (const scope of offered) {
+    assert.ok(
+      MEMORY_TARGETS.includes(scope),
+      `the panel offers "${scope}" but the extension does not accept it`
+    );
+  }
+});
+
+/*
+ * And the handler must route through that check rather than narrowing by hand.
+ * The conditional it replaced was correct for exactly as long as there were
+ * two targets, then quietly wrong — and a default that swallows an unknown
+ * value cannot report that anything is wrong.
+ */
+test("the openMemory handler validates rather than narrows", () => {
+  const at = provider.indexOf('case "openMemory"');
+  const body = provider.slice(at, provider.indexOf('case "removeMemory"', at));
+  assert.match(body, /memoryTarget\(/, "the target is validated");
+  assert.doesNotMatch(
+    body,
+    /\?\s*"(project|private|global)"\s*:/,
+    "and never rounded to a literal by hand"
+  );
+});
+
+/*
+ * Standing instructions are two halves like everything else here.
+ */
+test("the instructions box and the extension agree", () => {
+  assert.match(provider, /instructionsRow/, "the provider sends the preview");
+  assert.match(js, /case "openInstructions"/, "the command's message is handled");
+  assert.match(js, /type: "setInstructions"/, "the box saves through a message");
+  assert.match(provider, /case "setInstructions"/, "which the provider must handle");
+  assert.match(provider, /id="instructions-panel"/, "and the panel needs its element");
+  assert.match(css, /^\.instructions-panel \{/m, "and a style");
+});
+
+/*
+ * The box never writes its own state.
+ *
+ * Saving posts and closes; the configuration watcher posts the text back. A
+ * box that kept what it had just sent would show instructions the settings do
+ * not hold if the write failed — the permission card's rule, applied to a
+ * textarea.
+ */
+/*
+ * Cancel and Save must not look alike.
+ *
+ * Cancel was given a class the stylesheet does not define, so the global
+ * `button` rule painted it the same primary blue as Save — two identical
+ * buttons, one of which throws the edit away. Only one of a pair may look
+ * like the answer, and it has to be the one that keeps the work.
+ */
+test("cancel does not look like the recommended action", () => {
+  assert.match(provider, /id="instructions-cancel" class="instructions-cancel"/);
+  assert.match(css, /^\.instructions-cancel \{/m, "the class has to actually exist");
+  assert.match(
+    css,
+    /\.instructions-cancel \{[^}]*button-secondaryBackground/,
+    "and paint itself as secondary"
+  );
+  assert.match(css, /^\.instructions-cancel:hover \{/m, "including on hover");
+});
+
+test("saving instructions asks rather than assumes", () => {
+  const fn = js.slice(js.indexOf("function saveInstructions("));
+  const body = fn.slice(0, fn.indexOf("\n  }"));
+  assert.match(body, /postMessage/, "it asks the extension");
+  assert.doesNotMatch(body, /instructions\s*=/, "and never sets the local copy itself");
+});
+
+/*
+ * Enter must not submit. This is a list of instructions typed over several
+ * lines, and the composer's Enter-to-send habit would throw away the rest.
+ */
+test("Enter makes a new line in the instructions box", () => {
+  const fn = js.slice(js.indexOf('instructionsText.addEventListener("keydown"'));
+  const body = fn.slice(0, fn.indexOf("\n  });"));
+  assert.match(body, /ctrlKey \|\| event\.metaKey/, "only Ctrl+Enter saves");
+  assert.match(body, /Escape/, "and Escape closes");
+});
+
+/*
+ * Instructions ride in every message, so the block goes outside the workflow
+ * block rather than between it and the request — that block ends "The user's
+ * request follows", and splitting the two makes it untrue.
+ */
+test("instructions wrap the workflow block, never split it", () => {
+  const at = provider.indexOf("const blocks = applyInstructions(");
+  assert.ok(at > 0, "instructions must be applied when a message is built");
+  const call = provider.slice(at, provider.indexOf(";", at));
+  assert.match(call, /applyInstructions\(\s*applyChatMode\(/, "outside, not inside");
+});
+
+/*
+ * Neither dropdown may call itself a listbox.
+ *
+ * Both did, and neither held options. The mode menu carries group headings,
+ * notes, one-of rows, switches and a file row with two buttons in it; the
+ * model menu carries an empty-state note and a footer with a "Check account
+ * usage" *button* buried inside. A listbox admits none of that, so a screen
+ * reader was told to expect a list of options and handed something else.
+ *
+ * The fix is no container role rather than a different one: listbox, menu and
+ * radiogroup all promise arrow-key navigation that is not implemented, and
+ * declaring one puts a reader into a mode where Tab — the navigation that
+ * does work, because every row is a real button — stops. Claiming a state we
+ * are not in is the mistake this codebase keeps paying for.
+ */
+test("the dropdowns do not claim to be listboxes", () => {
+  for (const id of ["mode-menu", "model-menu"]) {
+    const tag = provider.slice(provider.indexOf(`id="${id}"`));
+    const openTag = tag.slice(0, tag.indexOf(">"));
+    assert.doesNotMatch(openTag, /role=/, `#${id} must not declare a container role`);
+  }
+  assert.doesNotMatch(
+    provider,
+    /aria-haspopup="listbox"/,
+    "and neither button may announce a listbox popup"
+  );
+});
+
+/*
+ * A row that is one of a group says so with `aria-current`, which is valid on
+ * any element. `role="option"` and `aria-selected` mean something only inside
+ * a listbox, and there is no longer one to be inside.
+ */
+test("a chosen row is marked current, not selected", () => {
+  // Asserted against what is set, not against the file text: the comments
+  // explaining this change necessarily name the attributes they replaced.
+  assert.doesNotMatch(
+    js,
+    /setAttribute\(\s*"role"\s*,\s*"option"\s*\)/,
+    "no row is an option any more"
+  );
+  assert.doesNotMatch(
+    js,
+    /setAttribute\(\s*"aria-selected"/,
+    "and none claims listbox selection"
+  );
+  assert.match(
+    js,
+    /setAttribute\(\s*"aria-current"\s*,\s*"true"\s*\)/,
+    "the chosen row says it is the current one"
+  );
+});
+
+/*
+ * The switch keeps its role and its `aria-checked` — valid on a button, and
+ * the CSS draws `.menu-switch` from that same attribute, so the visible state
+ * and the announced state cannot drift apart.
+ */
+test("a toggle is still a switch, drawn from what it announces", () => {
+  assert.match(js, /setAttribute\("role", "switch"\)/, "a toggle announces itself as one");
+  assert.match(js, /setAttribute\("aria-checked"/, "with a state");
+  assert.match(css, /\[aria-checked="true"\] > \.menu-switch \{/, "which is what paints it");
+});
+
+/*
+ * The memory rows are two halves like everything else here.
+ *
+ * The provider posts the counts and answers the clicks; the webview draws the
+ * rows and asks for the counts. A posted message with no case is silent, and
+ * a row posting a type nothing handles is a control that does nothing — both
+ * failures look identical from the panel, which is why they are pinned here.
+ */
+test("the webview and the provider agree about memory", () => {
+  assert.match(provider, /type: "memory"/, "the provider posts the memory counts");
+  assert.match(js, /case "memory"/, "so the webview must handle them");
+
+  for (const type of ["requestMemory", "openMemory", "removeMemory"]) {
+    assert.match(js, new RegExp(`type: "${type}"`), `the webview posts ${type}`);
+    assert.match(provider, new RegExp(`case "${type}"`), `so the provider must handle ${type}`);
+  }
+});
+
+/*
+ * The counts are read when the menu opens, not watched.
+ *
+ * The global steering folder is outside every workspace root, so a file
+ * watcher covers the project half and misses the other — one scope current
+ * and one stale is worse than neither, because nothing on screen says which
+ * is which.
+ */
+test("opening the mode menu asks for the memory counts", () => {
+  const handler = js.slice(js.indexOf("modeBtn.addEventListener"));
+  const body = handler.slice(0, handler.indexOf("});"));
+  assert.match(body, /requestMemory/, "the counts are fetched as the menu opens");
+});
+
+/*
+ * The group draws rows and nothing else.
+ *
+ * An empty state was tried and removed: a lone "Add project memory" row
+ * already says there is none, and a line of prose above saying so is the menu
+ * explaining itself twice. It also had to be gated on whether the folders had
+ * been read yet, or it asserted "nothing yet" in the moment before the counts
+ * arrived — a whole failure mode that only existed to support the sentence.
+ */
+test("the memory group has no empty-state prose", () => {
+  const menu = js.slice(js.indexOf("function renderModeMenu("));
+  const at = menu.indexOf('"What Kiro always knows"');
+  assert.ok(at > 0, "the group must be found, or this checks nothing");
+  // To the end of renderModeMenu: the memory group is the last thing in it.
+  const body = menu.slice(at, menu.indexOf("\r\n  }"));
+  assert.doesNotMatch(body, /menu-note/, "no note is drawn under the memory rows");
+  assert.doesNotMatch(body, /Nothing yet/, "and no empty-state sentence");
+});
+
+/*
+ * An "add memory" row is an action and not a state. It must not wear the
+ * selection highlight (which means "this one of the group is chosen") or a
+ * switch (which means "this is on"), because it is neither.
+ */
+test("the add-memory rows are actions, not settings", () => {
+  const menu = js.slice(js.indexOf("function renderModeMenu("));
+  const group = menu.slice(menu.indexOf("for (const item of memory.add)"));
+  const rows = group.slice(0, group.indexOf("modeMenu.appendChild(row)"));
+  assert.doesNotMatch(rows, /role: "switch"/, "an add row is not a toggle");
+  // The option keys the row actually passes, rather than a substring search:
+  // "description:" contains "on:", so grepping for that passes either way.
+  const keys = (rows.match(/^\s*(\w+):/gm) || []).map((k) => k.trim());
+  assert.ok(keys.length > 0, "the row must pass options, or this checks nothing");
+  assert.ok(!keys.includes("on:"), "and it is not one of a chosen group");
+});
+
+/*
+ * A memory file row holds two buttons — open, and remove — so it cannot be a
+ * `menuRow`, which returns a `<button>`: a button cannot contain another one.
+ * Nesting them renders as one button in some engines and two in others, and
+ * the × stops being separately clickable.
+ */
+test("a memory file row is not itself a button", () => {
+  const fn = js.slice(js.indexOf("function memoryFileRow("));
+  const body = fn.slice(0, fn.indexOf("\n  }"));
+  assert.match(body, /createElement\("div"\)/, "the row is a div");
+  assert.doesNotMatch(
+    body,
+    /const row = document\.createElement\("button"\)/,
+    "the row must not be a button, because it contains two"
+  );
+  assert.match(body, /memoryAct = "open"/, "one button opens the file");
+  assert.match(body, /memoryAct = "remove"/, "the other removes it");
+});
+
+/*
+ * Removing is answered by the extension, never by the panel.
+ *
+ * A row that struck itself out on click would be claiming an outcome it
+ * cannot know — the confirmation may be cancelled, the path may be refused,
+ * the delete may fail. This is the permission card's rule: say nothing until
+ * the extension has answered, then redraw from what it reports.
+ */
+test("the panel does not decide a removal for itself", () => {
+  const handler = js.slice(js.indexOf('modeMenu.addEventListener("click"'));
+  const body = handler.slice(0, handler.indexOf("\n  });"));
+  const remove = body.slice(body.indexOf('=== "remove"'));
+  const untilReturn = remove.slice(0, remove.indexOf("return;"));
+  assert.match(untilReturn, /postMessage/, "it asks the extension");
+  assert.doesNotMatch(untilReturn, /\.remove\(\)|removeChild|renderModeMenu/, "and draws nothing");
+});
+
+/*
+ * The path is checked against the folders at the moment of the click. A path
+ * in a webview message is not a licence to delete a file: the panel could be
+ * stale, and a message is not proof of anything.
+ */
+test("a removal is refused unless the path is really a memory file", () => {
+  const fn = provider.slice(provider.indexOf("private async removeMemory("));
+  const body = fn.slice(0, fn.indexOf("\n  }"));
+  assert.match(body, /isListedMemory/, "the path has to be checked against the listing");
+  const guard = body.indexOf("isListedMemory");
+  const del = body.indexOf("fs.delete");
+  assert.ok(guard < del, "and checked before anything is deleted");
+});
+
+/*
+ * The exclude entry is written before the file is ever shown.
+ *
+ * The gap between creating a private memory file and hiding it from git is a
+ * gap in which `git add .` commits the very thing the row promised to hold
+ * back. Ordering is the whole protection here, and nothing about it is
+ * visible from the outside.
+ */
+test("a private memory file is hidden from git before it is opened", () => {
+  const fn = provider.slice(provider.indexOf("async openMemory("));
+  const body = fn.slice(0, fn.indexOf("\n  }"));
+  const excluded = body.indexOf("excludeFromGit");
+  const opened = body.indexOf("this.openPath");
+  assert.ok(excluded > 0, "a private file must be excluded from git");
+  assert.ok(opened > 0, "and then opened");
+  assert.ok(excluded < opened, "excluded first, or git can see it in between");
+});
+
+/*
+ * --git-common-dir, not --git-dir and not a `.git` joined onto the root. In a
+ * worktree `.git` is a file and the worktree's own gitdir has no info/; git
+ * reads the common directory's exclude. Getting this wrong works on the
+ * machine it was written on and silently leaves the file committable.
+ */
+test("the exclude file is found through git, not by guessing at .git", () => {
+  assert.match(provider, /"--git-common-dir"/, "the common dir is the one git reads");
+  assert.doesNotMatch(
+    provider,
+    /path\.join\([^)]*"\.git", "info"/,
+    "the path must never be assembled by hand"
+  );
+});
+
+/*
+ * The row says whether git really cannot see the file, rather than assuming
+ * it. A file that is already tracked is not ignored by any rule, and that is
+ * precisely the case where the reassuring label would be false.
+ */
+test("a private row's claim is checked against git, not assumed", () => {
+  assert.match(provider, /check-ignore/, "git is asked whether the file is ignored");
+  assert.match(provider, /git can see this/, "and the row says so when it is not");
+});
+
+/*
+ * It goes to the recycle bin. A menu is a careless place, this row sits under
+ * rows that merely open a file, and "I meant the other memory.md" must not be
+ * answered with "it is gone".
+ */
+test("a removed memory file is recoverable", () => {
+  assert.match(
+    provider,
+    /fs\.delete\(vscode\.Uri\.file\(target\), \{ useTrash: true \}\)/,
+    "removal must use the recycle bin, not an unlink"
+  );
+});
+
+/*
+ * Kiro reads AGENTS.md as memory too. A panel reporting "none yet" while Kiro
+ * is reading one is the exact confusion this feature exists to remove.
+ */
+test("AGENTS.md is reported as memory even though the button never writes one", () => {
+  assert.match(provider, /AGENTS.md/, "the provider has to look for it");
+});
+
 /** From the bar, Keep and Reject drive the open review rather than the turn. */
 test("the bar drives the open review when there is one", () => {
   assert.match(provider, /acceptActiveReview\(\)/);

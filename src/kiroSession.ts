@@ -3,7 +3,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import * as fsSync from "node:fs";
 import * as fs from "node:fs/promises";
-import { AcpClient } from "./acpClient";
+import { AcpClient, acpArgs } from "./acpClient";
 import { ActiveReviewInfo, ChangeReviewer } from "./changeReviewer";
 import { isReadOnlyTool, isWriteLikeTool } from "./writeTools";
 import { changedSinceBaseline, describeChange, TurnChange } from "./turnChanges";
@@ -391,7 +391,11 @@ export class KiroSession {
     const allowWrites = config.get<boolean>("allowFileWrites", true);
 
     let command = configured;
-    let extraArgs = config.get<string[]>("args", []);
+    // Kept apart, because they go on opposite sides of `acp`: what it takes to
+    // reach the binary comes first, what configures the agent comes after.
+    // See `acpArgs`.
+    let launchArgs: string[] = [];
+    const userArgs = config.get<string[]>("args", []);
 
     if (!command) {
       const found = await findKiro((line) => this.output.appendLine(line));
@@ -401,13 +405,13 @@ export class KiroSession {
         throw new Error("kiro-cli not found");
       }
       command = found.command;
-      extraArgs = [...found.extraArgs, ...extraArgs];
+      launchArgs = found.extraArgs;
     }
 
     this.client?.stop();
     this.client = new AcpClient({
       command,
-      args: [...extraArgs, "acp"],
+      args: acpArgs(launchArgs, userArgs),
       cwd: this.workspaceRoot(),
       env,
       onLog: (line) => this.output.appendLine(line),

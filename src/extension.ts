@@ -43,6 +43,26 @@ export function activate(context: vscode.ExtensionContext): void {
 
     vscode.commands.registerCommand("kiroChat.showHistory", () => provider.showHistory()),
 
+    // Kiro reads these files itself, on every turn. These commands only open
+    // them — the panel gave no sign they existed, which was the whole gap.
+    vscode.commands.registerCommand("kiroChat.openMemory", () => provider.openMemory("project")),
+
+    vscode.commands.registerCommand("kiroChat.openGlobalMemory", () =>
+      provider.openMemory("global")
+    ),
+
+    // Same folder as project memory, plus an entry in .git/info/exclude so it
+    // stays out of commits without a rule anyone else can see.
+    vscode.commands.registerCommand("kiroChat.openPrivateMemory", () =>
+      provider.openMemory("private")
+    ),
+
+    // How you always want Kiro to work. No file: it is instruction text put in
+    // front of every message, the same way the workflows already do it.
+    vscode.commands.registerCommand("kiroChat.editInstructions", () =>
+      provider.editInstructions()
+    ),
+
     // Extensions cannot place a view in the secondary sidebar themselves, but
     // VS Code lets the user move it. This just focuses the view first so the
     // built-in mover acts on the right one.

@@ -164,6 +164,100 @@ The choice survives panel moves and reloads and is shown on the sent message. Th
 are explicit request instructions layered over Kiro's ACP session. Plan also has a hard safety
 boundary in the extension: callback writes are refused and any direct Kiro write is restored.
 
+## Instructions: how Kiro should always work
+
+The mode menu has a group called **Instructions**, whose row shows what is currently set.
+Click it and a full-width box opens over the transcript. Whatever you write there goes in
+front of every message:
+
+```
+Always reply in Bahasa Malaysia.
+Use tabs, never spaces.
+Write the test before the fix.
+```
+
+**No file is created.** This is not memory — it is instruction text put in front of your
+message, the same way the Spec and Bug Fix workflows already work, with you holding the pen.
+It lives in the `kiroChat.instructions` setting, so it follows Settings Sync.
+
+The difference from memory is worth keeping straight:
+
+| | Memory | Instructions |
+| --- | --- | --- |
+| Holds | facts Kiro should know | directives Kiro should follow |
+| Example | "this project uses pnpm" | "always write the test first" |
+| Lives in | a markdown file | a setting, no file |
+
+Enter makes a new line — this is a list, not a chat box. **Ctrl+Enter** saves, **Escape**
+closes. Also on the command palette as **Kiro Chat: Your Instructions**.
+
+Keep it short. Unlike a memory file, which Kiro opens when it wants it, this text goes with
+**every** message, so its length is spent on every turn. There is a 4000-character cap; past
+it the box warns you rather than dropping the end in silence.
+
+## Memory: what Kiro knows before you say anything
+
+The same dropdown has a group called **What Kiro always knows**. It lists the markdown files
+Kiro reads at the start of every turn, opens one for editing, and removes one you no longer
+want.
+
+The extension does not implement this. Kiro CLI already loads these files itself, from three
+places:
+
+| Where | Applies to |
+| --- | --- |
+| `.kiro/steering/*.md` | this project |
+| `AGENTS.md` in the project root | this project |
+| `~/.kiro/steering/*.md` | every project you open |
+
+Measured against `kiro-cli acp` 2.20.2 rather than taken from documentation: a fact placed in
+any of these is answered with **zero tool calls**, which is what shows the text was already in
+the prompt rather than fetched on demand. The YAML frontmatter is optional — a bare `.md` in
+the steering folder is loaded — and editing a file part-way through a chat changes the *next*
+answer in that same conversation, so there is no need to start a new one.
+
+Adding memory creates `.kiro/steering/memory.md`, never a root-level `AGENTS.md`: Kiro reads
+both, but a file at the repo root is one you might commit, and that is a larger consequence
+than a menu click implies. An `AGENTS.md` you already have is listed, because a panel saying
+"nothing yet" beside a file Kiro is reading would be the exact confusion this is meant to fix.
+
+Removing asks first and sends the file to the recycle bin.
+
+### The three kinds
+
+| Row | File | Who sees it |
+| --- | --- | --- |
+| **Add project memory** | `.kiro/steering/memory.md` | anyone you share the repo with |
+| **Add local memory** | `.kiro/steering/memory.local.md` | only you |
+| **Add global memory** | `~/.kiro/steering/memory.md` | only you, in every project |
+
+The first two sit in the same folder and differ only by file name, so the row that needs a
+qualifier gets one: **(not committed)**. Global memory is not committed either, but for a
+different reason — it lives in your home folder, outside any repository — so its row says
+*this machine only* rather than letting that qualifier imply otherwise.
+
+### Local memory in a shared repository
+
+`.kiro/steering/` is part of the project, so in a shared repo a memory file is one `git add`
+away from being everybody's. **Add local memory** creates
+`.kiro/steering/memory.local.md` and adds it to `.git/info/exclude`.
+
+That file lives inside `.git`, which is never committed. So unlike a `.gitignore` line — which
+would itself be committed, broadcasting the name of the file you were trying to keep to
+yourself — nothing reaches your teammates: not the file, not the rule. The file stays exactly
+where Kiro reads it, and `git status` stays clean.
+
+You can keep both: `memory.md` for what the team should share, `memory.local.md` for your own
+notes.
+
+The row tells you the truth about the file rather than assuming. If git can still see it —
+most often because it was committed before being excluded, and an ignore rule does nothing
+to a tracked file — the row says **"git can see this"** instead of claiming it is not
+committed.
+
+For a shared agent configuration with its own `resources` list, set
+`kiroChat.args` to `["--agent", "my-agent"]`.
+
 ## If it doesn't work
 
 Open the command palette (`Ctrl+Shift+P`) and run **Kiro Chat: Show Log**. It shows exactly
@@ -243,7 +337,7 @@ All optional.
 | Setting | What it does |
 | --- | --- |
 | `kiroChat.command` | Path to `kiro-cli`. Leave empty to auto-detect. |
-| `kiroChat.args` | Extra arguments, e.g. `["--agent", "my-agent"]`. |
+| `kiroChat.args` | Extra arguments for `kiro-cli acp`, e.g. `["--agent", "my-agent"]`. Added after `acp`, where its options belong. |
 | `kiroChat.env` | Extra environment variables for Kiro. |
 | `kiroChat.allowFileWrites` | Let Kiro keep its edits. Turn off and every edit is undone at the end of the turn — see the note below. |
 | `kiroChat.autoApproveTools` | Skip the approval popup. Off by default. |
