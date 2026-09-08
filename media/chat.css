@@ -2327,3 +2327,270 @@ button.change-summary:hover {
   gap: 8px;
   margin-top: 10px;
 }
+
+/* --- slash commands ------------------------------------------------ */
+
+/*
+ * Anchored on .composer rather than on a wrap, for the same reason the
+ * instructions box is: a menu as wide as one control cannot show a command and
+ * what it does side by side, and both are needed to pick one. It sits above
+ * the whole composer, so the chips and the box being typed into stay visible.
+ */
+.slash-menu {
+  left: var(--gap);
+  right: var(--gap);
+  bottom: 100%;
+  max-height: 280px;
+  overflow-y: auto;
+  margin-bottom: 6px;
+}
+
+/*
+ * Its own background and hover rather than leaning on `.popup button`.
+ *
+ * A descendant rule does not travel with the element: move a row out of the
+ * menu and it silently goes back to being painted primary blue by the global
+ * `button` style, which outranks a bare class on hover. Saying it here keeps
+ * the row's appearance a property of the row.
+ */
+.slash-item {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  width: 100%;
+  text-align: left;
+  padding: 5px 9px;
+  border-radius: 3px;
+  background: none;
+  color: var(--vscode-dropdown-foreground);
+}
+
+.slash-item:hover,
+.slash-item.active {
+  background: var(--vscode-list-hoverBackground);
+}
+
+/* The keyboard's position, which a hover tint alone would not distinguish. */
+.slash-item.active {
+  background: var(--vscode-list-activeSelectionBackground);
+  color: var(--vscode-list-activeSelectionForeground);
+}
+
+.slash-name {
+  flex: 0 0 auto;
+  font-family: var(--vscode-editor-font-family, monospace);
+}
+
+.slash-desc {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.9em;
+  opacity: 0.75;
+}
+
+/* --- command results ----------------------------------------------- */
+
+/*
+ * Not an agent bubble. `/usage` returns a table and `/tools` a list; shown in a
+ * reply bubble they read as something the model said, in a turn nobody
+ * started. The border is the panel's ordinary widget border, not the focus
+ * colour a permission card uses — this one is not waiting for anything.
+ */
+.command-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 5px 0 10px;
+  padding: 9px 11px;
+  border: 1px solid var(--vscode-panel-border);
+  border-radius: 5px;
+  background: var(--vscode-editorWidget-background);
+}
+
+/*
+ * A literal colour at the end of the chain, not just another variable.
+ *
+ * `border-color: var(--a, var(--b))` with both undefined is an invalid value,
+ * and an invalid border-color falls back to `currentColor` — so a theme
+ * missing both keys drew a bright white box around a failed command, which
+ * reads as emphasis rather than as an error.
+ */
+.command-failed {
+  border-color: var(
+    --vscode-inputValidation-errorBorder,
+    var(--vscode-errorForeground, #be1100)
+  );
+}
+
+.command-label {
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 0.9em;
+  opacity: 0.8;
+}
+
+.command-body {
+  overflow-wrap: anywhere;
+}
+
+.command-waiting {
+  opacity: 0.7;
+}
+
+.command-note {
+  font-size: 0.9em;
+  color: var(--vscode-descriptionForeground);
+}
+
+
+.rewind-turn {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  text-align: left;
+  padding: 6px 9px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: none;
+  color: inherit;
+}
+
+.rewind-turn:hover:not(:disabled) {
+  background: var(--vscode-list-hoverBackground);
+  border-color: var(--vscode-panel-border);
+}
+
+.rewind-turn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.rewind-turn.chosen {
+  border-color: var(--vscode-focusBorder);
+  opacity: 1;
+}
+
+.rewind-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rewind-meta {
+  font-size: 0.85em;
+  color: var(--vscode-descriptionForeground);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/*
+ * Terminal output keeps its own alignment.
+ *
+ * Kiro holds two columns apart with runs of spaces, which HTML collapses, so
+ * `/help` and `/tools` arrived with each name run into its description. The
+ * box scrolls on its own rather than making the whole conversation scroll
+ * sideways — a sidebar is three inches wide.
+ */
+.command-out {
+  overflow-x: auto;
+  margin: 0;
+}
+
+/* No background or border reset here: `.msg pre` is scoped to a message
+   bubble and a command card is not one, so there is nothing to undo. */
+.command-out pre {
+  margin: 0;
+  padding: 0;
+  white-space: pre;
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 0.92em;
+  line-height: 1.45;
+}
+
+/* --- /help ---------------------------------------------------------- */
+
+/*
+ * Layout is shared; being a control is not.
+ *
+ * `.help-line` is the two-column shape and nothing else, so the unavailable
+ * rows — plain divs, since there is nothing to click — take it without also
+ * taking a hover tint that would imply they do something. Only `.help-row` is
+ * a button, and it cancels `button:hover` with a bare `.help-row:hover`: a
+ * `:not()` on the hover selector reads as a different selector to the guard
+ * that checks this, and more importantly it is not needed once the two kinds
+ * of row are different elements.
+ */
+.help-line {
+  display: flex;
+  align-items: baseline;
+  gap: 9px;
+  width: 100%;
+  text-align: left;
+  padding: 3px 6px;
+  border-radius: 3px;
+}
+
+.help-row {
+  border: none;
+  background: none;
+  color: inherit;
+}
+
+.help-row:hover {
+  background: var(--vscode-list-hoverBackground);
+}
+
+/* Wide enough for the longest name Kiro has (`/knowledge`), so every
+   description starts on the same column instead of one row jutting out. */
+.help-name {
+  flex: 0 0 auto;
+  min-width: 86px;
+  font-family: var(--vscode-editor-font-family, monospace);
+}
+
+/* Wraps rather than being clipped: the description is the half that says what
+   the command is for, and a sidebar has no room to show it on one line. */
+.help-desc {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 0.92em;
+  color: var(--vscode-descriptionForeground);
+}
+
+.help-heading {
+  margin-top: 6px;
+  padding: 0 6px;
+  font-size: 0.85em;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  opacity: 0.7;
+}
+
+.help-blocked {
+  opacity: 0.75;
+  cursor: default;
+}
+
+/* --- Kiro reasoning out loud --------------------------------------- */
+
+/*
+ * Lives in the steps list, which already opens while the turn runs and folds
+ * when it ends. Set apart from the tool rows below it by the rule down its
+ * left, and muted: this is the model's working, not its answer, and it should
+ * not compete with the reply for attention.
+ */
+.thought {
+  margin: 0 0 6px;
+  padding: 2px 0 2px 9px;
+  border-left: 2px solid var(--vscode-panel-border);
+  color: var(--vscode-descriptionForeground);
+  font-size: 0.94em;
+  line-height: 1.5;
+  /* The model's own line breaks are meaningful; long lines still wrap. */
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}

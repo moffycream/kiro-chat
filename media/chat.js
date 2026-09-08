@@ -14,6 +14,7 @@
   const attachBtn = el("attach");
   const attachMenu = el("attach-menu");
   const permissionBar = el("permission-bar");
+  const slashMenu = el("slash-menu");
   const modeBtn = el("mode-btn");
   const modeLabel = el("mode-label");
   const modeMenu = el("mode-menu");
@@ -145,14 +146,27 @@
     saveState();
   }
 
-  function recordAgent(text, tools) {
-    if (!text.trim() && (!tools || tools.length === 0)) return;
-    history.push({ role: "agent", text, tools: tools || [] });
+  function recordAgent(text, tools, thought) {
+    if (!text.trim() && (!tools || tools.length === 0) && !thought) return;
+    // The thought is stored for the same reason a permission is: reopening a
+    // chat should still show that Kiro reasoned, not a gap where the working
+    // used to be.
+    history.push({ role: "agent", text, tools: tools || [], thought: thought || "" });
     saveState();
   }
 
   function recordSimple(role, text) {
     history.push({ role, text });
+    saveState();
+  }
+
+  /**
+   * A command belongs in the chat's record for the same reason a permission
+   * does: reopening the chat should show that `/compact` was run, not a gap
+   * where the conversation appears to shrink for no reason.
+   */
+  function recordCommand(label, text, ok) {
+    history.push({ role: "command", label: label || "", text: text || "", ok: ok !== false });
     saveState();
   }
 
@@ -636,15 +650,6 @@
     scroll(was);
   }
 
-  /*
-   * The steps group: one line saying what is happening, with the detail
-   * folded away behind it.
-   *
-   * A turn can run a dozen tools, and listing them all pushed the answer off
-   * the screen before it arrived. The header carries the state — and the
-   * elapsed time, which is the thing that tells a slow turn from a stuck one
-   * — and the list opens on a click.
-   */
   function buildSteps() {
     const steps = document.createElement("div");
     steps.className = "steps";
@@ -744,6 +749,44 @@
   }
 
   /**
+   * Kiro reasoning out loud, before it answers.
+   *
+   * `agent_thought_chunk` has always been translated into a `thought` message
+   * and the webview had no case for it, so it went into the switch and
+   * vanished — the silent-drop failure this codebase keeps paying for. Nobody
+   * noticed because kiro-cli 2.20.2 never sends one: measured on
+   * `claude-opus-4.7` with `/effort high` against a puzzle written to force
+   * reasoning, and 22 `agent_message_chunk` arrived with no thought among
+   * them. The strings are in the binary though, so a future build may switch
+   * this on, and it would switch on invisibly.
+   *
+   * It goes in the steps list rather than beside the answer, because that list
+   * is already "what Kiro is doing" — it opens while the turn runs, folds when
+   * it ends, and stays open if the user opened it. A second collapsible block
+   * would be a second thing to keep in step. It is prepended: Kiro reasons,
+   * then acts, and the rows below are the acting.
+   */
+  function appendThought(text) {
+    if (!text) return;
+    const bubble = startThinking();
+    if (!bubble.thought) {
+      bubble.thought = document.createElement("div");
+      bubble.thought.className = "thought";
+      bubble.tools.prepend(bubble.thought);
+    }
+    // textContent, not markdown: this is the model's own working, and running
+    // it through a renderer would style half of it as headings and lists.
+    bubble.thought.textContent += text;
+    // Shown, but not unfolded. Tool rows in this same list wait for a click,
+    // and two things in one list behaving differently is worse than either
+    // rule on its own. The header says "Thinking…" while it runs and
+    // "Thought in 4s" after, so there is no doubt something is in there.
+    bubble.group.steps.hidden = false;
+    updateStepsLabel(bubble);
+    return bubble;
+  }
+
+  /**
    * The header says what Kiro is doing right now.
    *
    * "Working…" alone does not answer the question you actually have while
@@ -755,7 +798,9 @@
     if (!bubble || !bubble.group || !bubble.startedAt) return;
     const steps = bubble.toolList;
     if (steps.length === 0) {
-      bubble.group.label.textContent = "Working…";
+      // "Working…" answers the wrong question when the answer is known:
+      // before the first tool call, thinking is exactly what it is doing.
+      bubble.group.label.textContent = bubble.thought ? "Thinking…" : "Working…";
       bubble.group.head.title = "";
       return;
     }
@@ -809,8 +854,17 @@
        * different indent from the ordinary one. Two versions of the same line,
        * neither of them wrong on its own and obviously mismatched together.
        * Dropping it means every header in the transcript has one shape.
+       *
+       * Unless Kiro reasoned. Then there *is* something to unfold, and hiding
+       * the header would throw the reasoning away at the end of every turn
+       * that used no tools — which is most of them.
        */
-      group.steps.hidden = true;
+      if (!target.thought) {
+        group.steps.hidden = true;
+        return;
+      }
+      group.steps.hidden = false;
+      group.label.textContent = `Thought${took_}`;
       return;
     }
     // The log of what ran stays on screen for every turn that ran anything.
@@ -880,6 +934,216 @@
    * restored from a stored chat. It is the same card with its buttons spent,
    * rather than a second way of drawing the same thing.
    */
+  // ---------------------------------------------------------------
+  // Slash command results
+  //
+  // A command's answer is not a reply. `/usage` returns a table and `/tools` a
+  // list, and putting either in an agent bubble would show it as something the
+  // model said in a turn nobody started. These get their own card, labelled
+  // with the command that produced them.
+  // ---------------------------------------------------------------
+
+  /** The card waiting on an answer, so the answer knows where to land. */
+  let runningCommand = null;
+
+  /**
+   * A command's answer is terminal output, not markdown.
+   *
+   * `/help` returns 51 lines whose two columns are held apart by runs of
+   * spaces, and every one of them fell through the markdown renderer to the
+   * paragraph branch: 51 `<p>`s with a margin between each, and HTML
+   * collapsing the runs of spaces so the command name ran straight into its
+   * description. `/tools`, `/model`, `/agent` and `/context` are all the same
+   * shape. Preserving the alignment Kiro wrote is the whole job.
+   *
+   * The split is on a newline because that is what separates the two kinds
+   * cleanly: every aligned listing is multi-line, and every one-line answer —
+   * "Conversation too short to compact.", "No MCP servers configured" — is a
+   * sentence, which reads worse in a monospace block than in prose.
+   */
+  function renderCommandOutput(text) {
+    const body = String(text || "");
+    if (!body.includes("\n")) return renderMarkdown(body);
+    // Scrolls inside its own box. A sidebar is three inches wide and the
+    // alternative is a horizontal scrollbar on the whole conversation.
+    return '<div class="command-out"><pre>' + escapeHtml(body) + "</pre></div>";
+  }
+
+  function addCommandCard(label, text, ok) {
+    const was = atBottom();
+    const card = document.createElement("section");
+    card.className = "command-card" + (ok === false ? " command-failed" : "");
+
+    const head = document.createElement("div");
+    head.className = "command-label";
+    head.textContent = label;
+    card.appendChild(head);
+
+    const body = document.createElement("div");
+    body.className = "command-body";
+    if (text === undefined) {
+      body.classList.add("command-waiting");
+      body.textContent = "Running…";
+    } else {
+      body.innerHTML = renderCommandOutput(text);
+    }
+    card.appendChild(body);
+
+    messagesEl.appendChild(card);
+    if (was) messagesEl.scrollTop = messagesEl.scrollHeight;
+    return card;
+  }
+
+  /**
+   * How much of the transcript survives a rewind.
+   *
+   * `keep` counts *user messages*, because that is what a Kiro turn is: the
+   * panel's own entries and Kiro's log indices are two different numberings
+   * and nothing guarantees they line up, but "the first N things I said" is
+   * the same span in both. Everything before the message after the last kept
+   * one goes — which keeps that turn's reply, its steps and its permissions.
+   *
+   * A transcript holding fewer user messages than Kiro kept is a chat whose
+   * head has been trimmed from storage; there is nothing to remove, and
+   * removing anything would be guessing.
+   */
+  function trimHistoryToTurns(items, keep) {
+    let seen = 0;
+    for (let i = 0; i < items.length; i++) {
+      if (items[i].role !== "user") continue;
+      seen++;
+      if (seen > keep) return items.slice(0, i);
+    }
+    return items.slice();
+  }
+
+  /**
+   * `/help`, drawn from Kiro's own command list instead of its text dump.
+   *
+   * Kiro's `/help` is a 70-column table held together by runs of spaces. Even
+   * preformatted it needs sideways scrolling on every line of a sidebar, and
+   * it advertises six commands this panel will not run. The same information
+   * arrives structured in `commands/available`, which is where the menu comes
+   * from too — so this is not a second source, it is the same one laid out to
+   * fit and honest about what works here.
+   */
+  function addHelpCard() {
+    const was = atBottom();
+    const card = document.createElement("section");
+    card.className = "command-card help-card";
+
+    const head = document.createElement("div");
+    head.className = "command-label";
+    head.textContent = "/help";
+    card.appendChild(head);
+
+    const note = document.createElement("div");
+    note.className = "command-note";
+    note.textContent = "Type / in the message box to pick one of these.";
+    card.appendChild(note);
+
+    for (const command of slashCommands.filter((c) => c.offered)) {
+      // A real button: a list of commands that cannot be clicked is a list
+      // pretending not to be a control. It goes through `acceptSlash`, so a
+      // row here behaves exactly as the same row in the menu does.
+      const row = document.createElement("button");
+      row.type = "button";
+      row.className = "help-line help-row";
+      const name = document.createElement("span");
+      name.className = "help-name";
+      name.textContent = "/" + command.name;
+      const desc = document.createElement("span");
+      desc.className = "help-desc";
+      desc.textContent = command.description || "";
+      row.append(name, desc);
+      row.title = command.hint ? `/${command.name} ${command.hint}` : `/${command.name}`;
+      row.addEventListener("click", () => acceptSlash(command));
+      card.appendChild(row);
+    }
+
+    // The ones Kiro's own /help would offer and this panel will not run. Named
+    // rather than silently missing: someone comparing the two lists deserves
+    // the reason, and it is the same reason they would hit by typing one.
+    const blocked = slashCommands.filter((c) => c.runnable === false);
+    if (blocked.length > 0) {
+      const label = document.createElement("div");
+      label.className = "help-heading";
+      label.textContent = "In the Kiro CLI, but not here";
+      card.appendChild(label);
+      for (const command of blocked) {
+        const row = document.createElement("div");
+        row.className = "help-line help-blocked";
+        const name = document.createElement("span");
+        name.className = "help-name";
+        name.textContent = "/" + command.name;
+        const desc = document.createElement("span");
+        desc.className = "help-desc";
+        desc.textContent = command.reason || "";
+        row.append(name, desc);
+        card.appendChild(row);
+      }
+    }
+
+    messagesEl.appendChild(card);
+    if (was) messagesEl.scrollTop = messagesEl.scrollHeight;
+    return card;
+  }
+
+  /**
+   * The turn picker.
+   *
+   * Kiro sends the turns newest first and that order is kept: the turn you
+   * want to go back to is nearly always a recent one, and re-sorting would
+   * also break the position-to-`logIndex` mapping the rewind is sent with.
+   */
+  function addRewindCard(turns) {
+    const was = atBottom();
+    const card = document.createElement("section");
+    card.className = "command-card rewind-card";
+
+    const head = document.createElement("div");
+    head.className = "command-label";
+    head.textContent = "/rewind";
+    card.appendChild(head);
+
+    const note = document.createElement("div");
+    note.className = "command-note";
+    note.textContent = turns.length
+      ? "Go back to a turn. Everything after it is dropped, and Kiro carries on in a copy of this conversation."
+      : "There is nothing to rewind to yet.";
+    card.appendChild(note);
+
+    turns.forEach((turn, index) => {
+      const row = document.createElement("button");
+      row.type = "button";
+      row.className = "rewind-turn";
+      const label = document.createElement("span");
+      label.className = "rewind-label";
+      label.textContent = turn.label || "(no message)";
+      const meta = document.createElement("span");
+      meta.className = "rewind-meta";
+      meta.textContent = turn.responseSnippet || "";
+      row.append(label, meta);
+      row.title = turn.group ? `${turn.label} — ${turn.group} of the context` : turn.label;
+      row.addEventListener("click", () => {
+        for (const button of card.querySelectorAll("button")) button.disabled = true;
+        row.classList.add("chosen");
+        note.textContent = "Rewinding…";
+        vscode.postMessage({
+          type: "rewindTo",
+          logIndex: turn.logIndex,
+          index,
+          turnCount: turns.length,
+        });
+      });
+      card.appendChild(row);
+    });
+
+    messagesEl.appendChild(card);
+    if (was) messagesEl.scrollTop = messagesEl.scrollHeight;
+    return card;
+  }
+
   function addPermissionCard(permission) {
     const was = atBottom();
     const card = document.createElement("section");
@@ -1057,7 +1321,11 @@
         if (timer) clearInterval(timer);
         current.root.remove();
       } else {
-        recordAgent(buffer, current.toolList);
+        recordAgent(
+          buffer,
+          current.toolList,
+          current.thought ? current.thought.textContent : ""
+        );
       }
     }
     current = null;
@@ -2266,11 +2534,218 @@
     inputEl.style.height = Math.min(inputEl.scrollHeight, 200) + "px";
   }
 
+  // ---------------------------------------------------------------
+  // Kiro's own slash commands.
+  //
+  // The list comes from Kiro itself (`_kiro.dev/commands/available`), so this
+  // end invents nothing — it filters, draws and routes. Deciding whether a
+  // name is real happens twice on purpose: here, so the composer knows whether
+  // to open a menu, and again in the extension against the live session, which
+  // is the gate. Only the second one is a check; this one is an affordance.
+  // ---------------------------------------------------------------
+
+  let slashCommands = [];
+  let slashMatches = [];
+  let slashIndex = 0;
+
+  /**
+   * Read what has been typed as a command — the twin of `parseSlashInput` in
+   * `src/slashCommands.ts`, which cannot be imported here because the webview
+   * has no build step. Both must agree on one rule: a leading slash is only a
+   * command when the name is one Kiro actually has. Otherwise "/usr/bin/env is
+   * on my PATH" would be eaten instead of sent.
+   */
+  function parseSlash(text) {
+    const trimmed = String(text || "").trim();
+    if (!trimmed.startsWith("/")) return null;
+    const match = /^\/([A-Za-z][A-Za-z0-9_-]*)(?:\s+([\s\S]*))?$/.exec(trimmed);
+    if (!match) return null;
+    const name = match[1].toLowerCase();
+    const known = slashCommands.find((c) => c.name.toLowerCase() === name);
+    if (!known) return null;
+    return { name: known.name, value: (match[2] || "").trim(), command: known };
+  }
+
+  /**
+   * Prefix hits first, then anywhere in the name, then the description.
+   *
+   * Over the offered commands only. The full list is kept for `parseSlash`,
+   * which has to *recognise* `/quit` in order to explain it — but a command
+   * the panel will not run has no business being offered in a menu.
+   */
+  function matchSlash(query) {
+    const offered = slashCommands.filter((c) => c.offered);
+    const q = String(query || "").toLowerCase();
+    if (!q) return offered;
+    const starts = [];
+    const contains = [];
+    const described = [];
+    for (const c of offered) {
+      const name = c.name.toLowerCase();
+      if (name.startsWith(q)) starts.push(c);
+      else if (name.includes(q)) contains.push(c);
+      else if (String(c.description || "").toLowerCase().includes(q)) described.push(c);
+    }
+    return starts.concat(contains, described);
+  }
+
+  function closeSlashMenu() {
+    slashMenu.hidden = true;
+    slashMenu.innerHTML = "";
+    slashMatches = [];
+    slashIndex = 0;
+    // The textarea keeps focus throughout, so it is what carries the menu's
+    // state. Left set, it would go on pointing at a row that no longer exists
+    // — which is also how a reader is told the list has closed.
+    inputEl.removeAttribute("aria-activedescendant");
+  }
+
+  function renderSlashMenu() {
+    slashMenu.innerHTML = "";
+    slashMatches.forEach((command, index) => {
+      const row = document.createElement("button");
+      row.type = "button";
+      // Focus never moves here — the arrows only move this highlight — so the
+      // row has to be addressable by id for `aria-activedescendant` to name it.
+      row.id = "slash-option-" + index;
+      row.setAttribute("role", "option");
+      row.setAttribute("aria-selected", index === slashIndex ? "true" : "false");
+      row.className = "slash-item" + (index === slashIndex ? " active" : "");
+      const name = document.createElement("span");
+      name.className = "slash-name";
+      name.textContent = "/" + command.name;
+      const desc = document.createElement("span");
+      desc.className = "slash-desc";
+      desc.textContent = command.description || "";
+      row.append(name, desc);
+      row.title = command.hint ? `/${command.name} ${command.hint}` : `/${command.name}`;
+      // `mousedown`, not `click`: the textarea loses focus first otherwise,
+      // and the blur handler closes the menu out from under the click.
+      row.addEventListener("mousedown", (event) => {
+        event.preventDefault();
+        acceptSlash(command);
+      });
+      slashMenu.appendChild(row);
+    });
+    slashMenu.hidden = slashMatches.length === 0;
+    if (slashMenu.hidden) inputEl.removeAttribute("aria-activedescendant");
+    else inputEl.setAttribute("aria-activedescendant", "slash-option-" + slashIndex);
+  }
+
+  /**
+   * Open the menu only while the *name* is being typed.
+   *
+   * Once a space has been typed the user is writing an argument, and a menu
+   * of commands over the top of that is in the way — it also cannot help,
+   * since Kiro describes an argument only as a hint string.
+   */
+  function updateSlashMenu() {
+    /*
+     * Not while a turn is running.
+     *
+     * `submit()` refuses to send a message while busy, but the menu answered
+     * Enter itself and went straight to `runSlash` — so mid-turn, with Send
+     * disabled, Enter on the menu fired a command anyway and Kiro refused it
+     * with "Kiro is still working on the last message." The panel was offering
+     * something it knew would fail. `setBusy` disables Send and not the
+     * textarea, so the box keeps focus for most of a turn and this is easy to
+     * reach by accident.
+     */
+    if (busy) return closeSlashMenu();
+    if (!slashCommands.length) return closeSlashMenu();
+    const value = inputEl.value;
+    const match = /^\/([A-Za-z0-9_-]*)$/.exec(value);
+    if (!match) return closeSlashMenu();
+    slashMatches = matchSlash(match[1]);
+    slashIndex = 0;
+    renderSlashMenu();
+  }
+
+  /**
+   * Take a command out of the menu.
+   *
+   * One that needs no argument runs straight away — that is what pressing
+   * Enter on a highlighted row is asking for, and making `/compact` need a
+   * second Enter to do the only thing it can do is friction for its own sake.
+   * One that takes an argument is completed into the box instead, with the
+   * trailing space, so the next keystroke is the argument.
+   */
+  function acceptSlash(command) {
+    closeSlashMenu();
+    const takesArgument = Boolean(command.hint) || (command.subcommands || []).length > 0;
+    if (takesArgument) {
+      inputEl.value = "/" + command.name + " ";
+      inputEl.focus();
+      resize();
+      return;
+    }
+    inputEl.value = "";
+    resize();
+    runSlash(command.name, "");
+  }
+
+  /**
+   * Send a command on its way. `/rewind` asks for its turn list first.
+   *
+   * A command Kiro has but the panel cannot run is answered here rather than
+   * posted. It used to be unrecognised, which meant it fell through to the
+   * message path and "/quit" was sent to the model as a prompt nobody wrote —
+   * and `/help` advertises exactly those commands, so it was the natural thing
+   * to try next.
+   */
+  function runSlash(name, value) {
+    /*
+     * The same refusal, at the choke point every route passes through.
+     *
+     * Closing the menu covers the composer, but a `/help` card stays on screen
+     * across a turn and its rows are real buttons. A visible control that goes
+     * quiet when clicked looks broken, so this one says why — unlike the menu,
+     * which simply does not appear.
+     */
+    if (busy) {
+      addCommandCard(
+        "/" + name,
+        "Kiro is still working on the last message. Wait for it to finish, or press Stop.",
+        false
+      );
+      return;
+    }
+    const command = slashCommands.find((c) => c.name === name);
+    if (command && command.runnable === false) {
+      addCommandCard("/" + name, "**/" + name + "** " + command.reason, false);
+      return;
+    }
+    // Answered from the list rather than from Kiro's own text dump. Same
+    // source — `commands/available` is where both come from — but the
+    // structured form can be laid out to fit a sidebar, and it can say which
+    // commands actually run here. See `addHelpCard`.
+    if (name === "help" && !value) {
+      addHelpCard();
+      return;
+    }
+    if (name === "rewind" && !value) {
+      vscode.postMessage({ type: "listRewind" });
+      return;
+    }
+    vscode.postMessage({ type: "runCommand", name, value });
+  }
+
   function submit() {
     // The Send button is disabled while busy, but Enter bypasses it, which
     // used to start a second turn on top of the running one.
     if (busy) return;
     const text = inputEl.value.trim();
+
+    // A command is not a message: it goes to Kiro's command endpoint, not into
+    // the conversation, and no attachment rides along with it.
+    const slash = parseSlash(text);
+    if (slash) {
+      inputEl.value = "";
+      closeSlashMenu();
+      resize();
+      runSlash(slash.name, slash.value);
+      return;
+    }
     /*
      * "Look at these" with no words is a real message, but only the first
      * time. Attachments stay on the row after they have been sent, so without
@@ -2296,9 +2771,42 @@
     submit();
   });
 
-  inputEl.addEventListener("input", resize);
+  inputEl.addEventListener("input", () => {
+    resize();
+    updateSlashMenu();
+  });
+
+  // Clicking away is a dismissal. Deferred, because a click *on* a row would
+  // otherwise be cancelled by this before it is delivered.
+  inputEl.addEventListener("blur", () => setTimeout(closeSlashMenu, 120));
 
   inputEl.addEventListener("keydown", (event) => {
+    /*
+     * While the menu is open it owns the arrows, Enter, Tab and Escape.
+     *
+     * Enter especially: it must not fall through to `submit()`, or picking a
+     * command out of the list would also send whatever was in the box as a
+     * message — the half-typed name.
+     */
+    if (!slashMenu.hidden && slashMatches.length > 0) {
+      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+        event.preventDefault();
+        const step = event.key === "ArrowDown" ? 1 : -1;
+        slashIndex = (slashIndex + step + slashMatches.length) % slashMatches.length;
+        renderSlashMenu();
+        return;
+      }
+      if (event.key === "Enter" || event.key === "Tab") {
+        event.preventDefault();
+        acceptSlash(slashMatches[slashIndex]);
+        return;
+      }
+      if (event.key === "Escape") {
+        event.preventDefault();
+        closeSlashMenu();
+        return;
+      }
+    }
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
       submit();
@@ -3183,6 +3691,12 @@
       }
         break;
 
+      // Kiro reasoning out loud. It had no case here at all, so every one of
+      // these went into the switch and vanished.
+      case "thought":
+        appendThought(message.text || "");
+        break;
+
       case "turnEnd":
         finishAgentBubble();
         break;
@@ -3211,6 +3725,72 @@
             : `Put ${message.restored} files back as they were.`
         );
         break;
+
+      /*
+       * Kiro's own command list, which is the whole source of the `/` menu.
+       * It arrives once per session, and again whenever this panel is rebuilt.
+       */
+      case "commands":
+        slashCommands = message.commands || [];
+        updateSlashMenu();
+        break;
+
+      /*
+       * One "Running…" card at a time, and the old one goes.
+       *
+       * The provider's message handler is async and not serialised, so two
+       * commands started in quick succession can both post this before either
+       * answers. That left the first card saying "Running…" for the rest of
+       * the session — its result arrived, found `runningCommand` already
+       * pointing at the second card, and was appended as a *third* card. The
+       * user saw the same command twice, once of them permanently spinning.
+       */
+      case "commandRunning":
+        if (runningCommand) runningCommand.remove();
+        runningCommand = addCommandCard(message.label, undefined);
+        break;
+
+      case "commandResult": {
+        // The waiting card if there is one, so a command does not leave
+        // "Running…" on screen beside its own answer.
+        const card = runningCommand;
+        runningCommand = null;
+        if (card) card.remove();
+        addCommandCard(message.label, message.text, message.ok);
+        recordCommand(message.label, message.text, message.ok);
+        break;
+      }
+
+      case "rewindTurns": {
+        const card = runningCommand;
+        runningCommand = null;
+        if (card) card.remove();
+        addRewindCard(message.turns || []);
+        break;
+      }
+
+      /*
+       * The rewind landed. Kiro has forgotten everything after the chosen
+       * turn, so the panel must too — a transcript showing messages Kiro can
+       * no longer be asked about is the same lie as a permission card that
+       * claims an answer nobody received.
+       */
+      case "rewound": {
+        runningCommand = null;
+        const before = history.length;
+        history = trimHistoryToTurns(history, Number(message.keptTurns) || 0);
+        current = null;
+        buffer = "";
+        restoreHistory(history);
+        addBubble(
+          "note",
+          before === history.length
+            ? "Rewound. Kiro is carrying on in a copy of this conversation."
+            : "Rewound to an earlier turn. Kiro is carrying on in a copy of this conversation."
+        );
+        saveState();
+        break;
+      }
 
       case "error":
         finishAgentBubble();
@@ -3326,8 +3906,20 @@
           chosenId: item.chosenId,
           statusText: item.statusText,
         });
+      } else if (item.role === "command") {
+        // One card renderer, as with permissions. A second way to draw a
+        // command result is a second thing to keep in step.
+        addCommandCard(item.label, item.text, item.ok);
       } else if (item.role === "agent") {
         const bubble = ensureAgentBubble();
+        // Before the tool rows, as it was live: Kiro reasons, then acts.
+        if (item.thought) {
+          const thought = document.createElement("div");
+          thought.className = "thought";
+          thought.textContent = item.thought;
+          bubble.tools.appendChild(thought);
+          bubble.thought = thought;
+        }
         const steps = item.tools || [];
         for (const tool of steps) {
           const row = document.createElement("div");
@@ -3335,13 +3927,20 @@
           renderToolRow(row, tool, "restored");
           bubble.tools.appendChild(row);
         }
-        if (steps.length > 0) {
+        // Reasoning alone is still something to unfold, so a turn that ran no
+        // tools but thought about it keeps its header — otherwise the stored
+        // thought would be rebuilt into a block nothing can open.
+        if (steps.length > 0 || item.thought) {
           // Folded, like a turn that has just finished. There is no timing to
           // show for a chat reopened from storage.
           bubble.group.steps.hidden = false;
           // No timing survives in a stored chat, so the sentence stops short.
           bubble.group.label.textContent =
-            steps.length === 1 ? "Completed 1 step" : `Completed ${steps.length} steps`;
+            steps.length === 0
+              ? "Thought"
+              : steps.length === 1
+                ? "Completed 1 step"
+                : `Completed ${steps.length} steps`;
         }
         buffer = item.text || "";
         bubble.body.innerHTML = renderMarkdown(buffer);

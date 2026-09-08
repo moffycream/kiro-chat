@@ -370,6 +370,168 @@ ones.
 
 The extension advertises `terminal: false` in its client capabilities, so Kiro never asks to run shell commands.
 
+## Slash commands
+
+**The list is Kiro's, and it announces it.** `_kiro.dev/commands/available` arrives right
+after `session/new` with all 25 commands, each carrying `description` and a `meta` holding
+`hint`, `subcommands`, `hidden` and `local`. It was being dropped on the floor, which is
+why the panel could reach none of them. `slashCommands.ts` (free of `vscode`, so
+`test/slashCommands.test.js` drives it) parses that notification; the fixture in
+`test/fixtures/kiro-commands.json` is the real payload, captured by driving `kiro-cli acp`.
+Hard-coding the list would go stale silently — an unknown name is refused by
+`commands/execute` as a *parse error*, which is not a thing to show someone who picked it
+off a menu.
+
+**Compare the method through `bareMethod`, always.** The notification arrives prefixed.
+`isSessionUpdate` already stripped `_kiro.dev/` for exactly this reason and now shares that
+one helper; every new `handleNotification` branch must use it, or it works on one Kiro
+build and silently stops on the next.
+
+**`{ value }` is how an argument reaches a command**, and it took the oracle to find it.
+`/help` says `Usage: /rewind` — no arguments — and `_kiro.dev/commands/options` answers with
+an empty list for it, so `execute` is the only way in. Guessing `{ index: 0 }` looked like
+it worked: it returned `success: true` with the turn list, because an argument Kiro does not
+recognise is *ignored* and the command re-lists. Only `{ value: "0" }` actually rewound.
+**A command that succeeds is not proof the argument was read** — check the effect, not the
+status.
+
+`_kiro.dev/commands/options` also takes `command` as a plain string, while
+`commands/execute` takes the adjacently-tagged `{ command: { command, args } }`. Those two
+are not the same shape.
+
+**Not every command belongs in a webview.** `NOT_IN_PANEL` names them with the reason:
+`paste` wants a clipboard, `voice` a microphone, `reply` `$EDITOR`, `quit` kills the process
+the panel is talking to, `chat` is a competing conversation store. `local: true` marks the
+ones the CLI answers itself; `hidden: true` (only `stats`) means do not advertise, not do not
+run — it stays typeable. A menu row that hangs is worse than one that is absent.
+
+**A leading slash is only a command when the name is one Kiro has.** `parseSlash` in
+`chat.js` checks the known list first; without that, "/usr/bin/env is on my PATH" is eaten
+instead of sent. That is an affordance for opening the menu — the gate is the provider
+re-checking against `session.availableCommands`, so a `runCommand` that did not come from
+the composer cannot reach `execute`.
+
+**There is one parser, and it is the webview's.** `src/slashCommands.ts` briefly also held
+`parseSlashInput` and `matchCommands`, with tests. Nothing called them: the shipped
+behaviour was the `chat.js` pair all along, so those tests could have stayed green over a
+broken panel — and once the composer had to recognise `/quit` in order to explain it, the
+two copies deliberately disagreed while the tests still asserted they agreed. Both are gone
+and `test/webview.test.js` drives `parseSlash` and `matchSlash` out of `chat.js` with
+`sliceFrom` and a `new Function` binding for `slashCommands`. **When a rule has one
+implementation, test that one** — the twin pattern (`formatCredits` / `credits()`) is for
+when both copies actually run.
+
+**A command result is not an agent message.** `/usage` returns a table and `/tools` a list;
+in a reply bubble either reads as something the model said in a turn nobody started. They
+get `.command-card` and `role: "command"` in the transcript, drawn by one renderer shared
+with `restoreHistory` — the permission card's rule again.
+
+**And it is not markdown either — it is terminal output.** `/help` returns 51 lines whose
+two columns are held apart by runs of spaces; every one fell through `renderMarkdown` to the
+paragraph branch, so it arrived as 51 `<p>`s with a margin between each *and* with the runs
+of spaces collapsed by HTML, running every name into its description. `/tools`, `/model`,
+`/agent` and `/context` are the same shape. `renderCommandOutput` splits on a newline —
+multi-line is preformatted inside `.command-out`, which scrolls on its own the way
+`.table-wrap` does; one line is prose, because every one-line answer ("Conversation too
+short to compact.") is a sentence and reads worse in a monospace block. **Test the card, not
+just the renderer**: the first pair of tests drove `renderCommandOutput` directly and went on
+passing with `addCommandCard` switched back to `renderMarkdown`, one line away.
+
+**`/help` is answered from the command list, not from Kiro's text dump.** Even preformatted
+it is a 70-column table needing sideways scrolling on every line of a sidebar, and it
+advertises the six commands the panel will not run. `addHelpCard` lays out the same data —
+`commands/available`, which is where the menu comes from, so it is not a second source — and
+names the unavailable ones with their reason. Rows are real buttons going through
+`acceptSlash`, so a row behaves identically in the card and in the menu; the unavailable rows
+are plain divs sharing `.help-line` for layout but not `.help-row`'s hover, because a tint on
+something that does nothing implies it does something.
+
+**No command is offered or sent while a turn is running.** `submit()` has always refused to
+send a message while busy, but the menu answered Enter itself and went straight to
+`runSlash` — so mid-turn, with Send disabled, Enter on the menu fired a command Kiro then
+refused with "Kiro is still working on the last message." `setBusy` disables Send and not
+the textarea, so the box keeps focus for most of a turn and this was easy to reach. Two
+guards, because there are two kinds of surface: `updateSlashMenu` simply does not open (an
+affordance that is not there needs no explanation), and `runSlash` answers with a card (a
+`/help` card outlives the turn and its rows are real buttons — a visible control that goes
+quiet when clicked looks broken).
+
+**One "Running…" card at a time.** The provider's `onDidReceiveMessage` handler is async and
+not serialised, so two commands started in quick succession both post `commandRunning`
+before either answers. `runningCommand` moved to the second card, the first said "Running…"
+for the rest of the session, and its result arrived as a *third* card — the same command
+shown twice, one of them spinning forever. `case "commandRunning"` retires the previous card.
+
+**The slash menu declares `role="listbox"`, and the mode and model menus still must not.**
+Their objection is that a container role promises arrow-key navigation they do not implement
+and puts a screen reader into a mode where Tab stops working — and Tab is their navigation.
+Every fact is reversed here: focus never enters the slash menu, the arrows really are its
+navigation, and `aria-activedescendant` is only meaningful pointing at an `option` inside a
+listbox. The test that guarded this was global over `chat.js` and is now scoped to
+`renderModeMenu` and `renderModelMenu`, which is what it was ever about.
+
+**But the composer is not a combobox, and takes no `aria-expanded`.** That state is not one
+the `textbox` role supports; the only way to make it valid is `role="combobox"` on the
+textarea, which would have the message box announce as a picker — and drop "multi-line" —
+for the whole session, in exchange for the moment a menu is open. `aria-autocomplete`,
+`aria-controls` and `aria-activedescendant` are all legal on a textbox and carry the part
+that matters: which row is current, and by going away, that the list has closed. Shipped
+wrong in 0.30.2 and corrected in 0.30.3; a test now forbids both spellings.
+
+**No backticks anywhere in `html()`.** The whole page is a TypeScript template literal, so
+one inside an HTML comment ends the string — a comment naming `aria-activedescendant` in
+backticks broke the build. A test asserts the markup contains none.
+
+**The webview is sent the whole list, flagged, not just the offerable part.** It was sent
+only `offerable()`, so it could not *recognise* `/quit` — which meant the message path took
+it and the word "/quit" went to the model as a prompt nobody wrote, and was charged for.
+`/help` advertises exactly those commands, so it is the natural thing to try next. `offered`
+drives the menu, `runnable` drives the parser, and `reasonNotOffered` supplies the sentence
+the card shows instead of posting anything.
+
+**What a command changed has to be believed.** `/clear` empties the panel's transcript too,
+or the user is offered a conversation Kiro can no longer be asked about; `/model` goes
+through `noteModelChanged`, which updates the button but deliberately does *not* write the
+setting — `setModel` remembers a choice, and a command typed into one conversation is not a
+new default. Only `contextUsagePercentage` is taken off a command result, never the credit
+figure: a command's own cost is not the conversation's spend, and folding it into
+`sessionCredits` would inflate the strip every time the menu was used.
+
+### Rewind forks; it does not truncate
+
+Measured against kiro-cli 2.20.2. `/rewind` with no argument answers with
+`data.turns` — `logIndex`, `label`, `group`, `responseSnippet`, newest first. `/rewind` with
+that `logIndex` under `value` answers with `data: { sessionId, switchSession: true }`.
+
+Three things follow, and each one is load-bearing:
+
+- **The chosen turn is kept.** With ALPHA, BRAVO and CHARLIE in the log, rewinding to BRAVO
+  forked a session holding ALPHA *and* BRAVO. `turnsKeptByRewind` encodes that; getting it
+  backwards trims one turn too many every time.
+- **The forked session is not loaded.** Running a command against the new id answers
+  "Unknown session id" until `session/load` has been called, so the load is part of
+  `rewindTo`, not an optional follow-up.
+- **`chatSessionId` must move with it.** The conversation afterwards has a different id;
+  leaving the record on the old one resumes the un-rewound original next time the chat is
+  opened — the wrong-session bug `openChat` guards against from the other end.
+
+The transcript is trimmed by counting **user messages**, not log indices: the panel's entries
+and Kiro's log are two different numberings, but "the first N things I said" is the same span
+in both. A transcript holding fewer user messages than Kiro kept is one whose head has been
+trimmed from storage — nothing is removed, because removing anything would be guessing.
+
+**`session/load` really does replay the conversation.** This file used to record that a load
+sent no replay, with the caveat that the session under test was empty. It is not empty now:
+loading a forked session sent `user_message_chunk` and `agent_message_chunk` for every
+surviving turn. `KiroSession.replaying` swallowing those is what stops the panel painting
+each message twice, and it is not optional.
+
+**`session/compact` and `session/fork` are not on the ACP surface.** Both strings are in the
+binary and both answer "Method not found" over `kiro-cli acp` — they belong to the v3
+WebSocket engine behind `kiro-cli serve`. Compaction and rewinding go through
+`_kiro.dev/commands/execute` like everything else. Grepping the binary for method names is a
+good way to find candidates and a bad way to decide one exists.
+
 ### Kiro-specific protocol quirks
 
 These are the things that were expensive to discover; the comments in `kiroSession.ts` cover them at length:
@@ -651,11 +813,21 @@ the wrong question while waiting; what the user wants to know is what it is doin
 from the `tool` case, which also calls `startThinking()` itself, because a tool update can
 arrive by a route that never posted a `userMessage`.
 
-**The steps list is open while the turn runs and folds when it ends.** Closed-by-default
-hid the one thing the list is for — watching Kiro read and edit — so the `tool` case opens
-it and `stopThinking` closes it. `steps.dataset.pinned` records that the user clicked the
-header, and both of those checks respect it: a list someone opened on purpose must not
-fold itself up when the turn finishes.
+**The steps list was meant to be open while the turn runs and to fold when it ends** —
+closed-by-default hid the one thing the list is for, watching Kiro read and edit — with
+`steps.dataset.pinned` recording that the user had clicked the header so a list someone
+opened on purpose would not fold itself up at the end of the turn.
+
+**That is no longer what the code does, and it looks like a regression rather than a
+decision.** `buildSteps` creates the list `hidden`, and the only thing that ever changes it
+is the header's own click handler: nothing in the `tool` case opens it, nothing in
+`stopThinking` closes it, and `pinned` is written but never read — which is the tell, since
+`pinned` exists solely to protect an auto-fold that no longer happens. Whether to put the
+behaviour back is a live question; until it is answered, **anything new in this list must
+match what the rows already do and wait for a click**. Two things in one list behaving
+differently is worse than either rule on its own. That is why `appendThought` unhides the
+block but does not unfold it, and leans on the header — "Thinking…" during the turn,
+"Thought in 4s" after — to say that something is in there.
 
 **`AcpClient.dispatch` is called inside a try/catch, and must stay that way.** Kiro often
 writes several notifications in one stdio write; the read loop walks them in order, so a

@@ -13,6 +13,31 @@ const provider = fs.readFileSync(path.join(root, "src", "chatViewProvider.ts"), 
 const reviewer = fs.readFileSync(path.join(root, "src", "changeReviewer.ts"), "utf8");
 const manifest = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
 
+/**
+ * One function's source, from its opening line to the next one at the same
+ * indent.
+ *
+ * Never `slice(0, someNumber)`. Nine tests used a fixed character count and
+ * every one of them failed for a comment being added above the line it wanted,
+ * which says nothing about whether the code is right.
+ */
+function sliceFrom(source, marker) {
+  const start = source.indexOf(marker);
+  if (start === -1) return "";
+  const indent = " ".repeat(source.slice(0, start).match(/[ \t]*$/)[0].length);
+  const rest = source.slice(start + marker.length);
+  /*
+   * The next thing at the same indent — and in a TypeScript class that is a
+   * member, not a `function`. Without those spellings the slice ran past the
+   * end of a method into the one after it, so an assertion could be satisfied
+   * by code it was not looking at.
+   */
+  const next =
+    "function |const |let |case |private |public |protected |async |get |// ---|/\\*";
+  const end = rest.search(new RegExp(`\\n${indent}(${next})`));
+  return marker + (end === -1 ? rest : rest.slice(0, end));
+}
+
 test("chat.js is valid JavaScript", () => {
   assert.doesNotThrow(() => new vm.Script(js, { filename: "chat.js" }));
 });
@@ -636,11 +661,15 @@ test("a finished turn reads as one sentence", () => {
 
   // A stored chat has no timing, so the sentence stops short rather than
   // claiming a duration it does not have.
-  const restore = js.slice(js.indexOf("function restoreHistory(saved)"));
-  assert.match(
-    restore.slice(0, restore.indexOf("\n  function ")),
-    /"Completed 1 step" : `Completed \$\{steps\.length\} steps`/
-  );
+  const restore = js
+    .slice(js.indexOf("function restoreHistory(saved)"))
+    .slice(0, js.slice(js.indexOf("function restoreHistory(saved)")).indexOf("\n  function "));
+  assert.match(restore, /"Completed 1 step"/);
+  assert.match(restore, /`Completed \$\{steps\.length\} steps`/);
+  // Asserted as two facts rather than as one exact ternary: a third branch
+  // was added for a turn that only reasoned, and pinning the spelling failed
+  // for a reason that said nothing about whether the wording was right.
+  assert.doesNotMatch(restore, /elapsedText|took/, "a stored chat claims no duration");
 });
 
 test("the steps fold away behind the header", () => {
@@ -1946,7 +1975,22 @@ test("keep or undo is pinned above the composer, outside the transcript", () => 
   assert.ok(bar > messages && bar < chips, "the bar belongs between the transcript and the chips");
 
   assert.match(css, /^\.change-bar \{/m, "the bar needs a style");
-  assert.doesNotMatch(js, /messagesEl\.appendChild\(card\)/, "it must not go in the transcript");
+
+  /*
+   * Scoped to the renderer, not the whole file.
+   *
+   * This used to assert that `messagesEl.appendChild(card)` appeared nowhere
+   * in chat.js at all, which was a proxy for "the change bar is not in the
+   * transcript" and held only for as long as the change bar was the only card
+   * in the panel. It stopped being true the moment a card that genuinely does
+   * belong in the transcript arrived — a slash command's result — and failed
+   * for a reason that had nothing to do with what it was protecting. The
+   * question is where *this* bar is drawn, so ask it of this bar's renderer.
+   */
+  const renderer = sliceFrom(js, "function renderChangeBar()");
+  assert.ok(renderer, "renderChangeBar must exist to be checked");
+  assert.doesNotMatch(renderer, /messagesEl\./, "it must not go in the transcript");
+  assert.match(renderer, /changeBar\./, "it belongs to the pinned bar");
 });
 
 /** It shows while the diff is open, not only after the turn has finished. */
@@ -2124,18 +2168,34 @@ test("the dropdowns do not claim to be listboxes", () => {
  * a listbox, and there is no longer one to be inside.
  */
 test("a chosen row is marked current, not selected", () => {
-  // Asserted against what is set, not against the file text: the comments
-  // explaining this change necessarily name the attributes they replaced.
-  assert.doesNotMatch(
-    js,
-    /setAttribute\(\s*"role"\s*,\s*"option"\s*\)/,
-    "no row is an option any more"
-  );
-  assert.doesNotMatch(
-    js,
-    /setAttribute\(\s*"aria-selected"/,
-    "and none claims listbox selection"
-  );
+  /*
+   * Scoped to the two menus this is about, not the whole file.
+   *
+   * It used to assert that `role="option"` appeared nowhere in chat.js at all,
+   * which was a proxy for "these dropdowns are not listboxes" and held only
+   * while they were the only menus in the panel. The slash menu is a listbox
+   * and the objection here does not reach it: the reason these two refuse a
+   * container role is that it promises arrow-key navigation they do not
+   * implement and puts a screen reader into a mode where Tab stops working —
+   * and Tab is their navigation. Focus never enters the slash menu at all, the
+   * arrows really are its navigation, and `aria-activedescendant` is only
+   * meaningful pointing at an option inside a listbox. Same principle, opposite
+   * conclusion, because the facts are opposite.
+   */
+  for (const name of ["function renderModelMenu()", "function renderModeMenu()"]) {
+    const menu = sliceFrom(js, name);
+    assert.ok(menu, `${name} should be findable`);
+    assert.doesNotMatch(
+      menu,
+      /setAttribute\(\s*"role"\s*,\s*"option"\s*\)/,
+      `no row in ${name} is an option`
+    );
+    assert.doesNotMatch(
+      menu,
+      /setAttribute\(\s*"aria-selected"/,
+      `and none in ${name} claims listbox selection`
+    );
+  }
   assert.match(
     js,
     /setAttribute\(\s*"aria-current"\s*,\s*"true"\s*\)/,
@@ -2382,4 +2442,611 @@ test("the nonce carries enough entropy to be worth having", () => {
     Number(bytes[1]) >= 16,
     `${bytes[1]} bytes is too few for a nonce; 16 is the usual floor`
   );
+});
+
+// ---------------------------------------------------------------
+// Kiro's own slash commands
+// ---------------------------------------------------------------
+
+/**
+ * Both halves, as ever.
+ *
+ * A posted message with no matching case is silent: the change bar was lost
+ * from chat.js once and nothing failed loudly, because the provider went on
+ * posting into a switch with no cases for it. Every message type carrying this
+ * feature needs an end at each side.
+ */
+test("every slash command message is both posted and handled", () => {
+  for (const type of ["commands", "commandRunning", "commandResult", "rewindTurns", "rewound"]) {
+    assert.match(provider, new RegExp(`type: "${type}"`), `the provider must post ${type}`);
+    assert.match(js, new RegExp(`case "${type}"`), `the webview must handle ${type}`);
+  }
+  // And the other direction: what the composer sends must be answered.
+  for (const type of ["runCommand", "listRewind", "rewindTo"]) {
+    assert.match(js, new RegExp(`type: "${type}"`), `the webview must send ${type}`);
+    assert.match(provider, new RegExp(`case "${type}"`), `the provider must handle ${type}`);
+  }
+});
+
+/**
+ * The list is Kiro's, not ours.
+ *
+ * Hard-coding the commands would go stale on the next kiro-cli release, and
+ * silently: a name that no longer exists is rejected by `commands/execute` as
+ * a parse error, which is not a thing to show someone who picked it off a
+ * menu. `_kiro.dev/commands/available` was already being dropped on the floor.
+ */
+test("the command list comes from Kiro's own announcement", () => {
+  const session = fs.readFileSync(path.join(root, "src", "kiroSession.ts"), "utf8");
+  assert.match(session, /commands\/available/, "the notification must be read");
+  assert.match(
+    session,
+    /bareMethod\(method\) === "commands\/available"/,
+    "and compared with the vendor prefix stripped, as every Kiro notification must be"
+  );
+  assert.match(session, /onCommands/, "the session must pass the list on");
+  assert.match(provider, /postCommands/, "the provider must hand it to the webview");
+});
+
+/**
+ * A panel rebuilt mid-conversation never hears the announcement, which fires
+ * once per session. Without a replay on `ready` the menu is empty until the
+ * next new chat — and dragging the panel between the sidebar and the bottom
+ * panel is the ordinary way to get there.
+ */
+test("the command list survives the panel being rebuilt", () => {
+  const ready = sliceFrom(provider, "private async onWebviewReady");
+  assert.match(ready, /postCommands/, "ready must re-post the commands");
+});
+
+/**
+ * The webview decides whether to open a menu; the extension decides whether to
+ * run anything. The name is checked against the live session either way, so a
+ * `runCommand` that did not come from the composer cannot reach `execute`.
+ */
+test("the extension checks the command name against the live list", () => {
+  const handler = provider.slice(provider.indexOf('case "runCommand"'));
+  const scoped = handler.slice(0, handler.indexOf('case "listRewind"'));
+  assert.match(scoped, /availableCommands\.find/, "the name must be looked up");
+  assert.match(scoped, /if \(!known\) break/, "and an unknown one must go no further");
+});
+
+/** The menu needs an element, a style, and a home inside the composer. */
+test("the slash menu is a real anchored popup", () => {
+  assert.match(provider, /id="slash-menu"/, "the menu needs its own element");
+  assert.match(css, /^\.slash-menu \{/m, "and a style");
+  // Anchored inside .composer, which is the positioned parent, so it cannot
+  // spill out of a narrow sidebar.
+  const menu = provider.indexOf('id="slash-menu"');
+  const composer = provider.indexOf('id="composer"');
+  const row = provider.indexOf('class="composer-row"');
+  assert.ok(menu > composer && menu < row, "it belongs inside the composer");
+});
+
+/**
+ * A row is a button, and the global `button` style paints one primary blue on
+ * hover — `button:hover` is (0,1,1) and beats any single class. `.slash-item`
+ * says so itself rather than leaning on `.popup button:hover`, because a
+ * descendant rule does not travel with the element.
+ */
+test("a slash menu row cancels the global button hover on its own", () => {
+  assert.match(css, /^\.slash-item \{/m);
+  assert.match(css, /^\.slash-item:hover/m, "it must cancel button:hover itself");
+});
+
+/**
+ * Enter with the menu open picks a command. It must not also reach `submit()`,
+ * or choosing one would send the half-typed name as a message at the same time.
+ */
+test("the menu owns Enter while it is open", () => {
+  const handler = sliceFrom(js, 'inputEl.addEventListener("keydown"');
+  assert.match(handler, /!slashMenu\.hidden/, "the menu must be consulted first");
+  assert.match(handler, /acceptSlash/, "Enter picks the highlighted row");
+  const guard = handler.indexOf("!slashMenu.hidden");
+  // The call, not the mention of it: the comment above the guard names
+  // `submit()` too, and searching for that found the documentation.
+  const submit = handler.indexOf("submit();");
+  assert.ok(guard > -1 && submit > guard, "the menu is checked before submit is reached");
+});
+
+/**
+ * A command is not a message. It goes to Kiro's command endpoint, so it must
+ * not also start a turn.
+ */
+test("a slash command is routed away from the message path", () => {
+  const submit = sliceFrom(js, "function submit()");
+  assert.match(submit, /parseSlash\(text\)/, "submit must recognise a command");
+  const slash = submit.indexOf("parseSlash(text)");
+  const send = submit.indexOf('type: "send"');
+  assert.ok(slash > -1 && send > slash, "the command check comes before the send");
+});
+
+/**
+ * The two parsers — `parseSlashInput` in src, `parseSlash` here — must agree
+ * that a leading slash is only a command when the name is one Kiro has.
+ * Otherwise "/usr/bin/env is on my PATH" is eaten instead of sent.
+ */
+test("the webview parser also requires a name Kiro has", () => {
+  const parser = sliceFrom(js, "function parseSlash(text)");
+  assert.match(parser, /slashCommands\.find/, "it must check the known list");
+  assert.match(parser, /if \(!known\) return null/, "and give up when there is no match");
+});
+
+function loadTrim() {
+  const source = sliceFrom(js, "function trimHistoryToTurns(items, keep)");
+  assert.ok(source, "trimHistoryToTurns should be findable");
+  return new Function(source + "\nreturn trimHistoryToTurns;")();
+}
+
+/**
+ * After a rewind Kiro has forgotten everything past the chosen turn. A
+ * transcript still showing those messages is the same lie as a permission card
+ * claiming an answer nobody received.
+ *
+ * Counted in *user messages*, because the panel's entries and Kiro's log
+ * indices are two different numberings — but "the first N things I said" is
+ * the same span in both.
+ */
+test("a rewind trims the transcript to the turns Kiro kept", () => {
+  const trim = loadTrim();
+  const chat = [
+    { role: "user", text: "one" },
+    { role: "agent", text: "1" },
+    { role: "user", text: "two" },
+    { role: "permission", title: "write a file" },
+    { role: "agent", text: "2" },
+    { role: "user", text: "three" },
+    { role: "agent", text: "3" },
+  ];
+  assert.deepEqual(
+    trim(chat, 2).map((m) => m.text || m.title),
+    ["one", "1", "two", "write a file", "2"],
+    "the kept turn keeps its reply, its steps and its permissions"
+  );
+  assert.equal(trim(chat, 3).length, 7, "keeping every turn removes nothing");
+  assert.equal(trim(chat, 1).length, 2);
+});
+
+/**
+ * A transcript holding fewer user messages than Kiro kept is one whose head
+ * has been trimmed from storage. There is nothing to remove, and removing
+ * anything would be guessing.
+ */
+test("a transcript shorter than the rewind asks for is left alone", () => {
+  const trim = loadTrim();
+  const chat = [{ role: "user", text: "only one" }, { role: "agent", text: "a" }];
+  assert.equal(trim(chat, 5).length, 2);
+  assert.equal(trim([], 3).length, 0);
+});
+
+/**
+ * Rewinding forks: the conversation afterwards has a *different* session id.
+ * Leaving `chatSessionId` on the old one would resume the un-rewound original
+ * next time the chat was opened — the wrong-session bug `openChat` guards
+ * against from the other end.
+ */
+test("a rewind repoints the chat at the session Kiro forked", () => {
+  const rewind = sliceFrom(provider, "private async rewindTo(");
+  assert.match(rewind, /this\.chatSessionId = forked/, "the record must follow the fork");
+  assert.match(rewind, /saveCurrentChat/, "and be written down");
+
+  const session = fs.readFileSync(path.join(root, "src", "kiroSession.ts"), "utf8");
+  const method = sliceFrom(session, "async rewindTo(logIndex: number)");
+  assert.match(method, /loadSession\(forked\)/, "the forked session must be loaded");
+});
+
+/**
+ * `/clear` wipes Kiro's memory of the conversation and `/model` changes the
+ * model the button names. A panel that goes on showing either is telling the
+ * user something untrue.
+ */
+test("a command that changes what the panel shows is believed", () => {
+  const runner = sliceFrom(provider, "private async runSlashCommand(");
+  assert.match(runner, /name === "clear"/, "clear must be recognised");
+  assert.match(runner, /type: "cleared"/, "and empty the transcript");
+  assert.match(runner, /noteModelChanged/, "model updates the button");
+});
+
+/**
+ * A command result is recorded, so reopening the chat shows that `/compact`
+ * was run rather than a gap where the conversation appears to shrink for no
+ * reason — and it is drawn by the same renderer, not a second one.
+ */
+test("a command result joins the chat's record", () => {
+  assert.match(js, /recordCommand\(/, "results must be recorded");
+  assert.match(js, /role: "command"/, "under their own role");
+  const restore = sliceFrom(js, "function restoreHistory(saved)");
+  assert.match(restore, /item\.role === "command"/, "and restored");
+  assert.match(restore, /addCommandCard\(item\.label/, "through the one card renderer");
+});
+
+/**
+ * A command's answer is terminal output, not markdown.
+ *
+ * `/help` returns 51 lines whose columns are held apart by runs of spaces.
+ * Every one fell through the markdown renderer to the paragraph branch — 51
+ * `<p>`s with a margin between each — and HTML collapsed the spaces, so every
+ * command name ran straight into its description. `/tools`, `/model`,
+ * `/agent` and `/context` are all the same shape.
+ */
+function loadCommandOutput() {
+  // The whole renderer, because the prose branch calls into `renderMarkdown`.
+  const from = js.indexOf("function escapeHtml");
+  const to = js.indexOf("async function copyText");
+  assert.ok(from > -1 && to > from, "the renderer should be findable");
+  return new Function(
+    js.slice(from, to) +
+      sliceFrom(js, "function renderCommandOutput(text)") +
+      "\nreturn renderCommandOutput;"
+  )();
+}
+
+test("multi-line command output keeps the alignment Kiro wrote", () => {
+  const render = loadCommandOutput();
+  const help = "Available Commands:\n\n  /agent      Select or list available agents\n";
+  const html = render(help);
+  assert.match(html, /<pre>/, "a listing must be preformatted");
+  assert.match(html, /command-out/, "and live in its own scrolling box");
+  assert.ok(html.includes("  /agent      Select"), "the runs of spaces must survive");
+  assert.doesNotMatch(html, /<p>/, "it must not be broken into paragraphs");
+});
+
+/**
+ * One-line answers are sentences, and a sentence reads worse in a monospace
+ * block than in prose. The split is on a newline because every aligned
+ * listing has one and no one-line answer does.
+ */
+test("a one-line answer is still prose", () => {
+  const html = loadCommandOutput()("Conversation too short to compact.");
+  assert.doesNotMatch(html, /<pre>/);
+  assert.match(html, /Conversation too short/);
+});
+
+/**
+ * And the card has to actually use it.
+ *
+ * The two tests above drive `renderCommandOutput` directly, so they went on
+ * passing with `addCommandCard` switched back to `renderMarkdown` — the exact
+ * bug they exist to prevent, sitting one line away from what they measured.
+ * Found by putting that bug back and watching nothing fail.
+ */
+test("the command card renders through the terminal-output path", () => {
+  const card = sliceFrom(js, "function addCommandCard(label, text, ok)");
+  assert.match(card, /body\.innerHTML = renderCommandOutput\(text\)/);
+  assert.doesNotMatch(card, /renderMarkdown/, "not straight to markdown");
+});
+
+/** Terminal output scrolls in its own box, never the whole conversation. */
+test("preformatted output scrolls inside its own box", () => {
+  assert.match(css, /^\.command-out \{/m);
+  const rule = sliceFrom(css, ".command-out {");
+  assert.match(rule, /overflow-x:\s*auto/, "the box scrolls, not the sidebar");
+});
+
+/**
+ * `/help` advertises commands this panel will not run, so someone will type
+ * one. The panel used to be sent only the offerable list, so it did not
+ * recognise `/quit` at all — which meant the message path took it and the word
+ * "/quit" was sent to the model as a prompt nobody wrote, and charged for.
+ */
+test("a command the panel cannot run explains itself instead of becoming a prompt", () => {
+  assert.match(
+    provider,
+    /offered: offered\.has\(command\.name\)/,
+    "the whole list must go down, flagged"
+  );
+  assert.match(provider, /runnable: isRunnable\(command\)/);
+  assert.match(provider, /reason: isRunnable\(command\) \? "" : reasonNotOffered/);
+
+  const run = sliceFrom(js, "function runSlash(name, value)");
+  assert.match(run, /command\.runnable === false/, "the webview must recognise it");
+  assert.match(run, /addCommandCard\(/, "and answer with a card");
+  const explain = run.indexOf("command.runnable === false");
+  const post = run.indexOf('type: "runCommand"');
+  assert.ok(explain > -1 && post > explain, "it must not reach the command endpoint");
+});
+
+/** But it is still kept out of the menu, which only offers what will run. */
+test("the menu offers only the commands that run here", () => {
+  const match = sliceFrom(js, "function matchSlash(query)");
+  assert.match(match, /filter\(\(c\) => c\.offered\)/, "the menu filters to the offered ones");
+});
+
+/**
+ * Kiro's `/help` is a 70-column table that needs sideways scrolling on every
+ * line of a sidebar. The same information arrives structured in
+ * `commands/available` — the menu's own source — so the panel lays it out to
+ * fit rather than showing the dump, and names the commands it will not run
+ * instead of leaving them silently missing.
+ */
+test("/help is answered from the command list, not the text dump", () => {
+  const run = sliceFrom(js, "function runSlash(name, value)");
+  assert.match(run, /name === "help" && !value/, "help is answered locally");
+  assert.match(run, /addHelpCard\(\)/);
+
+  const card = sliceFrom(js, "function addHelpCard()");
+  assert.match(card, /c\.offered/, "it lists what can be run");
+  assert.match(card, /c\.runnable === false/, "and what cannot, with the reason");
+  assert.match(card, /acceptSlash\(command\)/, "a row behaves as the menu row does");
+});
+
+/**
+ * The unavailable rows are divs, so they take the shared layout without a
+ * hover tint implying they do something. Only the button carries the hover,
+ * with a bare `.help-row:hover` — `button:hover` is (0,1,1) and outranks any
+ * single class.
+ */
+test("only the clickable help rows look clickable", () => {
+  assert.match(css, /^\.help-line \{/m, "layout is shared");
+  assert.match(css, /^\.help-row:hover \{/m, "the button cancels the global hover");
+  assert.match(js, /"help-line help-row"/, "the runnable rows are buttons");
+  assert.match(js, /"help-line help-blocked"/, "the rest are not");
+});
+
+/** Every reason is a real sentence, not a placeholder. */
+test("every excluded command has a reason worth reading", () => {
+  const { NOT_IN_PANEL, reasonNotOffered } = require("../out/slashCommands");
+  for (const name of NOT_IN_PANEL) {
+    const reason = reasonNotOffered(name);
+    assert.ok(reason.length > 20, `${name} needs a real explanation`);
+    assert.match(reason, /\.$/, `${name}'s reason should read as a sentence`);
+  }
+});
+
+/**
+ * One "Running…" card at a time.
+ *
+ * The provider's message handler is async and not serialised, so two commands
+ * started in quick succession can both post `commandRunning` before either
+ * answers. The first card then said "Running…" for the rest of the session:
+ * its result arrived, found the pointer already moved to the second card, and
+ * appended a third. The user saw one command twice, one of them spinning
+ * forever. Found by replaying that exact order against the real page.
+ */
+test("overlapping commands leave no card spinning forever", () => {
+  const source = sliceFrom(js, 'case "commandRunning"');
+  assert.match(
+    source,
+    /if \(runningCommand\) runningCommand\.remove\(\)/,
+    "a new running card must retire the previous one"
+  );
+});
+
+/**
+ * `submit()` refuses to send while a turn runs, but the menu answered Enter
+ * itself and went straight to `runSlash` — so mid-turn, with Send disabled,
+ * Enter on the menu fired a command that Kiro then refused. The panel was
+ * offering something it knew would fail. `setBusy` disables Send and not the
+ * textarea, so the box holds focus for most of a turn and this was easy to
+ * reach by accident.
+ */
+test("no command is offered or sent while a turn is running", () => {
+  const menu = sliceFrom(js, "function updateSlashMenu()");
+  assert.match(menu, /if \(busy\) return closeSlashMenu\(\)/, "the menu must not open");
+
+  const run = sliceFrom(js, "function runSlash(name, value)");
+  assert.match(run, /if \(busy\) \{/, "and nothing may reach the endpoint");
+  const guard = run.indexOf("if (busy) {");
+  const post = run.indexOf('type: "runCommand"');
+  assert.ok(guard > -1 && post > guard, "the guard comes first");
+});
+
+/**
+ * A visible control that goes quiet when clicked looks broken. The menu can
+ * simply not appear, but a `/help` card stays on screen across a turn and its
+ * rows are real buttons, so that route says why instead.
+ */
+test("a help row clicked mid-turn explains itself", () => {
+  const run = sliceFrom(js, "function runSlash(name, value)");
+  const busy = run.slice(run.indexOf("if (busy) {"));
+  assert.match(busy.slice(0, 400), /addCommandCard\(/, "it must answer, not go quiet");
+  assert.match(busy.slice(0, 400), /still working/, "and say what is in the way");
+});
+
+/**
+ * The arrows move a highlight while focus stays in the textarea, so without
+ * `aria-activedescendant` a screen reader is told nothing at all.
+ *
+ * This is why the menu declares a role where the mode and model menus refuse
+ * to: their reasoning is that a container role promises arrow navigation they
+ * do not implement, over a mixture of controls no single role admits. Both are
+ * the other way round here.
+ */
+test("the slash menu reports its state where the focus actually is", () => {
+  assert.match(provider, /id="slash-menu"[^>]*role="listbox"/, "the list says what it is");
+  const input = provider.slice(provider.indexOf('id="input"'));
+  const tag = input.slice(0, input.indexOf(">"));
+  assert.match(tag, /aria-controls="slash-menu"/, "the box owns the menu");
+  assert.match(tag, /aria-autocomplete="list"/);
+
+  /*
+   * And no `aria-expanded`, on the element or from script.
+   *
+   * The textbox role does not support that state — making it valid needs
+   * `role="combobox"` on this element, which would have the message composer
+   * announce as a picker, and lose "multi-line", for the whole session in
+   * exchange for the moment a menu is open. `aria-activedescendant` is legal
+   * on a textbox and carries the part that matters: which row is current, and
+   * by going away, that the list has closed.
+   */
+  assert.doesNotMatch(tag, /aria-expanded/, "not a state a textbox supports");
+  assert.doesNotMatch(tag, /role="combobox"/, "and the box stays a text box");
+  assert.doesNotMatch(
+    sliceFrom(js, "function renderSlashMenu()"),
+    /aria-expanded/,
+    "nor may script add it"
+  );
+
+  const render = sliceFrom(js, "function renderSlashMenu()");
+  assert.match(render, /role", "option"/, "each row is an option");
+  assert.match(render, /aria-selected/, "and says whether it is the one selected");
+  assert.match(render, /aria-activedescendant/, "the box points at the highlighted row");
+
+  // Left set, it would go on naming a row that no longer exists.
+  const close = sliceFrom(js, "function closeSlashMenu()");
+  assert.match(close, /removeAttribute\("aria-activedescendant"\)/);
+});
+
+/**
+ * The page is one TypeScript template literal, so a backtick anywhere in it —
+ * including inside an HTML comment — ends the string. One in a comment about
+ * `aria-activedescendant` broke the build.
+ */
+test("the page markup contains no backticks", () => {
+  const start = provider.indexOf("<!DOCTYPE html>");
+  const end = provider.indexOf("</html>`", start);
+  assert.ok(start > -1 && end > start, "the template should be findable");
+  const markup = provider.slice(start, end);
+  assert.ok(!markup.includes("`"), "a backtick here ends the template literal");
+});
+
+/*
+ * The composer's parser and matcher, driven directly.
+ *
+ * These rules used to be tested against `parseSlashInput` and `matchCommands`
+ * in `src/slashCommands.ts` — which nothing called. The code that actually
+ * runs is `parseSlash` and `matchSlash` in chat.js, so the tests could have
+ * gone on passing with the shipped behaviour broken; and once the composer had
+ * to recognise `/quit` in order to explain it, the two deliberately disagreed.
+ * The src copies are gone and the rules are asserted where they run, against
+ * the same fixture Kiro really sent.
+ */
+const { isRunnable, offerable, parseAvailableCommands } = require("../out/slashCommands");
+
+/** The list exactly as the provider posts it: whole, with the two flags. */
+function webviewCommands() {
+  const payload = JSON.parse(
+    fs.readFileSync(path.join(root, "test", "fixtures", "kiro-commands.json"), "utf8")
+  );
+  const parsed = parseAvailableCommands(payload);
+  const offered = new Set(offerable(parsed).map((c) => c.name));
+  return parsed.map((c) => ({
+    ...c,
+    offered: offered.has(c.name),
+    runnable: isRunnable(c),
+    reason: isRunnable(c) ? "" : "because.",
+  }));
+}
+
+function loadFromChatJs(name, marker, commands) {
+  const source = sliceFrom(js, marker);
+  assert.ok(source, `${marker} should be findable`);
+  return new Function("slashCommands", `${source}\nreturn ${name};`)(commands);
+}
+
+const parseSlash = (commands) => loadFromChatJs("parseSlash", "function parseSlash(text)", commands);
+const matchSlash = (commands) => loadFromChatJs("matchSlash", "function matchSlash(query)", commands);
+
+/**
+ * The load-bearing half of the parser.
+ *
+ * A leading slash is only a command when the name is one Kiro actually has.
+ * Without the known-list check, an ordinary sentence that happens to open with
+ * a path would be swallowed by the composer instead of sent — the user's words
+ * eaten because of one character.
+ */
+test("only a name Kiro has is treated as a command", () => {
+  const parse = parseSlash(webviewCommands());
+  assert.equal(parse("/compact").name, "compact");
+  assert.equal(parse("/usr/bin/env is on my PATH"), null);
+  assert.equal(parse("/nonsense"), null);
+  assert.equal(parse("what does /compact do?"), null);
+  assert.equal(parse(""), null);
+});
+
+/**
+ * `/quit` *is* recognised, and this is the difference from the old src copy:
+ * the composer has to know the name to answer "that closes the Kiro CLI".
+ * Failing to recognise it is what sent the word to the model as a prompt.
+ */
+test("a command the panel cannot run is still recognised, so it can be explained", () => {
+  const parse = parseSlash(webviewCommands());
+  const quit = parse("/quit");
+  assert.ok(quit, "it must not fall through to the message path");
+  assert.equal(quit.name, "quit");
+  assert.equal(quit.command.runnable, false, "and be known to be unrunnable");
+});
+
+test("whatever follows the name is the argument", () => {
+  const parse = parseSlash(webviewCommands());
+  assert.equal(parse("/model claude-haiku-4.5").value, "claude-haiku-4.5");
+  assert.equal(parse("  /context add src/  ").value, "add src/");
+  assert.equal(parse("/COMPACT").name, "compact", "the name is matched case-insensitively");
+});
+
+/**
+ * Typing "e" then pressing Enter runs whatever is at the top, so the top has to
+ * be the one whose name starts that way.
+ */
+test("a prefix hit outranks one buried in the middle of a name", () => {
+  const match = matchSlash(webviewCommands());
+  const hits = match("e").map((c) => c.name);
+  assert.equal(hits[0], "effort", "the only name starting with e");
+  assert.ok(hits.indexOf("effort") < hits.indexOf("model"), "model merely contains it");
+});
+
+test("a name hit outranks a description hit", () => {
+  const match = matchSlash(webviewCommands());
+  const hits = match("com").map((c) => c.name);
+  assert.equal(hits[0], "compact");
+  assert.ok(hits.includes("help"), "help's description mentions commands");
+  assert.ok(hits.indexOf("compact") < hits.indexOf("help"));
+});
+
+/** The menu never offers what it cannot run, however it is spelled. */
+test("the matcher never offers an unrunnable or hidden command", () => {
+  const match = matchSlash(webviewCommands());
+  for (const query of ["", "q", "quit", "chat", "stats", "voice"]) {
+    for (const hit of match(query)) {
+      assert.ok(hit.offered, `${hit.name} was offered for "${query}"`);
+    }
+  }
+  assert.deepEqual(match("quit"), [], "nothing matches a command that cannot run");
+});
+
+/**
+ * Every message the provider posts has somewhere to land.
+ *
+ * This is the guard that would have found `thought` without a probe. The
+ * existing version of it covered only the slash-command messages, so a
+ * `type: "thought"` posted since the panel was written went into the webview's
+ * switch and vanished — silently, which is the whole problem with a missing
+ * case. Nobody noticed because kiro-cli 2.20.2 never sends one.
+ *
+ * Both directions, because both have been broken this way.
+ */
+test("no message is posted into a switch that cannot answer it", () => {
+  const posted = new Set([...provider.matchAll(/type: "([a-zA-Z]+)"/g)].map((m) => m[1]));
+  const handled = new Set([...js.matchAll(/case "([a-zA-Z]+)":/g)].map((m) => m[1]));
+  const orphans = [...posted].filter((t) => !handled.has(t)).sort();
+  assert.deepEqual(orphans, [], `the provider posts these and the webview drops them: ${orphans}`);
+
+  const sent = new Set([...js.matchAll(/type: "([a-zA-Z]+)"/g)].map((m) => m[1]));
+  const answered = new Set([...provider.matchAll(/case "([a-zA-Z]+)":/g)].map((m) => m[1]));
+  const unanswered = [...sent].filter((t) => !answered.has(t)).sort();
+  assert.deepEqual(unanswered, [], `the webview sends these and the provider drops them: ${unanswered}`);
+});
+
+/**
+ * Kiro reasoning out loud goes in the steps list, which already opens while
+ * the turn runs and folds when it ends. A second collapsible block beside the
+ * answer would be a second thing to keep in step.
+ */
+test("a thought is shown, kept and restored", () => {
+  assert.match(js, /case "thought":/, "the webview must have a case for it");
+  assert.match(js, /function appendThought\(text\)/);
+
+  const append = sliceFrom(js, "function appendThought(text)");
+  assert.match(append, /bubble\.tools\.prepend/, "before the tool rows: reason, then act");
+  assert.match(append, /textContent \+=/, "chunks accumulate rather than replace");
+  assert.doesNotMatch(append, /innerHTML|renderMarkdown/, "the model's working is not markdown");
+
+  // A turn that only reasoned still has something to unfold, live and stored.
+  const stop = sliceFrom(js, "function stopThinking(bubble)");
+  assert.match(stop, /if \(!target\.thought\) \{/, "a thought keeps the header alive");
+  const restore = sliceFrom(js, "function restoreHistory(saved)");
+  assert.match(restore, /item\.thought/, "and it is rebuilt when a chat is reopened");
+  assert.match(js, /thought: thought \|\| ""/, "which means it has to be stored");
+
+  assert.match(css, /^\.thought \{/m, "it needs a style of its own");
 });

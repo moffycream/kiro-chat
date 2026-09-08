@@ -1,5 +1,156 @@
 # Changelog
 
+## 0.30.4
+
+- **Kiro's reasoning now has somewhere to go.** The extension has always translated Kiro's
+  thinking-out-loud into a message for the panel, and the panel had no case for it — so every
+  one of those went into the switch and vanished. It appears in the steps list now, above the
+  tool rows, with the header reading "Thinking…" while the turn runs and "Thought in 4s"
+  after. It is kept with the chat, so reopening one still shows the working.
+
+  Nothing was actually being lost: measured against kiro-cli 2.20.2 on `claude-opus-4.7` with
+  `/effort high`, against a puzzle written to force reasoning, 22 chunks of ordinary reply
+  arrived and not one thought among them. But the words are in Kiro's own program file, so a
+  future release could switch this on — and it would have switched on invisibly.
+
+- **The both-halves check now covers every message, not just the slash commands.** That is
+  the guard that would have found the above without a probe, and it is the third time this
+  exact failure has been paid for: a message posted into a switch with no case for it is
+  dropped in silence. Both directions are checked.
+
+## 0.30.3
+
+- **Fixed: invalid ARIA on the message box.** 0.30.2 put `aria-expanded` on the composer to
+  report whether the command menu was open. A text box does not support that state — making
+  it valid needs `role="combobox"` on the same element, which would have the message box
+  announce as a picker, and lose "multi-line", for the entire session in exchange for the
+  moment a menu is showing. That is the wrong trade for a box that is a message composer
+  almost all the time.
+
+  The attributes that are legal on a text box already carry the part that matters: which row
+  is highlighted, and — by going away — that the list has closed.
+
+## 0.30.2
+
+Fixes found by reviewing 0.30.0 and 0.30.1 rather than by hitting them.
+
+- **Fixed: a command could be fired mid-turn, and Kiro would refuse it.** Sending a message
+  while Kiro is working has always been blocked, but the slash menu answered Enter itself
+  and went straight to running the command — so with Send greyed out, Enter on the menu
+  started something the panel already knew would fail. The menu no longer opens during a
+  turn, and a `/help` card clicked mid-turn says "Kiro is still working on the last message"
+  instead of going quiet.
+
+- **Fixed: two commands in quick succession left one spinning forever.** The second
+  command's card replaced the first as the one waiting for an answer, so when the first
+  answered it appeared as a third card — the same command shown twice, one of them saying
+  "Running…" for the rest of the session.
+
+- **The command menu now reports itself to screen readers.** The arrow keys move a highlight
+  while the cursor stays in the message box, which is a state nothing was announcing. The
+  menu is a listbox, each row an option, and the message box points at the highlighted one.
+
+  The mode and model menus deliberately declare no such role, and still must not: their
+  reason is that it promises arrow-key navigation they do not implement and breaks Tab,
+  which is how they are used. Every one of those facts is the other way round here.
+
+- **Removed two functions nothing called.** `parseSlashInput` and `matchCommands` had tests
+  pinning the rules for reading a typed command — but the code that actually runs is the
+  composer's own pair, so those tests could have stayed green over a broken panel. Once the
+  composer had to recognise `/quit` in order to explain it, the two copies disagreed while
+  the tests still asserted they agreed. The rules are now tested where they run.
+
+## 0.30.1
+
+- **Fixed: `/help` was unreadable, and so was every other listing.** A command's answer is
+  terminal output, not markdown. Kiro holds its two columns apart with runs of spaces, and
+  the markdown renderer turned `/help` into 51 separate paragraphs — each with a margin
+  between, and with HTML collapsing the spaces so every command name ran straight into its
+  description. `/tools`, `/model`, `/agent` and `/context` all arrived the same way.
+
+  Multi-line output now keeps the alignment Kiro wrote, in a box that scrolls on its own
+  rather than making the whole conversation scroll sideways. One-line answers stay prose,
+  because "Conversation too short to compact." is a sentence and reads worse in a monospace
+  block.
+
+- **`/help` now answers from Kiro's command list rather than its text dump.** Even with the
+  alignment preserved, Kiro's `/help` is a 70-column table that needs sideways scrolling on
+  every line of a sidebar. The same information arrives structured in the announcement the
+  `/` menu is already built from, so the panel lays it out to fit: names in one column,
+  descriptions wrapping in the next. Click a row to run it, exactly as in the menu.
+
+  It also names the six commands that work in the Kiro CLI but not here, each with the
+  reason, instead of leaving them silently missing from a list headed "available commands".
+
+- **Fixed: typing a command the panel cannot run sent it to the model as a message.** The
+  composer was only told about the commands it offers, so it did not recognise `/quit` at
+  all — and an unrecognised slash falls through to the message path. The word "/quit" went to
+  Kiro as a prompt nobody wrote, was charged for, and came back with a guess at what was
+  meant. Since `/help` advertises those commands, it was the natural thing to try next.
+
+  The composer is now told the whole list with what is runnable flagged, so it can answer
+  "`/quit` closes the Kiro CLI, which this panel is talking to" instead of sending anything.
+
+## 0.30.0
+
+- **Slash commands.** Type `/` in the message box and Kiro's own commands appear —
+  `/compact`, `/context`, `/usage`, `/tools`, `/mcp`, `/knowledge`, `/help` and the rest.
+  Arrow keys move, Enter runs, Escape closes. A command that takes an argument is completed
+  into the box instead of run, so the next keystroke is the argument.
+
+  Kiro has had 25 of these all along and the panel could reach none of them. It turns out it
+  was being *told*: `_kiro.dev/commands/available` arrives right after `session/new` carrying
+  every command with its description, argument hint and subcommands, and the panel was
+  dropping the notification on the floor. So the menu is not a list anyone typed here — it is
+  Kiro's own list, and a command added by a future kiro-cli appears in it without a change to
+  this extension.
+
+  Measured by driving `kiro-cli acp` directly rather than read from documentation, which is
+  also how the exclusions were decided. `/paste` reads a clipboard the CLI does not have
+  behind a webview, `/voice` a microphone, `/reply` opens `$EDITOR`, and `/quit` would kill
+  the process the panel is talking to; `/chat` is a second conversation store competing with
+  the panel's own history. Those are left out, because a menu row that hangs is worse than
+  one that is absent. `/stats` is runnable by typing it in full but not advertised, because
+  Kiro marks it hidden.
+
+  A leading slash is only treated as a command when the name is one Kiro actually has — so
+  "/usr/bin/env is on my PATH" is still sent as the sentence it is, rather than eaten because
+  of its first character.
+
+- **`/rewind` — go back to an earlier turn.** It lists the turns in this conversation with
+  what you asked and what came back; pick one and everything after it is dropped.
+
+  Kiro does not truncate in place. It **forks**: a rewind writes a new conversation holding
+  everything up to and including the turn you chose, and hands back its id. The panel follows
+  it there, loads it, and repoints this chat's record at the new session — without that last
+  part, reopening the chat later would have resumed the conversation you had just rewound out
+  of. The transcript is trimmed to match, because messages Kiro has forgotten must not still
+  be on screen offering to be discussed.
+
+  Which turns survive was measured, not assumed: with three turns in the log, rewinding to
+  the middle one forked a session still holding the first *and* the middle. The chosen turn
+  is kept.
+
+- **A command's answer is not a reply.** `/usage` returns a table and `/tools` a list; in an
+  agent bubble either reads as something the model said, in a turn nobody started. Results
+  get their own card, labelled with the command that produced them, and go into the chat's
+  record — so reopening a chat shows that `/compact` was run rather than a gap where the
+  conversation appears to shrink for no reason.
+
+  What a command changed is then believed rather than ignored. `/clear` empties the
+  transcript, because leaving the messages up would offer a conversation Kiro can no longer be
+  asked about; `/model` updates the model button. A panel that goes on displaying the state a
+  command just replaced is the same failure as a permission card claiming an answer nobody
+  received.
+
+- **Fixed: a test that guarded the keep-or-undo bar by searching the whole file.** It
+  asserted `messagesEl.appendChild(card)` appeared nowhere in `chat.js` at all — a proxy for
+  "the change bar is not in the transcript" that held only while the change bar was the only
+  card in the panel. The first card that genuinely belongs in the transcript broke it, for a
+  reason with nothing to do with what it was protecting. It now asks the question of
+  `renderChangeBar` itself, and was confirmed by putting the original bug back and watching it
+  fail.
+
 ## 0.29.0
 
 - **The mode picker now shows what Kiro already knows about your project.** A new group,

@@ -1,0 +1,205 @@
+{
+  "commands": [
+    {
+      "name": "/agent",
+      "description": "Select or list available agents",
+      "meta": {
+        "hint": "",
+        "subcommands": [
+          "create",
+          "edit",
+          "swap"
+        ]
+      }
+    },
+    {
+      "name": "/chat",
+      "description": "Load a previous session or start a new one",
+      "meta": {
+        "hint": "save <path>, load <path>, new [prompt]",
+        "subcommands": [
+          "save",
+          "load",
+          "new"
+        ],
+        "local": true
+      }
+    },
+    {
+      "name": "/clear",
+      "description": "Clear conversation history"
+    },
+    {
+      "name": "/code",
+      "description": "Code intelligence workspace management",
+      "meta": {
+        "subcommands": [
+          "status",
+          "init",
+          "logs",
+          "overview",
+          "summary"
+        ]
+      }
+    },
+    {
+      "name": "/compact",
+      "description": "Compact conversation history"
+    },
+    {
+      "name": "/context",
+      "description": "Manage context files or show token usage",
+      "meta": {
+        "hint": "add <path>, remove <path>, clear",
+        "subcommands": [
+          "show",
+          "add",
+          "remove",
+          "clear"
+        ]
+      }
+    },
+    {
+      "name": "/effort",
+      "description": "Set thinking effort for this session",
+      "meta": {
+        "hint": "",
+        "subcommands": [
+          "set-current-as-default"
+        ]
+      }
+    },
+    {
+      "name": "/feedback",
+      "description": "Submit feedback, request features, or report issues",
+      "meta": {
+        "hint": ""
+      }
+    },
+    {
+      "name": "/goal",
+      "description": "Set a goal with validation criteria for iterative completion",
+      "meta": {
+        "subcommands": [
+          "clear"
+        ]
+      }
+    },
+    {
+      "name": "/guide",
+      "description": "Get help with Kiro CLI features from the guide agent"
+    },
+    {
+      "name": "/help",
+      "description": "Show available commands",
+      "meta": {}
+    },
+    {
+      "name": "/hooks",
+      "description": "View configured hooks",
+      "meta": {}
+    },
+    {
+      "name": "/knowledge",
+      "description": "Manage knowledge base",
+      "meta": {
+        "subcommands": [
+          "show",
+          "add",
+          "remove",
+          "update",
+          "clear",
+          "cancel"
+        ]
+      }
+    },
+    {
+      "name": "/mcp",
+      "description": "Show configured MCP servers",
+      "meta": {
+        "subcommands": [
+          "list",
+          "add",
+          "remove"
+        ]
+      }
+    },
+    {
+      "name": "/model",
+      "description": "Select or list available models",
+      "meta": {
+        "hint": "",
+        "subcommands": [
+          "set-current-as-default"
+        ]
+      }
+    },
+    {
+      "name": "/paste",
+      "description": "Paste image from clipboard"
+    },
+    {
+      "name": "/plan",
+      "description": "Switch to Plan agent for breaking down ideas into implementation plans"
+    },
+    {
+      "name": "/prompts",
+      "description": "Select or list available prompts",
+      "meta": {
+        "hint": ""
+      }
+    },
+    {
+      "name": "/quit",
+      "description": "Quit the application",
+      "meta": {
+        "local": true
+      }
+    },
+    {
+      "name": "/reply",
+      "description": "Open editor pre-filled with the last assistant message to compose a reply"
+    },
+    {
+      "name": "/rewind",
+      "description": "Rewind conversation to a previous turn (forks into a new session)",
+      "meta": {}
+    },
+    {
+      "name": "/stats",
+      "description": "Show request IDs and timings for debugging slow turns",
+      "meta": {
+        "hidden": true
+      }
+    },
+    {
+      "name": "/tools",
+      "description": "Show available tools",
+      "meta": {
+        "hint": "trust-all, trust <name>, untrust <name>, reset",
+        "subcommands": [
+          "trust-all",
+          "trust",
+          "untrust",
+          "reset"
+        ]
+      }
+    },
+    {
+      "name": "/usage",
+      "description": "Show billing and usage information",
+      "meta": {}
+    },
+    {
+      "name": "/voice",
+      "description": "Voice input mode for hands-free interaction",
+      "meta": {
+        "subcommands": [
+          "start",
+          "stop",
+          "status"
+        ]
+      }
+    }
+  ]
+}

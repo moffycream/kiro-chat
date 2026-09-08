@@ -11,6 +11,12 @@ import { findKiro } from "./findKiro";
 import { isInsideAnyRoot, isInsideRoot } from "./workspacePaths";
 import { looksLikeSignIn } from "./startupError";
 import {
+  parseAvailableCommands,
+  parseRewindTurns,
+  RewindTurn,
+  SlashCommand,
+} from "./slashCommands";
+import {
   creditRateOf,
   describeContextWindow,
   formatUsageReport,
@@ -23,6 +29,7 @@ import {
 } from "./usage";
 
 export { formatUsageReport, parseAccountUsage, readUsageCommand, UsageInfo };
+export { RewindTurn, SlashCommand };
 
 /** What one of Kiro's own commands answered. */
 export interface CommandResult {
@@ -65,6 +72,8 @@ export interface SessionEvents {
   onError: (message: string) => void;
   onNeedsSetup: (reason: "missing" | "signin" | "failed", detail?: string) => void;
   onModels: (models: ModelInfo[], currentModelId: string) => void;
+  /** Kiro's own slash commands, as it announces them after `session/new`. */
+  onCommands?: (commands: SlashCommand[]) => void;
   onUsage: (usage: UsageInfo) => void;
   onCapabilities: (caps: { image: boolean }) => void;
   /** A review is on screen, so the chat can offer to keep or undo the lot. */
@@ -195,8 +204,20 @@ export function describeTool(update: any): ToolStep {
  * was already handled by naming both spellings; this does it for all of them.
  */
 export function isSessionUpdate(method: string): boolean {
-  const bare = String(method ?? "").replace(/^_?kiro\.dev\//, "");
+  const bare = bareMethod(method);
   return bare === "session/update" || bare === "session/notification";
+}
+
+/**
+ * A notification's name with Kiro's vendor prefix taken off.
+ *
+ * Shared rather than repeated, because the rule above is not special to
+ * session updates: assume *any* Kiro notification may arrive prefixed. Every
+ * new `handleNotification` branch should compare against this, or it will work
+ * on one Kiro build and silently stop on the next.
+ */
+export function bareMethod(method: string): string {
+  return String(method ?? "").replace(/^_?kiro\.dev\//, "");
 }
 
 /**
@@ -225,6 +246,8 @@ export class KiroSession {
   private usage: UsageInfo = {};
   private supportsImages = false;
   private supportsLoad = false;
+  /** Kiro's own slash commands. Empty until it announces them. */
+  private commands: SlashCommand[] = [];
   /** True while session/load runs, so a replay does not double-paint. */
   private replaying = false;
   private textSpy: ((text: string) => void) | undefined;
@@ -286,6 +309,47 @@ export class KiroSession {
 
   get canLoadSessions(): boolean {
     return this.supportsLoad;
+  }
+
+  /** Kiro's own slash commands, for the composer's menu. */
+  get availableCommands(): SlashCommand[] {
+    return this.commands;
+  }
+
+  /**
+   * The turns `/rewind` will offer, newest first.
+   *
+   * Listing and choosing are the same command: `/rewind` with no argument
+   * answers with the list, and `/rewind` with the chosen `logIndex` under
+   * `value` does the rewind. Verified against kiro-cli 2.20.2 — `/help` says
+   * the command takes no arguments, and `_kiro.dev/commands/options` answers
+   * with an empty list for it, so the value on `execute` is the only way in.
+   */
+  async rewindTurns(): Promise<RewindTurn[]> {
+    const result = await this.runCommand("rewind");
+    return parseRewindTurns(result.data);
+  }
+
+  /**
+   * Rewind to a turn, and follow Kiro into the session it forks.
+   *
+   * A rewind does not truncate the conversation in place — it writes a new one
+   * holding everything up to and including the chosen turn, and hands back its
+   * id under `data.sessionId` with `switchSession: true`. That new session is
+   * not loaded in this process: running a command against it answers "Unknown
+   * session id" until `session/load` has been called. So the load is part of
+   * the rewind, not an optional follow-up, and until it succeeds the panel is
+   * still talking to the old conversation.
+   */
+  async rewindTo(logIndex: number): Promise<string> {
+    const result = await this.runCommand("rewind", { value: String(logIndex) });
+    const forked = String(result.data?.sessionId ?? "").trim();
+    if (!result.ok || !forked) {
+      throw new Error(result.text || "Kiro did not rewind the conversation.");
+    }
+    this.output.appendLine(`Rewound into session ${forked}.`);
+    await this.loadSession(forked);
+    return forked;
   }
 
   /**
@@ -690,6 +754,21 @@ export class KiroSession {
     return { ...this.usage };
   }
 
+  /**
+   * Record a model change we did not make — `/model haiku` from the composer
+   * goes through Kiro's own command, so nothing here would otherwise know, and
+   * the button would go on naming the model that was replaced. It is not
+   * written to settings: `setModel` remembers a *choice*, and a command typed
+   * into one conversation is not a new default.
+   */
+  noteModelChanged(modelId: string): void {
+    const id = String(modelId ?? "").trim();
+    if (!id || id === this.currentModelId) return;
+    this.currentModelId = id;
+    this.output.appendLine(`Model changed to "${id}" by command.`);
+    this.events.onModels(this.models, this.currentModelId);
+  }
+
   async setModel(modelId: string, remember = true): Promise<void> {
     if (!this.client?.isRunning || !this.sessionId) {
       throw new Error("Kiro is not connected yet.");
@@ -714,6 +793,23 @@ export class KiroSession {
   private handleNotification(method: string, params: any): void {
     if (method === "_kiro.dev/metadata" || method === "kiro.dev/metadata") {
       this.readUsage(params);
+      return;
+    }
+    /*
+     * Kiro lists its own slash commands, once, just after `session/new`.
+     *
+     * This was being dropped on the floor, which is why the panel had no way
+     * to reach `/compact` or `/rewind` at all. Compared through `bareMethod`
+     * because it arrives prefixed, exactly as the session updates do.
+     */
+    if (bareMethod(method) === "commands/available") {
+      this.commands = parseAvailableCommands(params);
+      this.output.appendLine(
+        `Kiro offers ${this.commands.length} commands: ${this.commands
+          .map((c) => c.name)
+          .join(", ")}`
+      );
+      this.events.onCommands?.(this.commands);
       return;
     }
     if (!isSessionUpdate(method)) {

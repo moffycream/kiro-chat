@@ -9,6 +9,14 @@ import {
   readUsageCommand,
 } from "./kiroSession";
 import {
+  describeCommandResult,
+  isRunnable,
+  offerable,
+  reasonNotOffered,
+  turnsKeptByRewind,
+  SlashCommand,
+} from "./slashCommands";
+import {
   Attachment,
   attachmentsFromUris,
   buildBlocks,
@@ -193,6 +201,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       onNeedsSetup: (reason) => this.onNeedsSetup(reason),
       onModels: (models, currentModelId) =>
         this.post({ type: "models", models, currentModelId }),
+      onCommands: (commands) => this.postCommands(commands),
       onUsage: (usage) => this.post({ type: "usage", usage }),
       onCapabilities: (caps) => this.post({ type: "capabilities", caps }),
       onPermission: (request) => this.requestPermissionInChat(request),
@@ -451,6 +460,35 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         case "deleteChat":
           await this.deleteChat(String(message.id ?? ""));
           break;
+        /*
+         * The name is checked against Kiro's own list before it is run, not
+         * taken on trust from the webview. The composer already parses against
+         * that list, so a name that fails here is not a user typo — it is a
+         * message that did not come from the composer.
+         */
+        case "runCommand": {
+          const name = String(message.name ?? "");
+          const known = this.session.availableCommands.find((c) => c.name === name);
+          if (!known) break;
+          await this.runSlashCommand(name, String(message.value ?? ""));
+          break;
+        }
+        case "listRewind":
+          await this.offerRewind();
+          break;
+        case "rewindTo": {
+          const logIndex = Number(message.logIndex);
+          if (!Number.isFinite(logIndex)) break;
+          // How much of the transcript survives is derived here, from the
+          // rule the tests pin down, rather than worked out again in the
+          // webview where nothing could check it.
+          const kept = turnsKeptByRewind(
+            Number(message.turnCount),
+            Number(message.index)
+          );
+          await this.rewindTo(logIndex, kept);
+          break;
+        }
       }
     });
 
@@ -736,6 +774,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     }
     this.post({ type: "capabilities", caps: { image: this.session.canSendImages } });
     this.post({ type: "status", status: this.session.currentStatus });
+    // Announced once per session, so a panel rebuilt mid-conversation never
+    // hears it. Without this the slash menu is empty until the next new chat.
+    this.postCommands(this.session.availableCommands);
     this.postSettings();
 
     if (restored) {
@@ -1548,6 +1589,134 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
   }
 
   /**
+   * Hand the composer Kiro's command list.
+   *
+   * The *whole* list, with two flags, not just the offerable part. Sending
+   * only what the menu shows meant the composer could not recognise `/quit` at
+   * all — so it fell through to the message path and sent the word "/quit" to
+   * the model as a prompt the user never wrote. `/help` advertises those
+   * commands, so someone will type one; the panel has to be able to say why it
+   * will not run rather than quietly turning it into a question.
+   */
+  private postCommands(commands: SlashCommand[]): void {
+    const offered = new Set(offerable(commands).map((c) => c.name));
+    this.post({
+      type: "commands",
+      commands: commands.map((command) => ({
+        ...command,
+        offered: offered.has(command.name),
+        runnable: isRunnable(command),
+        reason: isRunnable(command) ? "" : reasonNotOffered(command.name),
+      })),
+    });
+  }
+
+  /**
+   * Run one of Kiro's slash commands on the user's behalf.
+   *
+   * The result goes into the transcript as its own entry rather than as an
+   * agent message: nobody asked Kiro a question, and a `/usage` table sitting
+   * in a reply bubble reads as something the model said.
+   *
+   * Whatever the command changed then has to be believed. `/model` and
+   * `/clear` both alter state the panel is *also* displaying, and a panel that
+   * goes on showing the old model, or a transcript Kiro has just forgotten, is
+   * telling the user something untrue — the same failure the permission card
+   * and the mode picker are each built to avoid. So the answer is read for
+   * what it says it did, not just printed.
+   */
+  private async runSlashCommand(name: string, value: string): Promise<void> {
+    const label = value ? `/${name} ${value}` : `/${name}`;
+    this.post({ type: "commandRunning", label });
+    try {
+      const args = value ? { value } : {};
+      const result = await this.session.runCommand(name, args);
+      this.output.appendLine(
+        `${label} answered: ${JSON.stringify(result.data ?? result.text).slice(0, 400)}`
+      );
+
+      // `/clear` wipes Kiro's memory of the conversation. Leaving the messages
+      // on screen would offer a transcript Kiro can no longer be asked about.
+      if (name === "clear" && result.ok) {
+        this.post({ type: "cleared" });
+      }
+      // `/model` changes the model the button names.
+      const model = String(result.data?.model?.id ?? "").trim();
+      if (model) this.session.noteModelChanged(model);
+      /*
+       * Several commands report the context meter back on the way out.
+       *
+       * Only the percentage is taken. `readMeter` would also read a credit
+       * figure, and a command's own cost is not this conversation's spend —
+       * folding it into `sessionCredits` would inflate the number on the strip
+       * every time the menu was used.
+       */
+      const percent = Number(result.data?.contextUsagePercentage);
+      if (Number.isFinite(percent)) {
+        this.post({
+          type: "usage",
+          usage: this.session.mergeUsage({ contextPercent: percent }),
+        });
+      }
+
+      this.post({
+        type: "commandResult",
+        label,
+        ok: result.ok,
+        text: describeCommandResult(name, result),
+      });
+    } catch (error) {
+      this.post({
+        type: "commandResult",
+        label,
+        ok: false,
+        text: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  /** Offer the turns `/rewind` can go back to. */
+  private async offerRewind(): Promise<void> {
+    this.post({ type: "commandRunning", label: "/rewind" });
+    try {
+      const turns = await this.session.rewindTurns();
+      this.post({ type: "rewindTurns", turns });
+    } catch (error) {
+      this.post({
+        type: "commandResult",
+        label: "/rewind",
+        ok: false,
+        text: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  /**
+   * Go back to a turn, and take the panel's own bookkeeping with it.
+   *
+   * Kiro forks rather than truncating, so the conversation the user is in
+   * afterwards has a *different* session id. `chatSessionId` has to move with
+   * it or reopening this chat later would resume the un-rewound original —
+   * the same wrong-session bug `openChat` guards against from the other end.
+   */
+  private async rewindTo(logIndex: number, keptTurns: number): Promise<void> {
+    this.post({ type: "commandRunning", label: "/rewind" });
+    try {
+      const forked = await this.session.rewindTo(logIndex);
+      this.chatSessionId = forked;
+      this.post({ type: "rewound", keptTurns });
+      this.saveCurrentChat();
+    } catch (error) {
+      this.post({
+        type: "commandResult",
+        label: "/rewind",
+        ok: false,
+        text: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  /**
    * Ask Kiro's own /usage command for the account picture. ACP only reports
    * this session's context and credits, so the command is the only way to see
    * the plan cap and reset date.
@@ -1669,11 +1838,40 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         <button type="button" id="instructions-save" class="primary">Save</button>
       </div>
     </div>
+    <!--
+      Kiro's own slash commands. Anchored on .composer for the same reason the
+      instructions box is: a menu as wide as one control is too narrow to read
+      a command and its description in, and this list is both.
+
+      This one *does* declare a role, unlike the mode and model menus. Their
+      reasoning was that a container role promises arrow-key navigation they do
+      not implement, and that they hold a mixture no single role admits. Both
+      are the other way round here: the list is nothing but commands, and the
+      arrows really do move a highlight while focus stays in the textarea —
+      which is exactly the state a screen reader is told nothing about without
+      aria-activedescendant. Declaring listbox here is describing what the
+      code does, not claiming what it does not.
+
+      No backticks in this comment, and none anywhere in this page: the whole
+      document is a TypeScript template literal, so one would end it.
+    -->
+    <div id="slash-menu" class="popup slash-menu" role="listbox" aria-label="Kiro commands" hidden></div>
     <div id="permission-bar" class="permission-bar" hidden></div>
     <div id="change-bar" class="change-bar" hidden></div>
     <div id="chips" class="chips" hidden></div>
 
-    <textarea id="input" rows="2" placeholder="Ask Kiro&#8230;"></textarea>
+    <!--
+      aria-autocomplete, aria-controls and aria-activedescendant, and no
+      aria-expanded: the textbox role does not support that state, and the only
+      way to make it valid is role="combobox" on this element. That is the
+      wrong trade. The box is a multi-line message composer every second of the
+      session and a command picker for the moment a menu is open; overriding
+      its role would have it announce as a combobox, and lose "multi-line",
+      throughout. What a reader actually needs is which row is current, and
+      aria-activedescendant carries that on a textbox legally — appearing when
+      the list opens and going when it closes.
+    -->
+    <textarea id="input" rows="2" placeholder="Ask Kiro&#8230;" aria-autocomplete="list" aria-controls="slash-menu"></textarea>
 
     <div class="composer-row">
       <div class="attach-wrap">
