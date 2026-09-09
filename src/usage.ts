@@ -162,8 +162,10 @@ export function describeContextWindow(tokens: number | undefined): string | unde
 export function readMeter(params: any): Partial<UsageInfo> {
   const out: Partial<UsageInfo> = {};
 
-  const percent = Number(params?.contextUsagePercentage);
-  if (Number.isFinite(percent)) out.contextPercent = percent;
+  const raw = params?.contextUsagePercentage;
+  const percent = typeof raw === "number" || (typeof raw === "string" && raw.trim())
+    ? Number(raw) : NaN;
+  if (Number.isFinite(percent) && percent >= 0 && percent <= 100) out.contextPercent = percent;
 
   const metering = params?.meteringUsage;
   if (typeof metering === "number" && Number.isFinite(metering)) {

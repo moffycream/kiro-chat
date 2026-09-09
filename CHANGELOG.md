@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.30.5
+
+- **Session context details in the usage dropdown.** Click the usage strip above the
+  conversation to see the current session's context percentage, model capacity, and used
+  and remaining tokens. Token counts are estimates calculated from Kiro's reported
+  percentage and model capacity; category totals and the compaction buffer are unavailable.
+- **Guidance as context fills up.** At 80%, the meter turns amber and suggests considering
+  a fresh session for a new task. At 95%, it recommends saving a summary before using **+**
+  to start a new session. These are guidance thresholds, not automatic resets.
+- **Unknown usage stays unknown.** A session with no reading shows "Context not reported"
+  instead of an empty or inherited meter. Invalid readings are ignored, and the panel
+  updates when Kiro reports new usage, including lower readings after compaction.
+- **Account usage remains available separately.** Opening the strip shows session context
+  immediately; **Check account usage** fetches the plan report underneath it.
+
 ## 0.30.4
 
 - **Kiro's reasoning now has somewhere to go.** The extension has always translated Kiro's

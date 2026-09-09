@@ -2173,6 +2173,8 @@ button:disabled {
 }
 
 .usage-panel {
+  max-height: 65vh;
+  overflow-y: auto;
   position: absolute;
   top: 100%;
   left: 0;
@@ -2182,6 +2184,40 @@ button:disabled {
   border-bottom: 1px solid var(--vscode-panel-border);
   background: var(--vscode-dropdown-background, var(--vscode-editor-background));
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
+}
+
+.context-details {
+  margin-bottom: 12px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--vscode-panel-border);
+}
+
+.context-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 6px 0;
+  font-size: 0.85em;
+  font-variant-numeric: tabular-nums;
+}
+
+.context-row:first-child { font-weight: 600; }
+.context-row > :last-child { text-align: right; }
+
+.context-track {
+  height: 7px;
+  margin: 10px 0;
+  overflow: hidden;
+  border-radius: 4px;
+  background: var(--vscode-progressBar-background, #3794ff);
+  background: color-mix(in srgb, var(--vscode-foreground) 12%, transparent);
+}
+
+.context-note {
+  margin: 8px 0 0;
+  font-size: 0.85em;
+  line-height: 1.5;
+  color: var(--vscode-descriptionForeground);
 }
 
 .usage-body {

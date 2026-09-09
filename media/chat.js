@@ -1973,6 +1973,7 @@
 
   function renderUsagePanel() {
     usagePanel.innerHTML = "";
+    renderContextPanel();
 
     if (usageLoading) {
       const wait = document.createElement("div");
@@ -2017,12 +2018,6 @@
     const opening = usagePanel.hidden;
     closeMenus();
     setUsagePanel(opening);
-    // Nothing to read yet, so go and get it rather than showing an empty box.
-    if (opening && !usageReport && !usageLoading) {
-      usageLoading = true;
-      renderUsagePanel();
-      vscode.postMessage({ type: "refreshUsage" });
-    }
   }
 
   usageBar.addEventListener("click", toggleUsagePanel);
@@ -2042,6 +2037,71 @@
     return String(Number(value.toFixed(2)));
   }
 
+  function contextState() {
+    const value = usage.contextPercent;
+    const percent = typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 100
+      ? value : undefined;
+    const model = models.find((m) => m.modelId === currentModelId);
+    const limit = model && model.contextWindowTokens;
+    const capacity = Number.isFinite(limit) && limit > 0 ? limit : undefined;
+    return { percent, capacity };
+  }
+
+  function contextTokens(value) {
+    if (value >= 1000000) return `${Number((value / 1000000).toFixed(1))}M`;
+    if (value >= 1000) return `${Number((value / 1000).toFixed(1))}k`;
+    return String(Math.round(value));
+  }
+
+  function renderContextPanel() {
+    const { percent, capacity } = contextState();
+    const section = document.createElement("section");
+    section.className = "context-details";
+    const row = (label, value) => {
+      const item = document.createElement("div");
+      item.className = "context-row";
+      const name = document.createElement("span");
+      name.textContent = label;
+      const amount = document.createElement("span");
+      amount.textContent = value;
+      item.append(name, amount);
+      section.appendChild(item);
+    };
+    row("Context window", percent === undefined ? "Not reported" : `${credits(percent)}% used`);
+    if (capacity) row("Model capacity", `${contextTokens(capacity)} tokens`);
+    if (percent !== undefined) {
+      const track = document.createElement("div");
+      track.className = "context-track";
+      track.setAttribute("role", "meter");
+      track.setAttribute("aria-label", "Session context used");
+      track.setAttribute("aria-valuemin", "0");
+      track.setAttribute("aria-valuemax", "100");
+      track.setAttribute("aria-valuenow", String(percent));
+      const fill = document.createElement("div");
+      fill.className = `usage-fill${percent >= 80 ? " warn" : ""}`;
+      fill.style.width = `${percent}%`;
+      track.appendChild(fill);
+      section.appendChild(track);
+      row("Used", capacity ? `≈${contextTokens(capacity * percent / 100)} tokens` : `${credits(percent)}%`);
+      row("Remaining", capacity ? `≈${contextTokens(capacity * (100 - percent) / 100)} tokens (${credits(100 - percent)}%)` : `${credits(100 - percent)}%`);
+    }
+    const note = document.createElement("p");
+    note.className = "context-note";
+    note.textContent = percent === undefined
+      ? "Kiro has not reported context usage for this session yet. Usage appears when Kiro sends an update."
+      : percent >= 95
+        ? "Context is nearly full. Consider saving a summary and using + to start a new session."
+        : percent >= 80
+          ? "Context is filling up. You can continue, but consider a new session for a new task."
+          : "Plenty of context remains. No reset is needed based on context usage.";
+    section.appendChild(note);
+    const detail = document.createElement("p");
+    detail.className = "context-note";
+    detail.textContent = "Latest reported usage for this session; it may decrease if Kiro compacts context. Token counts are estimates from the reported percentage and model capacity. Category totals and the compaction buffer are not available.";
+    section.appendChild(detail);
+    usagePanel.appendChild(section);
+  }
+
   function renderUsage(next) {
     usage = next || {};
     const parts = [];
@@ -2058,16 +2118,17 @@
         `${credits(usage.accountCreditsUsed)}${total} credits on ${usage.planName || "your plan"}`
       );
     }
-    if (typeof usage.contextPercent === "number") {
+    if (contextState().percent !== undefined) {
       parts.push(`context ${usage.contextPercent.toFixed(0)}% full`);
       usageFill.style.width = `${Math.min(100, Math.max(0, usage.contextPercent))}%`;
-      usageFill.classList.toggle("warn", usage.contextPercent > 80);
+      usageFill.classList.toggle("warn", usage.contextPercent >= 80);
     } else {
       // Emptied, not left where the last chat put it. The fill was only ever
       // assigned, so a new conversation's bar flashed the old one's fullness
       // before its first meter arrived.
       usageFill.style.width = "0%";
       usageFill.classList.remove("warn");
+      parts.push("Context not reported");
     }
 
     // Credits arrive throughout a turn. Only redraw the list underneath when
@@ -2078,7 +2139,8 @@
     usageText.textContent = parts.join("  \u00b7  ");
     usageBar.title = usage.accountResetsOn
       ? `Plan credits renew ${usage.accountResetsOn}`
-      : "";
+      : "View session context and account usage";
+    if (!usagePanel.hidden) renderUsagePanel();
   }
 
   // ---------------------------------------------------------------
@@ -3475,6 +3537,7 @@
 
       case "models":
         setModels(message.models, message.currentModelId);
+        renderUsage(usage);
         break;
 
       case "usage":
@@ -3980,5 +4043,6 @@
   }
 
   renderChips();
+  renderUsage(usage);
   vscode.postMessage({ type: "ready", restored });
 })();

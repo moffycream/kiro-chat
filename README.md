@@ -107,17 +107,28 @@ them. The extension checks this when it connects.
 ## Seeing your usage
 
 A strip under the status line shows **credits used in this chat** and **how full the context
-is**, updating as Kiro works. The bar turns amber past 80% full, which is the point to start
-a fresh chat with the **+** button.
+is**, when Kiro reports them. **Click this strip above the chat messages** to open the
+session context panel. It shows the latest context percentage, model capacity, and used
+and remaining tokens. Token counts are estimates based on the reported percentage and
+capacity; if capacity is unavailable, the panel shows percentages only.
 
-Press **Usage** at the top for your account picture: your plan name, credits used against
-your limit, when the cycle renews, and whether overages are switched on. Those figures stay
-on the strip and under the model list afterwards, so you do not have to press it again.
+The meter turns amber at **80%** and suggests considering a new session for a new task.
+At **95%**, it recommends saving a summary and using **+** to start a fresh session.
+These are suggestions; the extension does not reset the session automatically. The reading
+may decrease if Kiro compacts context. A new or reopened session with no reading shows
+**Context not reported** until Kiro sends one. Individual totals for messages, tools,
+system prompts, memory, and the compaction buffer are not available.
 
-This comes from Kiro's own `usage` command, which reports real numbers rather than an
-estimate. If your version of Kiro answers with plain text instead, the panel reads what it
-can and still shows the report in full. If the command fails, the panel says what went
-wrong; **Kiro Chat: Show Log** has the whole exchange.
+Click **Check account usage** inside the dropdown, or press **Usage** at the top, for your
+account picture: plan name, credits used against your limit, renewal date, and overage
+status. Those credits are account-wide, while the context percentage belongs to this
+session. The account report comes from Kiro's own `usage` command. If it answers with plain
+text, the panel reads what it can and shows the report in full. If the command fails, the
+panel explains the error; **Kiro Chat: Show Log** has the whole exchange.
+
+If you still see only the account report, install the updated `kiro-chat.vsix` and run
+**Developer: Reload Window** from the Command Palette. Version **0.30.5** adds the session
+context panel; **Kiro Chat: About and Check Version** shows your installed version.
 
 ## Changing the model
 

@@ -1,5 +1,6 @@
 import * as vscode from "vscode";
 import * as path from "node:path";
+import { readMeter } from "./usage";
 import { randomBytes } from "node:crypto";
 import { execFile } from "node:child_process";
 import {
@@ -1651,8 +1652,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
        * folding it into `sessionCredits` would inflate the number on the strip
        * every time the menu was used.
        */
-      const percent = Number(result.data?.contextUsagePercentage);
-      if (Number.isFinite(percent)) {
+      const percent = readMeter(result.data).contextPercent;
+      if (percent !== undefined) {
         this.post({
           type: "usage",
           usage: this.session.mergeUsage({ contextPercent: percent }),

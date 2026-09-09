@@ -50,6 +50,7 @@ export interface ModelInfo {
   creditRate?: string;
   /** e.g. "1M context" — likewise. */
   contextWindow?: string;
+  contextWindowTokens?: number;
 }
 
 /** An ACP content block: text, an image, or a pointer to a file. */
@@ -734,6 +735,7 @@ export class KiroSession {
           ...model,
           creditRate: model.creditRate ?? extra.creditRate,
           contextWindow: describeContextWindow(extra.contextWindow),
+          contextWindowTokens: extra.contextWindow,
         };
       });
       this.output.appendLine(`Credit rates read for ${details.size} model(s).`);

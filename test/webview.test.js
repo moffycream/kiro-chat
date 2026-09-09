@@ -42,6 +42,43 @@ test("chat.js is valid JavaScript", () => {
   assert.doesNotThrow(() => new vm.Script(js, { filename: "chat.js" }));
 });
 
+test("session context shows estimates, guidance, and clears unavailable readings", () => {
+  function element() {
+    return {
+      children: [], style: {}, attributes: {}, textContent: "",
+      appendChild(child) { this.children.push(child); },
+      append(...children) { this.children.push(...children); },
+      setAttribute(key, value) { this.attributes[key] = value; },
+    };
+  }
+  const sandbox = {
+    usage: { contextPercent: 10 },
+    models: [{ modelId: "test", contextWindowTokens: 1000000 }],
+    currentModelId: "test", document: { createElement: element }, usagePanel: element(),
+  };
+  vm.createContext(sandbox);
+  for (const name of ["credits", "contextState", "contextTokens", "renderContextPanel"]) {
+    vm.runInContext(sliceFrom(js, `function ${name}(`), sandbox);
+  }
+  const contents = (node) => [node.textContent, ...node.children.map(contents)].join(" ");
+  const draw = (percent) => {
+    sandbox.usage = percent === undefined ? {} : { contextPercent: percent };
+    sandbox.usagePanel = element();
+    vm.runInContext("renderContextPanel()", sandbox);
+    return contents(sandbox.usagePanel);
+  };
+  assert.match(draw(10), /≈100k tokens.*≈900k tokens.*No reset is needed/);
+  assert.match(draw(80), /Context is filling up/);
+  assert.match(draw(95), /Context is nearly full/);
+  assert.match(draw(20), /No reset is needed/, "a lower reading after compaction replaces the warning");
+  const empty = draw(undefined);
+  assert.match(empty, /Not reported/);
+  assert.doesNotMatch(empty, /≈|No reset is needed/, "a new session must not inherit an estimate");
+  sandbox.models = [];
+  assert.match(draw(25), /Used 25%.*Remaining 75%/);
+  assert.doesNotMatch(draw(25), /≈/, "an unknown capacity must not invent token counts");
+});
+
 test("the composer offers and persists all requested workflow modes", () => {
   for (const label of ["Default", "Spec", "Quick Spec", "Bug Fix", "Plan"]) {
     assert.match(js, new RegExp(`label: "${label}"`));

@@ -152,6 +152,14 @@ test("the meter is read whether it is a number or an object", () => {
   assert.deepEqual(readMeter({}), {});
 });
 
+test("missing and invalid context readings are not reported as empty sessions", () => {
+  for (const value of [null, "", " ", false, -1, 101, Infinity, "unknown"]) {
+    assert.deepEqual(readMeter({ contextUsagePercentage: value }), {});
+  }
+  assert.deepEqual(readMeter({ contextUsagePercentage: "0" }), { contextPercent: 0 });
+  assert.deepEqual(readMeter({ contextUsagePercentage: 100 }), { contextPercent: 100 });
+});
+
 // The prose fallback, for builds whose usage command has no structured data.
 
 test("plan credits read as a used/total pair", () => {

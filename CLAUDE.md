@@ -720,6 +720,15 @@ number is honest where a wrong one is not.
 decimals and drops trailing zeros. Session credits used to be `toFixed(2)` and account
 credits were concatenated raw, so a plan total arrived as `1234.5678901234 credits on Pro`.
 
+**The context dropdown uses the current session's reported percentage.** `readMeter`
+accepts only finite percentages from 0 through 100; missing, null, blank, and invalid
+values must not become zero. `ModelInfo.contextWindowTokens` preserves the numeric
+capacity from the model command alongside the display label. `renderContextPanel` uses
+that capacity to estimate token counts and labels them as estimates. Do not infer category
+totals or compaction buffers. Unknown usage remains visible as "Context not reported".
+The 80% and 95% guidance thresholds do not trigger resets. Opening the dropdown does not
+fetch account usage; its explicit button does. Model and usage updates redraw an open panel.
+
 ## Webview constraints
 
 **The webview tests are static analysis.** `test/webview.test.js` reads `media/chat.css`, `media/chat.js` and `src/chatViewProvider.ts` as *text* and asserts invariants with regex. Editing markup or CSS can therefore break tests in non-obvious ways. Current invariants:
