@@ -627,6 +627,12 @@ a global cap let a busy project evict a quiet one's history.
 
 `postAttachments` sends a `data:` URI as `preview` for image attachments; the page's CSP already allows `data:` for `img-src`. It previously stripped `data` entirely, which is why images showed as filenames. Over `MAX_PREVIEW_BYTES` no preview is sent and the chip falls back to text — the thumbnail is rendered ~22px wide and is not worth pushing megabytes through `postMessage` for.
 
+Image thumbnails in sent messages and composer chips open `openImagePreview` in
+`media/chat.js`. It reuses the preview URI in a native modal dialog, with fit and
+actual-size modes, Escape dismissal, and focus restoration. Keep the thumbnail
+inside a button for keyboard access; composer chips already supply that button.
+The viewer lives entirely in the webview and needs no extension-host message.
+
 ### Modules kept free of `vscode` on purpose
 
 `src/usage.ts`, `src/setupWatcher.ts`, `src/startupError.ts`, `src/history.ts`, `src/promptBlocks.ts`, `src/editModes.ts` and the `needsShell`/`quote` exports of `src/acpClient.ts` have no `vscode` import so the tests can `require("../out/...")` directly. There is no VS Code test harness in this repo — that constraint is the entire testing strategy. Keep new parsing and logic modules importable without `vscode`.

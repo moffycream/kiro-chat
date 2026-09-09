@@ -13,6 +13,29 @@ const provider = fs.readFileSync(path.join(root, "src", "chatViewProvider.ts"), 
 const reviewer = fs.readFileSync(path.join(root, "src", "changeReviewer.ts"), "utf8");
 const manifest = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
 
+test("sparse tool updates preserve names and do not multiply Working rows", () => {
+  const sandbox = {};
+  vm.createContext(sandbox);
+  vm.runInContext(sliceFrom(js, "function mergeToolStep(previous, incoming)"), sandbox);
+  const merge = sandbox.mergeToolStep;
+  for (let i = 0; i < 50; i++) {
+    assert.equal(merge(null, { id: `chunk-${i}`, title: "Working", status: "running" }), null);
+  }
+  const first = merge(null, {
+    id: "read-1", title: "Reading package.json", status: "running", purpose: "Check version",
+  });
+  const completed = merge(first, { id: "read-1", title: "Working", status: "completed" });
+  assert.equal(completed.title, "Reading package.json");
+  assert.equal(completed.purpose, "Check version");
+  assert.equal(completed.status, "completed");
+  assert.equal(merge(completed, { id: "read-1", title: "Read package.json", status: "completed" }).title,
+    "Read package.json");
+  assert.ok(merge(null, { title: "Working", purpose: "Inspect the application" }),
+    "a meaningful purpose must not be hidden");
+  assert.match(sliceFrom(js, 'case "tool":'), /if \(!tool\) break;/);
+  assert.match(sliceFrom(js, "function restoreHistory(saved)"), /filter\(\(tool\) => mergeToolStep\(null, tool\)\)/);
+});
+
 /**
  * One function's source, from its opening line to the next one at the same
  * indent.

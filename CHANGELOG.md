@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.30.7
+
+- **Fixed repeated “Working” rows.** Tool notifications without a useful name or
+  purpose no longer create empty placeholder steps. Updates to known steps retain
+  their existing names and purpose while updating their status.
+- **Older chats display cleanly too.** Reopening a saved chat hides empty “Working”
+  placeholders without changing the saved conversation or hiding named steps.
+
+## 0.30.6
+
+- **Click an image to open it.** Image thumbnails in sent messages and image chips
+  above the message box now open a larger viewer inside the chat panel.
+- **Inspect screenshot details.** The viewer starts fitted to the available space.
+  Choose **Actual size** to view the original dimensions and scroll, then **Fit to view**
+  to fit it again.
+- **Keyboard access.** Tab to an image and press Enter or Space to open it. Close the
+  viewer with **Close**, Escape, or a click outside it; focus returns to the opener.
+
 ## 0.30.5
 
 - **Session context details in the usage dropdown.** Click the usage strip above the

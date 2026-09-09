@@ -600,7 +600,16 @@
     if (shown.length) {
       const strip = document.createElement("div");
       strip.className = "msg-images";
-      for (const a of shown) strip.appendChild(thumbnail(a));
+      for (const a of shown) {
+        const open = document.createElement("button");
+        open.type = "button";
+        open.className = "image-open";
+        open.title = `Open image: ${a.label}`;
+        open.setAttribute("aria-label", open.title);
+        open.appendChild(thumbnail(a));
+        open.addEventListener("click", () => openImagePreview(a));
+        strip.appendChild(open);
+      }
       node.appendChild(strip);
     }
 
@@ -885,6 +894,17 @@
    * name, so a row that was still going looked like one that had finished.
    * The glyph carries it now, and `data-status` colours it.
    */
+  function mergeToolStep(previous, incoming) {
+    const named = incoming.title && !/^Working(?:\.{3}|…)?$/i.test(incoming.title.trim());
+    if (!previous && !named && !incoming.purpose) return null;
+    return {
+      ...previous,
+      ...incoming,
+      title: named ? incoming.title : (previous && previous.title) || "Working",
+      purpose: incoming.purpose || (previous && previous.purpose),
+    };
+  }
+
   function renderToolRow(row, tool, phase = "live") {
     row.dataset.status = tool.status;
     row.textContent = "";
@@ -2168,6 +2188,52 @@
     return img;
   }
 
+  function openImagePreview(attachment) {
+    if (!attachment.preview) return;
+    const previousFocus = document.activeElement;
+    const dialog = document.createElement("dialog");
+    dialog.className = "image-viewer";
+    dialog.setAttribute("aria-label", `Image preview: ${attachment.label}`);
+    const toolbar = document.createElement("div");
+    toolbar.className = "image-viewer-toolbar";
+    const label = document.createElement("span");
+    label.textContent = attachment.label;
+    const zoom = document.createElement("button");
+    zoom.type = "button";
+    zoom.textContent = "Actual size";
+    zoom.setAttribute("aria-pressed", "false");
+    const close = document.createElement("button");
+    close.type = "button";
+    close.textContent = "Close";
+    const viewport = document.createElement("div");
+    viewport.className = "image-viewer-viewport";
+    const img = document.createElement("img");
+    img.src = attachment.preview;
+    img.alt = attachment.label;
+    viewport.appendChild(img);
+    zoom.addEventListener("click", () => {
+      const actualSize = viewport.classList.toggle("actual-size");
+      zoom.textContent = actualSize ? "Fit to view" : "Actual size";
+      zoom.setAttribute("aria-pressed", String(actualSize));
+    });
+    close.addEventListener("click", () => dialog.close());
+    dialog.addEventListener("click", (event) => {
+      if (event.target === dialog) dialog.close();
+    });
+    // Keep viewer keystrokes away from chat shortcuts. The native dialog
+    // handles Escape and keeps keyboard focus inside until it closes.
+    dialog.addEventListener("keydown", (event) => event.stopPropagation());
+    dialog.addEventListener("close", () => {
+      dialog.remove();
+      if (previousFocus && previousFocus.isConnected) previousFocus.focus();
+    });
+    toolbar.append(label, zoom, close);
+    dialog.append(toolbar, viewport);
+    document.body.appendChild(dialog);
+    dialog.showModal();
+    close.focus();
+  }
+
   /**
    * Windows writes the same file several ways — drive-letter case, either
    * slash, a trailing separator. Comparing the raw strings would show the same
@@ -2313,8 +2379,11 @@
       }
       // The full path is what disambiguates two files with the same name.
       open.title = a.path || a.label;
-      if (a.path) chip.classList.add("chip-open-able");
-      if (a.path) {
+      if (a.preview || a.path) chip.classList.add("chip-open-able");
+      if (a.preview) {
+        open.title = `Open image: ${a.label}`;
+        open.addEventListener("click", () => openImagePreview(a));
+      } else if (a.path) {
         open.addEventListener("click", () =>
           vscode.postMessage({ type: "openFile", path: a.path })
         );
@@ -3664,9 +3733,12 @@
       }
 
       case "tool": {
+        const id = "tool-" + message.tool.id;
+        const previous = current && current.toolList.find((t) => t.id === id);
+        const tool = mergeToolStep(previous, { ...message.tool, id });
+        if (!tool) break;
         const was = atBottom();
         const bubble = ensureAgentBubble();
-        const id = "tool-" + message.tool.id;
         let row = bubble.tools.querySelector(`[data-id="${CSS.escape(id)}"]`);
         if (!row) {
           row = document.createElement("div");
@@ -3681,21 +3753,12 @@
         // A tool can arrive by a route that never posted a userMessage, so
         // the header is started here too rather than assumed to be running.
         startThinking();
-        renderToolRow(row, message.tool, "live");
+        renderToolRow(row, tool, "live");
         const seen = bubble.toolList.find((t) => t.id === id);
         if (seen) {
-          seen.title = message.tool.title;
-          seen.status = message.tool.status;
-          // A later update carries the real title and the purpose; the first
-          // notification has only the kind.
-          if (message.tool.purpose) seen.purpose = message.tool.purpose;
+          Object.assign(seen, tool);
         } else {
-          bubble.toolList.push({
-            id,
-            title: message.tool.title,
-            status: message.tool.status,
-            purpose: message.tool.purpose,
-          });
+          bubble.toolList.push(tool);
         }
         /*
          * A step arrived, so the header exists — always, and unconditionally.
@@ -3983,7 +4046,7 @@
           bubble.tools.appendChild(thought);
           bubble.thought = thought;
         }
-        const steps = item.tools || [];
+        const steps = (item.tools || []).filter((tool) => mergeToolStep(null, tool));
         for (const tool of steps) {
           const row = document.createElement("div");
           row.className = "tool";

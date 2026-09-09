@@ -87,7 +87,7 @@ explain @src/api/routes.ts and how it uses @src/models
 The dropped items are attached as well, so Kiro can open them.
 
 Attached items show as chips. Click a chip's name to open that file, or the **×** to remove
-it. Attachments clear once the message is sent.
+it. Files and folders stay attached until you remove them; images clear once sent.
 
 One detail worth knowing: Kiro reads attached files itself rather than having their contents
 pasted into the message. It reports that it will not accept file contents inlined in a
@@ -100,6 +100,12 @@ Paste an image straight into the message box with `Ctrl+V`. Take a screenshot wi
 `Win+Shift+S`, click the message box, paste, and it attaches.
 
 You can also use **+** then **An image** to pick image files from disk.
+
+**Click an image thumbnail to open a larger view**, either before sending it or in a
+sent message. Choose **Actual size** to inspect details and scroll around the image,
+or **Fit to view** to fit it within the chat panel. Press **Escape**, click **Close**,
+or click outside the viewer to return to chat. You can also Tab to a thumbnail and
+press Enter or Space to open it. Available from version **0.30.6**.
 
 If your Kiro version does not accept images, the panel says so rather than silently dropping
 them. The extension checks this when it connects.
