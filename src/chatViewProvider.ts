@@ -8,6 +8,7 @@ import {
   KiroSession,
   parseAccountUsage,
   readUsageCommand,
+  readContextCommand,
 } from "./kiroSession";
 import {
   describeCommandResult,
@@ -148,7 +149,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     string,
     {
       resolve: (optionId: string | undefined) => void;
-      request: { title: string; options: Array<{ id: string; label: string; kind: string }> };
+      request: {
+        title: string;
+        options: Array<{ id: string; label: string; kind: string }>;
+        waiting: number;
+      };
     }
   >();
 
@@ -301,6 +306,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
           break;
         case "refreshUsage":
           await this.refreshUsage();
+          break;
+        case "refreshContext":
+          await this.refreshContext();
           break;
         case "openFile":
           await this.openPath(String(message.path ?? ""));
@@ -1138,6 +1146,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
   private requestPermissionInChat(request: {
     title: string;
     options: Array<{ id: string; label: string; kind: string }>;
+    waiting: number;
   }): Promise<string | undefined> {
     if (!this.view) return Promise.resolve(undefined);
     const requestId = freshId();
@@ -1769,6 +1778,42 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     }
   }
 
+  /**
+   * Ask Kiro what is actually in its context.
+   *
+   * Unlike `refreshUsage` this is answered locally and instantly — no billing
+   * call, no model — so the panel may ask every time it opens rather than
+   * hiding it behind a button. It is still a command, so it cannot run while a
+   * turn is in flight; that refusal is reported rather than swallowed, because
+   * a panel showing last turn's numbers as though they were current is the
+   * kind of quiet lie this codebase keeps paying for.
+   */
+  async refreshContext(): Promise<void> {
+    this.post({ type: "contextLoading" });
+    try {
+      const result = await this.session.runCommand("context");
+      const breakdown = readContextCommand(result.data);
+      if (!breakdown) {
+        this.output.appendLine(
+          `context answered without a breakdown: ${JSON.stringify(result.data ?? result.text)}`
+        );
+        this.post({ type: "contextBreakdown", ok: false, detail: "Kiro reported no breakdown." });
+        return;
+      }
+      // The percentage off a command result is the one figure worth folding
+      // into the strip. A command's own cost is not the conversation's spend,
+      // so no credit figure is ever taken from here.
+      if (breakdown.percent !== undefined) {
+        this.post({ type: "usage", usage: this.session.mergeUsage({ contextPercent: breakdown.percent }) });
+      }
+      this.post({ type: "contextBreakdown", ok: true, breakdown });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.output.appendLine(`context failed: ${message}`);
+      this.post({ type: "contextBreakdown", ok: false, detail: message });
+    }
+  }
+
   // ---- setup helpers ---------------------------------------------------
 
   private installCommand(): string {
@@ -1821,6 +1866,18 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 
   <div id="dropzone" class="dropzone" hidden><span>Drop anywhere here to attach</span></div>
 
+  <!--
+    Outside the composer, not inside it.
+
+    These two ask for a decision about what Kiro has done; the composer is
+    where you say what it should do next. Sitting inside its box they read as
+    part of the message control — a toolbar attached to the thing you type in
+    — when they are the last word of the turn above. They keep their place
+    between the transcript and the composer, where they cannot scroll away.
+  -->
+  <div id="permission-bar" class="permission-bar" hidden></div>
+  <div id="change-bar" class="change-bar" hidden></div>
+
   <form id="composer" class="composer">
     <!--
       The instructions box: a panel over the transcript rather than a row in
@@ -1857,8 +1914,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       document is a TypeScript template literal, so one would end it.
     -->
     <div id="slash-menu" class="popup slash-menu" role="listbox" aria-label="Kiro commands" hidden></div>
-    <div id="permission-bar" class="permission-bar" hidden></div>
-    <div id="change-bar" class="change-bar" hidden></div>
     <div id="chips" class="chips" hidden></div>
 
     <!--
@@ -1872,7 +1927,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       aria-activedescendant carries that on a textbox legally — appearing when
       the list opens and going when it closes.
     -->
-    <textarea id="input" rows="2" placeholder="Ask Kiro&#8230;" aria-autocomplete="list" aria-controls="slash-menu"></textarea>
+    <!--
+      The wrapper exists for one reason: a border cannot hold a gradient that
+      moves, so the travelling light is painted on a layer behind the box and
+      the textarea's own background masks all but its edge. Nothing else hangs
+      off it.
+    -->
+    <div class="input-wrap">
+      <textarea id="input" rows="2" placeholder="Ask Kiro&#8230;" aria-autocomplete="list" aria-controls="slash-menu"></textarea>
+    </div>
 
     <div class="composer-row">
       <div class="attach-wrap">

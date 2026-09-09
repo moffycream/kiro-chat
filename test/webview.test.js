@@ -65,41 +65,117 @@ test("chat.js is valid JavaScript", () => {
   assert.doesNotThrow(() => new vm.Script(js, { filename: "chat.js" }));
 });
 
-test("session context shows estimates, guidance, and clears unavailable readings", () => {
+/*
+ * The panel shows what is in Kiro's context, not an essay about what it
+ * cannot show.
+ *
+ * It used to derive four rows from one number — the meter percentage times
+ * the model's capacity — and sit them under two paragraphs explaining that
+ * the categories were unavailable and the tokens were estimates. They are
+ * available: `/context` answers with a real breakdown, so the numbers are
+ * Kiro's own now and the prose is gone. What is left of the prose is one line
+ * of advice, and only when there is any to give.
+ */
+test("the context panel shows Kiro's own breakdown, not prose", () => {
   function element() {
-    return {
-      children: [], style: {}, attributes: {}, textContent: "",
-      appendChild(child) { this.children.push(child); },
+    const node = {
+      children: [], style: {}, attributes: {}, textContent: "", className: "",
+      classList: { add(name) { node.className += ` ${name}`; } },
+      appendChild(child) { this.children.push(child); return child; },
       append(...children) { this.children.push(...children); },
       setAttribute(key, value) { this.attributes[key] = value; },
     };
+    return node;
   }
   const sandbox = {
-    usage: { contextPercent: 10 },
-    models: [{ modelId: "test", contextWindowTokens: 1000000 }],
+    usage: {}, models: [{ modelId: "test", contextWindowTokens: 200000 }],
     currentModelId: "test", document: { createElement: element }, usagePanel: element(),
+    contextBreakdown: null, contextLoading: false, contextError: "",
   };
   vm.createContext(sandbox);
-  for (const name of ["credits", "contextState", "contextTokens", "renderContextPanel"]) {
+  for (const name of [
+    "credits", "contextState", "contextTokens", "renderContextPanel", "renderContextBreakdown",
+  ]) {
     vm.runInContext(sliceFrom(js, `function ${name}(`), sandbox);
   }
   const contents = (node) => [node.textContent, ...node.children.map(contents)].join(" ");
-  const draw = (percent) => {
+  const draw = (percent, breakdown) => {
     sandbox.usage = percent === undefined ? {} : { contextPercent: percent };
+    sandbox.contextBreakdown = breakdown || null;
     sandbox.usagePanel = element();
     vm.runInContext("renderContextPanel()", sandbox);
     return contents(sandbox.usagePanel);
   };
-  assert.match(draw(10), /≈100k tokens.*≈900k tokens.*No reset is needed/);
-  assert.match(draw(80), /Context is filling up/);
-  assert.match(draw(95), /Context is nearly full/);
-  assert.match(draw(20), /No reset is needed/, "a lower reading after compaction replaces the warning");
-  const empty = draw(undefined);
-  assert.match(empty, /Not reported/);
-  assert.doesNotMatch(empty, /≈|No reset is needed/, "a new session must not inherit an estimate");
-  sandbox.models = [];
-  assert.match(draw(25), /Used 25%.*Remaining 75%/);
-  assert.doesNotMatch(draw(25), /≈/, "an unknown capacity must not invent token counts");
+
+  const breakdown = {
+    totalTokens: 12438,
+    categories: [
+      {
+        key: "contextFiles", label: "Context files", tokens: 5401, percent: 2.7,
+        items: [
+          { name: "README.md", tokens: 5401, percent: 2.7, matched: true },
+          { name: "AGENTS.md", tokens: 0, percent: 0, matched: false },
+        ],
+      },
+      { key: "yourPrompts", label: "Your messages", tokens: 58, percent: 0.03, items: [] },
+      { key: "kiroResponses", label: "Kiro's replies", tokens: 0, percent: 0, items: [] },
+      {
+        key: "tools", label: "Tool definitions", tokens: 6979, percent: 3.49,
+        items: [{ name: "grep", tokens: 468, percent: 0.23 }],
+      },
+    ],
+  };
+
+  const full = draw(6.2, breakdown);
+  // Rounded: Kiro reports 6.218999862670898, and two decimals on a headline
+  // reads as precision that means something.
+  assert.match(full, /\b6% · /, "the headline is how full it is");
+  assert.match(full, /12\.4k of 200k/, "against what Kiro says it is holding");
+  assert.match(full, /Context files.*5\.4k/s);
+  assert.doesNotMatch(full, /0\.03%/, "a per-category share says less than its token count");
+  // Files are named — that is the answer to "what does it know about my code".
+  assert.match(full, /README\.md.*5\.4k/s);
+  // A file Kiro looked for and did not find is usually why something did not
+  // take, so it is named rather than dropped.
+  assert.match(full, /AGENTS\.md.*not found/s);
+  // Tools are counted, not listed: thirteen built-in definitions is a number
+  // you read once.
+  assert.doesNotMatch(full, /grep/, "tool items are not enumerated");
+  // A category holding nothing is a row saying zero.
+  assert.doesNotMatch(full, /Kiro's replies/, "an empty category earns no line");
+
+  // One line of advice, and only when there is any.
+  assert.doesNotMatch(full, /new chat/, "nothing to say below 80%");
+  assert.match(draw(82, breakdown), /Filling up/);
+  assert.match(draw(96, breakdown), /Nearly full/);
+  assert.doesNotMatch(draw(20, breakdown), /Filling up|Nearly full/, "compaction clears it");
+
+  const empty = draw(undefined, null);
+  assert.match(empty, /not reported/);
+  assert.doesNotMatch(empty, /\d+k/, "a new session must not inherit the last one's figures");
+
+  sandbox.contextLoading = true;
+  assert.match(draw(6.2, null), /Asking Kiro/, "it says so while it is asking");
+  sandbox.contextLoading = false;
+  sandbox.contextError = "Kiro is still working on the last message.";
+  assert.match(draw(6.2, null), /still working/, "and says why when it could not");
+});
+
+/*
+ * Both halves, as ever: the panel asks on open, the provider answers, and the
+ * numbers come from Kiro rather than from multiplying the meter by a capacity.
+ */
+test("the context breakdown is asked for and answered", () => {
+  assert.match(js, /type: "refreshContext"/, "the panel asks when it opens");
+  assert.match(provider, /case "refreshContext"/, "and the provider answers");
+  assert.match(js, /case "contextBreakdown"/, "the webview handles the answer");
+  assert.match(js, /case "contextLoading"/);
+  assert.match(provider, /type: "contextBreakdown"/);
+  assert.match(provider, /readContextCommand\(result\.data\)/);
+  // A command's own cost is not the conversation's spend; only the percentage
+  // is ever folded into the strip from a command result.
+  const refresh = sliceFrom(provider, "async refreshContext()");
+  assert.doesNotMatch(refresh, /sessionCredits|accountCredits/);
 });
 
 test("the composer offers and persists all requested workflow modes", () => {
@@ -665,6 +741,82 @@ test("the transcript says when Kiro is working, and for how long", () => {
 });
 
 /*
+ * A running turn is said in one place, calmly: a light travelling the border
+ * of the message box.
+ *
+ * The box is the one thing always in the same place whatever the transcript
+ * is doing, so it can cover the whole turn — including the long silences
+ * while Kiro reads and edits and no text is arriving at all. Two earlier
+ * attempts are why the shape is this one: a blinking caret, too loud for the
+ * size it sits at and dark during exactly those silences; and a pulsing glow,
+ * which reads as an alarm when the point is to be glanceable then ignorable.
+ */
+test("a running turn is a light travelling the message box border", () => {
+  // Anchored, or this matches the indented copy inside the reduced-motion
+  // block. The caret is deliberately still — a blink was tried and reverted.
+  const caret = css.match(/^\.cursor::after \{([^}]*)\}/m);
+  assert.ok(caret, ".cursor::after should exist");
+  assert.doesNotMatch(caret[1], /animation/, "the caret does not move");
+
+  const edge = css.match(/^\.composer\.working \.input-wrap::before \{([\s\S]*?)\n\}/m);
+  assert.ok(edge, "the travelling light should have a rule");
+  assert.match(css, /@keyframes edge-travel \{/);
+  /*
+   * One colour, and the theme's own. A rainbow was tried and belongs to no
+   * theme in particular; a hardcoded hex glows the same regardless of what
+   * the user is running. This is the light the box already wears on focus,
+   * so a running turn reads as this box being active.
+   */
+  assert.doesNotMatch(edge[1], /#[0-9a-fA-F]{3,8}\b/, "no hardcoded colours in the arc");
+  assert.match(edge[1], /var\(--vscode-focusBorder\)/);
+  /*
+   * `@property` is not decoration here. A plain custom property is a string
+   * as far as animation is concerned, so the angle would jump from 0 to 360
+   * in one frame and nothing would appear to move at all.
+   */
+  assert.match(css, /@property --edge-angle \{[\s\S]*?syntax: "<angle>";/);
+  /*
+   * The wrapper gives the gradient a layer to live on, and must not be an
+   * inline box: a textarea is inline, so a plain wrapper is a few pixels
+   * taller than it and the gradient shows through that gap as a band along
+   * the bottom rather than a line along the edge.
+   */
+  assert.match(provider, /<div class="input-wrap">/);
+  assert.match(css, /^\.input-wrap \{[^}]*display: flex;/m);
+
+  // Both halves: nothing adds the class, and the light never appears.
+  assert.match(
+    js,
+    /formEl\.classList\.toggle\("working", status === "busy"\)/,
+    "the class follows the turn, not merely a busy-looking status"
+  );
+
+  // Motion is how this speaks, so it stops when motion is turned off — and
+  // has to leave something behind that still says a turn is running.
+  const block = css.match(/@media \(prefers-reduced-motion: reduce\) \{[\s\S]*?\n\}/);
+  assert.ok(block, "there should be a reduced-motion block");
+  assert.match(block[0], /\.composer\.working \.input-wrap::before \{\s*animation: none;/);
+  assert.match(block[0], /--edge-angle:/, "the arc parks somewhere lit rather than vanishing");
+});
+
+/*
+ * These two ask for a decision about the turn that has just run. Inside the
+ * composer's box they read as a toolbar bolted to the thing you type in,
+ * when they are the last word of the conversation above it.
+ */
+test("the permission and change bars sit outside the composer", () => {
+  const form = provider.indexOf('<form id="composer"');
+  const permission = provider.indexOf('id="permission-bar"');
+  const change = provider.indexOf('id="change-bar"');
+  const messages = provider.indexOf('id="messages"');
+  assert.ok(permission > -1 && change > -1 && form > -1);
+  assert.ok(messages < permission && permission < change, "under the transcript, in order");
+  assert.ok(change < form, "and above the composer rather than inside it");
+  // The composer used to supply their side padding; now they carry their own.
+  assert.match(css, /^\.permission-bar,\s*\n\.change-bar \{[^}]*margin: 0 var\(--gap\)/m);
+});
+
+/*
  * A turn can run a dozen tools, and listing them all pushed the answer off
  * the screen before it arrived. They fold behind one line of state.
  */
@@ -839,9 +991,40 @@ test("a pending permission survives the panel being rebuilt", () => {
   assert.match(teardownBody, /cancelPendingPermissions/);
   assert.match(teardownBody, /keepPermissionsAlive/, "and no timer outlives it");
   // The request is kept beside its resolver so there is something to re-post.
-  assert.match(provider, /request: \{ title: string; options:/, "the question is kept, not just the resolver");
+  assert.match(
+    provider,
+    /request: \{\s*title: string;\s*options:/,
+    "the question is kept, not just the resolver"
+  );
   // And the same question arriving twice must not stack up two cards.
   assert.match(js, /if \(!already\) addPermissionCard\(asked\);/);
+});
+
+/*
+ * Questions are asked one at a time, so the card has to say what is behind it.
+ *
+ * Both halves, as ever: the session sends `waiting` with the request and the
+ * provider spreads the request into the message, so a card that stopped
+ * reading it would go quiet with nothing failing.
+ */
+test("a live permission card says how many questions are waiting", () => {
+  const session = fs.readFileSync(path.join(root, "src", "kiroSession.ts"), "utf8");
+  assert.match(session, /waiting: number;/, "the count travels with the request");
+  assert.match(
+    session,
+    /onPermission\(\{ title, options: choices, waiting: this\.permissionsWaiting \}\)/,
+    "and is filled in when the question is shown"
+  );
+  assert.match(
+    provider,
+    /permission: \{ requestId, \.\.\.request \}/,
+    "the provider posts the whole request, count included"
+  );
+  const card = js.slice(js.indexOf("function addPermissionCard(permission)"));
+  const body = card.slice(0, card.indexOf("\n  /** A card by request id"));
+  assert.match(body, /permission\.waiting/, "and the card reads it");
+  assert.match(body, /!permission\.settled && waiting > 0/, "only while it is still being asked");
+  assert.match(css, /^\.permission-waiting \{/m);
 });
 
 /*
@@ -972,6 +1155,38 @@ test("a permission is kept in the chat's own record", () => {
   assert.match(body, /settled: true/);
   assert.match(js, /if \(permission\.settled\) \{/);
   assert.match(css, /^\.permission-done \.permission-title \{/m);
+  // Read off the card, not off its buttons — an answered card has none left.
+  assert.match(js, /options: optionsOf\(card\)/);
+  assert.match(js, /card\.dataset\.options = JSON\.stringify/);
+});
+
+/*
+ * An answered card is a record, not a control.
+ *
+ * It used to keep every option on screen as a disabled button with the choice
+ * named underneath — three or four rows to record one word, in a panel three
+ * inches wide, and a single turn can ask several times. Nothing there is
+ * clickable any more, so nothing there earns the space.
+ */
+test("an answered permission collapses to what was asked and what was chosen", () => {
+  const settle = js.slice(js.indexOf("function settlePermissionCard(card, outcome)"));
+  const body = settle.slice(0, settle.indexOf("\n  /**", 10));
+  assert.match(body, /actions\.remove\(\)/, "the spent buttons go");
+  assert.match(body, /queued\.remove\(\)/, "so does a queue note about questions since asked");
+  assert.match(body, /permission-outcome/, "the choice is what is left");
+  assert.match(css, /^\.permission-outcome \{/m);
+  // One renderer: settling a live card and restoring a saved one are the
+  // same code, or the second is where they drift.
+  const card = js.slice(js.indexOf("function addPermissionCard(permission)"));
+  assert.match(
+    card.slice(0, card.indexOf("\n  function ")),
+    /settlePermissionCard\(card, \{/,
+    "a restored card is settled by the same function"
+  );
+  assert.match(js, /case "permissionSettled": \{[\s\S]*?settlePermissionCard\(card, \{ ok: message\.ok/);
+  // The outcome comes from the message, never from a class on a button: a
+  // click and its outcome are deliberately different events.
+  assert.doesNotMatch(body, /querySelector\("button\.chosen"\)/);
 });
 
 /*
@@ -1345,13 +1560,28 @@ test("Enter cannot start a second turn while Kiro is working", () => {
  * the same command. Both survivors route through refreshUsage, so the handler
  * has to stay even though the top bar no longer posts to it.
  */
-test("usage is offered by the view title bar and not duplicated in the top bar", () => {
+/*
+ * The usage strip in the panel is the way in, and the only one that needs to
+ * be on screen.
+ *
+ * A title-bar icon for it was a second control for the same panel, in a row
+ * with four other icons, pointing at something the panel already shows a
+ * summary of at all times. The command stays — the palette costs no space —
+ * but the icon is gone.
+ */
+test("usage is reached from the strip, not from an icon in the title bar", () => {
   const pkg = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
   const titleMenu = pkg.contributes.menus["view/title"] ?? [];
   assert.ok(
-    titleMenu.some((item) => item.command === "kiroChat.showUsage"),
-    "kiroChat.showUsage must stay in the view/title menu"
+    !titleMenu.some((item) => item.command === "kiroChat.showUsage"),
+    "kiroChat.showUsage must not take a slot in the title bar"
   );
+  assert.ok(
+    pkg.contributes.commands.some((item) => item.command === "kiroChat.showUsage"),
+    "but the command itself stays, for the palette"
+  );
+  // The strip is the affordance, and it opens the panel.
+  assert.match(js, /usageBar\.addEventListener\("click", toggleUsagePanel\)/);
 
   assert.doesNotMatch(provider, /usage-btn/, "the top bar should not carry its own usage button");
   assert.doesNotMatch(js, /usageBtn/, "chat.js should not wire a top bar usage button");

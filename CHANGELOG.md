@@ -1,5 +1,73 @@
 # Changelog
 
+## 0.32.0
+
+- **The panel shows what Kiro actually has in context.** Kiro's own `context`
+  command reports a real breakdown, and the panel now draws it: how full the
+  window is, how many tokens each part is using, and — for context files — the
+  files by name, including ones Kiro looked for and did not find. That last
+  one is usually the answer to "why did it ignore my instructions".
+- **The usage panel lost its essay.** It used to derive four rows from a single
+  percentage and sit them under two paragraphs explaining that the categories
+  were unavailable and the numbers were estimates. They are available now, so
+  the prose is gone; what is left of it is one line of advice, shown only when
+  the context is over 80% full. The account half shows the plan, the credits
+  and the renewal date as figures rather than reprinting Kiro's report.
+- **The usage icon is gone from the title bar.** The strip inside the panel
+  already shows a summary and opens the same thing, so the icon was a second
+  control for one panel in a row of five. **Kiro Chat: Show Usage** still works
+  from the command palette.
+
+- **Fixed: a change accepted during the turn could not be undone with Ctrl+Z.**
+  Reviews that open as the edit lands were leaving Kiro's own version of the
+  file on disk while you read the diff, so accepting it had nothing left to
+  write — and a file Kiro writes itself never reaches the editor's undo stack.
+  The file is now put back before the diff opens, exactly as it always was for
+  reviews at the end of a turn, so what you accept goes through the editor and
+  Ctrl+Z takes it back.
+
+- **A light travels the border of the message box while a turn is running.**
+  From the moment you send until Kiro finishes, including the long silences
+  while it is reading and editing files and nothing is being written. It is
+  drawn in your theme's own focus colour — the light the box already wears
+  when you click into it — and held under full strength, so it can be caught
+  at the edge of vision and then ignored. It stops under **Reduce motion**,
+  where the lit arc parks along the top edge instead of going round.
+- **The permission and keep-or-undo cards moved out of the message box.** They
+  keep their place between the conversation and the composer, but they are no
+  longer inside its border — they ask about the turn that just ran, and sitting
+  inside the box read as controls attached to the next message.
+- **An answered permission takes one line.** The card used to keep every option
+  on screen as a greyed-out button with the choice named underneath — three or
+  four rows to record one word, in a panel three inches wide, and a single turn
+  can ask several times. It now collapses to what was asked and what you chose.
+  A refusal keeps its red so it can still be spotted at a glance.
+
+## 0.31.0
+
+- **Each file is reviewed as Kiro finishes editing it.** A turn that edited three
+  files used to show nothing at all while it worked and then three diffs in a row,
+  each about an edit made some time ago. The diff now opens as soon as the edit
+  lands, so you watch the work one file at a time.
+- **Kiro waits for your answer before starting the next edit.** Without that,
+  reviewing as edits land would only be a change of timing — Kiro could still
+  write a file whose diff was open, and every hunk you had already clicked would
+  be refused.
+- **A file edited twice in one turn shows its second diff against what you
+  accepted**, not against the pre-turn file, so hunks you already agreed to are
+  not proposed a second time.
+- **A review opened while the turn is running leaves Kiro's version on disk**
+  until you decide. Putting a file back under a running agent desynchronises it —
+  its next edit looks for text that is no longer there. Rejecting still restores
+  the original, at the moment you reject it.
+- **New setting `kiroChat.reviewDuringTurn`**, on by default. Turn it off to
+  review everything together at the end of the turn, as before.
+- **Permission questions are asked one at a time.** Kiro can ask about two tools
+  at once, and both cards used to appear together in the pinned bar — with the
+  `1`–`9` shortcuts answering the newest one rather than the one you were
+  reading. Questions are queued and put to you in turn, and a card says how many
+  are waiting behind it. Stopping the turn drops the ones that were never shown.
+
 ## 0.30.7
 
 - **Fixed repeated “Working” rows.** Tool notifications without a useful name or

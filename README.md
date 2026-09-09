@@ -326,9 +326,19 @@ login you already have.
   every root in a multi-root workspace; a path outside all of them gets refused. The check
   is made against where a path really leads, so a symlink or a junction inside the folder
   that points out of it is refused too.
-- **Tools ask first inside the chat.** Kiro's permission choices appear as an inline card
-  in the current response instead of a separate popup. There is a setting to auto-approve,
-  off by default. Only turn it on in a folder you trust.
+- **Tools ask first inside the chat, one question at a time.** Kiro's permission choices
+  appear as an inline card in the current response instead of a separate popup. Kiro can
+  ask about several tools at once; the questions are queued and put to you in turn, and a
+  card says how many are behind it. Once you answer, the card collapses to one line — what
+  was asked and what you chose — instead of keeping a column of spent buttons. There is a
+  setting to auto-approve, off by default. Only turn it on in a folder you trust.
+- **Each file is reviewed as Kiro finishes editing it**, not all of them at the end.
+  The diff opens as soon as the edit lands, and Kiro waits for your answer before starting
+  the next one — so you see one file at a time while the turn is still running. Set
+  `kiroChat.reviewDuringTurn` to `false` to go back to reviewing everything at the end.
+  A review opened while the turn is running leaves Kiro's version on disk until you decide,
+  because putting a file back under a running agent breaks its next edit; rejecting still
+  restores the original, at the moment you reject it.
 - **File changes open for inline review before the turn finishes.** Deleted/original lines
   are red and inserted/proposed lines are green in a source editor tab. Each changed section
   gets its own **Accept** and **Reject** actions above it; **Accept all**, **Reject all**,
@@ -359,6 +369,7 @@ All optional.
 | `kiroChat.allowFileWrites` | Let Kiro keep its edits. Turn off and every edit is undone at the end of the turn — see the note below. |
 | `kiroChat.autoApproveTools` | Skip the approval popup. Off by default. |
 | `kiroChat.reviewFileWrites` | Inline red/green review with whole-file and per-hunk decisions. On by default. |
+| `kiroChat.reviewDuringTurn` | Review each file as Kiro finishes editing it, rather than queueing every diff to the end of the turn. On by default. |
 | `kiroChat.attachActiveFile` | Send the file you are looking at with each message. On by default. |
 | `kiroChat.sendSelection` | Send highlighted code with each message. |
 | `kiroChat.model` | The model to use. The dropdown sets this for you. |

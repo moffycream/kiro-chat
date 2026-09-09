@@ -91,6 +91,17 @@
   /** The last account report, so reopening the panel does not refetch. */
   let usageReport = null;
   let usageLoading = false;
+  /**
+   * What Kiro says is in its context, from its own `context` command.
+   *
+   * Unlike the account report this is answered locally and instantly, so the
+   * panel asks every time it opens rather than keeping a stale copy behind a
+   * button. `contextError` holds the reason when it could not — most often
+   * that a turn is in flight, since a command cannot run during one.
+   */
+  let contextBreakdown = null;
+  let contextLoading = false;
+  let contextError = "";
 
   // VS Code destroys and rebuilds this script whenever the view is moved
   // between the sidebar, the panel or the secondary sidebar. Anything we
@@ -179,21 +190,25 @@
    * before something happens, that is the record most worth having.
    */
   function recordPermission(card, settled) {
-    const buttons = [...card.querySelectorAll(".permission-actions button")];
-    const chosen = card.querySelector("button.chosen");
-    const status = card.querySelector(".permission-status");
     history.push({
       role: "permission",
       title: card.dataset.title || "",
-      options: buttons.map((b) => ({
-        id: b.dataset.optionId,
-        label: b.dataset.label,
-        kind: b.dataset.kind || "",
-      })),
-      chosenId: settled && settled.ok && chosen ? chosen.dataset.optionId : "",
-      statusText: status ? status.textContent : "",
+      // Read off the card, not off its buttons: an answered card has no
+      // buttons left, and the record still has to name what was on offer.
+      options: optionsOf(card),
+      chosenId: settled && settled.ok ? card.dataset.chosenId || "" : "",
     });
     saveState();
+  }
+
+  /** The options a permission card was drawn from, buttons or no buttons. */
+  function optionsOf(card) {
+    try {
+      const parsed = JSON.parse(card.dataset.options || "[]");
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
   }
 
   // ---------------------------------------------------------------
@@ -1172,11 +1187,46 @@
     // Kept raw, so the card can be written to the transcript and rebuilt from
     // it without having to unpick the sentence it is shown in.
     card.dataset.title = String(permission.title || "");
+    card.dataset.options = JSON.stringify(permission.options || []);
 
     const title = document.createElement("div");
     title.className = "permission-title";
     title.textContent = `Kiro wants to ${permission.title}.`;
     card.appendChild(title);
+
+    /*
+     * An answered card is drawn once, by the same code that answers a live
+     * one. Restoring a chat and settling a question on screen must not be two
+     * renderers — the second one is where they drift.
+     */
+    if (permission.settled) {
+      settlePermissionCard(card, {
+        ok: Boolean(permission.chosenId),
+        optionId: permission.chosenId,
+      });
+      const bubble = ensureAgentBubble();
+      bubble.root.insertBefore(card, bubble.body);
+      scroll(was);
+      return card;
+    }
+
+    /*
+     * Questions are asked one at a time, so say when there are more.
+     *
+     * Two cards at once used to be the only way to know a second question
+     * existed. Asking them in turn is the fix, but on its own it makes Kiro
+     * look stuck between answers — the queue is invisible and the panel is
+     * quiet. A live card that says what is behind it gives back the one thing
+     * the stack of cards told you by accident.
+     */
+    const waiting = Number(permission.waiting || 0);
+    if (!permission.settled && waiting > 0) {
+      const queued = document.createElement("div");
+      queued.className = "permission-waiting";
+      queued.textContent =
+        waiting === 1 ? "1 more question after this one." : `${waiting} more questions after this one.`;
+      card.appendChild(queued);
+    }
 
     const actions = document.createElement("div");
     actions.className = "permission-actions";
@@ -1257,24 +1307,64 @@
      * Neither ever goes inside the steps list, which folds shut: a permission
      * the user cannot see is one they cannot answer, and the turn would hang.
      */
-    if (permission.settled) {
-      for (const button of actions.querySelectorAll("button")) {
-        button.disabled = true;
-        if (button.dataset.optionId === String(permission.chosenId)) {
-          button.classList.add("chosen");
-        }
-      }
-      status.textContent = permission.statusText || "";
-      card.classList.add("permission-done");
-      const bubble = ensureAgentBubble();
-      bubble.root.insertBefore(card, bubble.body);
-      scroll(was);
-      return card;
-    }
-
     permissionBar.appendChild(card);
     permissionBar.hidden = false;
     return card;
+  }
+
+  /**
+   * Collapse an answered card to one line: what was asked, and what you said.
+   *
+   * It used to keep every option on screen, greyed out, with a line
+   * underneath naming the one that was picked — three or four rows of dead
+   * buttons per question, in a panel three inches wide, and a turn can ask
+   * several times. None of it is a control any more: the request is answered
+   * and clicking is impossible. What is worth keeping is the record, so the
+   * record is all that is left.
+   *
+   * The choice comes from the message that settled it rather than from a
+   * class on a button, because the click and the outcome are deliberately
+   * different events — a request that had already gone is answered `ok: false`
+   * however it was clicked.
+   */
+  function settlePermissionCard(card, outcome) {
+    card.classList.add("permission-done");
+    const actions = card.querySelector(".permission-actions");
+    if (actions) actions.remove();
+    const queued = card.querySelector(".permission-waiting");
+    if (queued) queued.remove();
+
+    const title = card.querySelector(".permission-title");
+    // Past tense, because it is: the thing was asked and has been answered.
+    if (title) title.textContent = `Kiro wanted to ${card.dataset.title}.`;
+
+    const chosen = optionsOf(card).find(
+      (option) => String(option.id) === String(outcome.optionId)
+    );
+    const status = card.querySelector(".permission-status");
+    if (outcome.ok) {
+      card.dataset.chosenId = chosen ? String(chosen.id) : "";
+      const pill = document.createElement("span");
+      pill.className = "permission-outcome";
+      pill.dataset.kind = chosen ? String(chosen.kind || "").toLowerCase() : "";
+      // An answer nobody can name is still an answer. Falling through to the
+      // stale branch would report the opposite of what happened.
+      pill.textContent = chosen ? chosen.label : "Answered";
+      card.prepend(pill);
+      if (status) status.remove();
+      return;
+    }
+
+    /*
+     * The request had already gone, so the click reached nobody. This is the
+     * one thing an answered card still has to say out loud, and it keeps the
+     * status line to say it in.
+     */
+    card.classList.add("permission-stale");
+    const line = status || document.createElement("div");
+    line.className = "permission-status";
+    line.textContent = "This request is no longer waiting for an answer.";
+    if (!status) card.appendChild(line);
   }
 
   /** Move an answered card out of the pinned bar and into the conversation. */
@@ -2008,17 +2098,76 @@
       return;
     }
 
-    const body = document.createElement("div");
-    body.className = usageReport && usageReport.ok === false ? "usage-body bad" : "usage-body";
-    body.textContent = usageReport
-      ? usageReport.text
-      : "No account usage fetched yet.";
-    usagePanel.appendChild(body);
+    /*
+     * The figures, not the report.
+     *
+     * `usageReport.text` is Kiro's own printout, and it is a paragraph of
+     * prose wrapped into a strip three inches wide. What anyone opens this
+     * for is three numbers — the plan, what is spent, when it renews — and
+     * those are parsed out already, on the way to the strip. The printout is
+     * still shown when nothing could be parsed from it, because then it is
+     * the only thing there is.
+     */
+    const account = document.createElement("section");
+    account.className = "context-details";
+    const head = document.createElement("div");
+    head.className = "context-head";
+    const title = document.createElement("span");
+    title.textContent = "Account";
+    const plan = document.createElement("span");
+    plan.className = "context-figure";
+    plan.textContent = usage.planName || "";
+    head.append(title, plan);
+    account.appendChild(head);
+
+    const row = (label, value) => {
+      const item = document.createElement("div");
+      item.className = "context-row";
+      const name = document.createElement("span");
+      name.textContent = label;
+      const amount = document.createElement("span");
+      amount.className = "context-amount";
+      amount.textContent = value;
+      item.append(name, amount);
+      account.appendChild(item);
+    };
+
+    let parsed = false;
+    if (typeof usage.accountCreditsUsed === "number") {
+      parsed = true;
+      row(
+        "Credits used",
+        typeof usage.accountCreditsLimit === "number"
+          ? `${credits(usage.accountCreditsUsed)} / ${credits(usage.accountCreditsLimit)}`
+          : credits(usage.accountCreditsUsed)
+      );
+    }
+    if (usage.accountResetsOn) {
+      parsed = true;
+      row("Renews", usage.accountResetsOn);
+    }
+    if (typeof usage.sessionCredits === "number") {
+      parsed = true;
+      row("This chat", `${credits(usage.sessionCredits)} credits`);
+    }
+
+    if (!parsed) {
+      const body = document.createElement("div");
+      body.className = usageReport && usageReport.ok === false ? "usage-body bad" : "usage-body";
+      body.textContent = usageReport ? usageReport.text : "Not fetched yet.";
+      account.appendChild(body);
+    } else if (usageReport && usageReport.ok === false) {
+      const bad = document.createElement("div");
+      bad.className = "usage-body bad";
+      bad.textContent = usageReport.text;
+      account.appendChild(bad);
+    }
+    usagePanel.appendChild(account);
 
     const refresh = document.createElement("button");
     refresh.type = "button";
     refresh.className = "ghost usage-refresh";
-    refresh.textContent = usageReport ? "Refresh" : "Check account usage";
+    refresh.textContent = parsed ? "Refresh" : "Check account usage";
     refresh.addEventListener("click", () => {
       // Only asks. `usageReportLoading` comes straight back and is what puts
       // the spinner up — setting it here as well gave one flag two writers,
@@ -2031,7 +2180,12 @@
   function setUsagePanel(open) {
     usagePanel.hidden = !open;
     usageBar.setAttribute("aria-expanded", open ? "true" : "false");
-    if (open) renderUsagePanel();
+    if (!open) return;
+    renderUsagePanel();
+    // Asked every time it opens, because it is local and instant — the
+    // account report is the one that costs a round trip and stays behind its
+    // button. A breakdown from two turns ago is not this conversation's.
+    vscode.postMessage({ type: "refreshContext" });
   }
 
   function toggleUsagePanel() {
@@ -2073,22 +2227,42 @@
     return String(Math.round(value));
   }
 
+  /**
+   * What is in Kiro's context, and how full it is.
+   *
+   * This used to be four rows derived from one number — the meter percentage
+   * multiplied by the model's capacity — under two paragraphs explaining that
+   * the categories were not available and the tokens were estimates. They are
+   * available: `/context` answers with a real breakdown, so the panel now
+   * shows what is actually in there and the prose is gone. Numbers say what
+   * prose was being used to apologise for.
+   */
   function renderContextPanel() {
     const { percent, capacity } = contextState();
     const section = document.createElement("section");
     section.className = "context-details";
-    const row = (label, value) => {
-      const item = document.createElement("div");
-      item.className = "context-row";
-      const name = document.createElement("span");
-      name.textContent = label;
-      const amount = document.createElement("span");
-      amount.textContent = value;
-      item.append(name, amount);
-      section.appendChild(item);
-    };
-    row("Context window", percent === undefined ? "Not reported" : `${credits(percent)}% used`);
-    if (capacity) row("Model capacity", `${contextTokens(capacity)} tokens`);
+
+    const head = document.createElement("div");
+    head.className = "context-head";
+    const title = document.createElement("span");
+    title.textContent = "Context";
+    const figure = document.createElement("span");
+    figure.className = "context-figure";
+    const used = contextBreakdown && contextBreakdown.totalTokens;
+    /*
+     * Rounded. Kiro reports 6.218999862670898, and the difference between
+     * that and "6%" is not a difference anyone can act on — while two
+     * decimals on a headline figure reads as precision that means something.
+     */
+    figure.textContent =
+      percent === undefined
+        ? "not reported"
+        : used
+          ? `${Math.round(percent)}% · ${contextTokens(used)}${capacity ? ` of ${contextTokens(capacity)}` : ""}`
+          : `${Math.round(percent)}%`;
+    head.append(title, figure);
+    section.appendChild(head);
+
     if (percent !== undefined) {
       const track = document.createElement("div");
       track.className = "context-track";
@@ -2102,24 +2276,97 @@
       fill.style.width = `${percent}%`;
       track.appendChild(fill);
       section.appendChild(track);
-      row("Used", capacity ? `≈${contextTokens(capacity * percent / 100)} tokens` : `${credits(percent)}%`);
-      row("Remaining", capacity ? `≈${contextTokens(capacity * (100 - percent) / 100)} tokens (${credits(100 - percent)}%)` : `${credits(100 - percent)}%`);
     }
-    const note = document.createElement("p");
-    note.className = "context-note";
-    note.textContent = percent === undefined
-      ? "Kiro has not reported context usage for this session yet. Usage appears when Kiro sends an update."
-      : percent >= 95
-        ? "Context is nearly full. Consider saving a summary and using + to start a new session."
-        : percent >= 80
-          ? "Context is filling up. You can continue, but consider a new session for a new task."
-          : "Plenty of context remains. No reset is needed based on context usage.";
-    section.appendChild(note);
-    const detail = document.createElement("p");
-    detail.className = "context-note";
-    detail.textContent = "Latest reported usage for this session; it may decrease if Kiro compacts context. Token counts are estimates from the reported percentage and model capacity. Category totals and the compaction buffer are not available.";
-    section.appendChild(detail);
+
+    /*
+     * One line of advice, and only when there is any to give.
+     *
+     * "Plenty of context remains. No reset is needed based on context usage."
+     * was three lines saying nothing had happened. Silence says that better.
+     */
+    if (percent !== undefined && percent >= 80) {
+      const note = document.createElement("p");
+      note.className = "context-note warn";
+      note.textContent =
+        percent >= 95
+          ? "Nearly full — start a new chat with + soon."
+          : "Filling up — a new chat is worth considering for a new task.";
+      section.appendChild(note);
+    }
+
+    renderContextBreakdown(section);
     usagePanel.appendChild(section);
+  }
+
+  /** The categories Kiro reports, each with what is in it. */
+  function renderContextBreakdown(section) {
+    if (contextLoading && !contextBreakdown) {
+      const wait = document.createElement("div");
+      wait.className = "usage-loading";
+      const spinner = document.createElement("span");
+      spinner.className = "spinner";
+      const label = document.createElement("span");
+      label.textContent = "Asking Kiro what it is holding…";
+      wait.append(spinner, label);
+      section.appendChild(wait);
+      return;
+    }
+    if (!contextBreakdown) {
+      if (contextError) {
+        const note = document.createElement("p");
+        note.className = "context-note";
+        note.textContent = contextError;
+        section.appendChild(note);
+      }
+      return;
+    }
+
+    for (const category of contextBreakdown.categories) {
+      // A category holding nothing is a row saying zero. There is no shortage
+      // of those in a fresh chat and none of them is worth a line.
+      if (!category.tokens && !category.items.some((item) => item.tokens)) continue;
+
+      const row = document.createElement("div");
+      row.className = "context-row";
+      const name = document.createElement("span");
+      name.textContent = category.label;
+      const amount = document.createElement("span");
+      amount.className = "context-amount";
+      /*
+       * Tokens, not tokens and a percentage. The share each category holds of
+       * the whole window is arithmetic anyone can do from the headline, and
+       * "58  0.03%" is two numbers where the second says less than the first.
+       */
+      amount.textContent = contextTokens(category.tokens);
+      row.append(name, amount);
+      section.appendChild(row);
+
+      /*
+       * Files are named; tools are counted.
+       *
+       * Which files Kiro is holding is the answer to "what does it know about
+       * my project"; thirteen rows of built-in tool definitions is a number
+       * you look at once. A file Kiro looked for and did not find is worth
+       * naming too — that is usually why an instruction did not take.
+       */
+      if (!category.key.endsWith("Files")) continue;
+      for (const item of category.items) {
+        const line = document.createElement("div");
+        line.className = "context-item";
+        const label = document.createElement("span");
+        label.textContent = item.name;
+        const value = document.createElement("span");
+        value.className = "context-amount";
+        if (item.matched === false) {
+          line.classList.add("missing");
+          value.textContent = "not found";
+        } else {
+          value.textContent = contextTokens(item.tokens);
+        }
+        line.append(label, value);
+        section.appendChild(line);
+      }
+    }
   }
 
   function renderUsage(next) {
@@ -2640,6 +2887,12 @@
     // Only a reply can be stopped. Offering Stop while Kiro is merely
     // starting up points at a turn that does not exist.
     stopBtn.hidden = status !== "busy";
+    /*
+     * The glow follows the turn, not `busy` above, which also covers starting
+     * up. Connecting is not Kiro working on anything, and a message box lit up
+     * before the first message would be saying so about nothing.
+     */
+    formEl.classList.toggle("working", status === "busy");
     modelBtn.disabled = busy;
     modeBtn.disabled = busy;
   }
@@ -3625,6 +3878,31 @@
         setUsagePanel(true);
         break;
 
+      case "contextLoading":
+        contextLoading = true;
+        if (!usagePanel.hidden) renderUsagePanel();
+        break;
+
+      /*
+       * Both halves, as ever. The provider posts this whether the command
+       * answered or not, and a failure keeps the last breakdown on screen
+       * with the reason underneath rather than blanking the panel — the
+       * commonest reason is "a turn is running", which is temporary and not
+       * something to clear the answer for.
+       */
+      case "contextBreakdown":
+        contextLoading = false;
+        if (message.ok && message.breakdown) {
+          contextBreakdown = message.breakdown;
+          contextError = "";
+        } else {
+          contextError = message.detail
+            ? `Kiro could not report its context: ${message.detail}`
+            : "Kiro could not report its context.";
+        }
+        if (!usagePanel.hidden) renderUsagePanel();
+        break;
+
       case "toggleUsage":
         toggleUsagePanel();
         break;
@@ -3799,17 +4077,7 @@
       case "permissionSettled": {
         const card = findPermissionCard(message.requestId);
         if (!card) break;
-        const status = card.querySelector(".permission-status");
-        const chosen = card.querySelector("button.chosen");
-        card.classList.add("permission-done");
-        for (const button of card.querySelectorAll("button")) button.disabled = true;
-        if (message.ok) {
-          const label = (chosen && chosen.dataset.label) || "your answer";
-          if (status) status.textContent = `Selected: ${label}`;
-        } else if (status) {
-          status.textContent = "This request is no longer waiting for an answer.";
-          card.classList.add("permission-stale");
-        }
+        settlePermissionCard(card, { ok: message.ok, optionId: message.optionId });
         recordPermission(card, message);
         // Answered, so it stops blocking the composer and joins the record.
         retirePermissionCard(card);
@@ -3936,6 +4204,10 @@
         pendingReview = null;
         pendingChanges = null;
         renderChangeBar();
+        // A breakdown describes the conversation it was taken from, and this
+        // is no longer that conversation.
+        contextBreakdown = null;
+        contextError = "";
         messagesEl.innerHTML = "";
         current = null;
         buffer = "";
@@ -3977,6 +4249,9 @@
         buffer = "";
         // Reported back, this would re-save the record we were just handed.
         saveState(false);
+        // Another conversation, so the last one's breakdown is not about it.
+        contextBreakdown = null;
+        contextError = "";
         messagesEl.innerHTML = "";
         if (history.length > 0) restoreHistory(history);
         else messagesEl.appendChild(emptyState());
@@ -4030,7 +4305,6 @@
           options: item.options || [],
           settled: true,
           chosenId: item.chosenId,
-          statusText: item.statusText,
         });
       } else if (item.role === "command") {
         // One card renderer, as with permissions. A second way to draw a

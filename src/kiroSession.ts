@@ -25,10 +25,13 @@ import {
   readMeter,
   readModelDetails,
   readUsageCommand,
+  readContextCommand,
+  ContextBreakdown,
   UsageInfo,
 } from "./usage";
 
 export { formatUsageReport, parseAccountUsage, readUsageCommand, UsageInfo };
+export { readContextCommand, ContextBreakdown };
 export { RewindTurn, SlashCommand };
 
 /** What one of Kiro's own commands answered. */
@@ -84,6 +87,8 @@ export interface SessionEvents {
   onPermission?: (request: {
     title: string;
     options: Array<{ id: string; label: string; kind: string }>;
+    /** How many further questions are queued behind this one. */
+    waiting: number;
   }) => Promise<string | undefined>;
 }
 
@@ -146,6 +151,25 @@ const TOOL_VERBS: Record<string, string> = {
   delete: "Deleting",
   move: "Moving",
 };
+
+/**
+ * The statuses that mean a step is over, whichever word Kiro used.
+ *
+ * A failed step counts. A tool that errored halfway can still have written
+ * part of a file, and an edit nobody looked at is the outcome this whole flow
+ * exists to prevent.
+ */
+const TERMINAL_TOOL_STATUS = new Set([
+  "completed",
+  "complete",
+  "success",
+  "succeeded",
+  "failed",
+  "error",
+  "cancelled",
+  "canceled",
+  "rejected",
+]);
 
 export interface ToolStep {
   id: string;
@@ -265,6 +289,33 @@ export class KiroSession {
    * into a diff offering to undo their own work.
    */
   private readonly toolTouchedPaths = new Set<string>();
+  /**
+   * What the *next* review of a file should diff against.
+   *
+   * Not the same thing as `turnBaselines`, and the difference is the whole
+   * reason both exist. A turn baseline is the file as it was before Kiro
+   * started, and it has to stay that way: the keep-or-undo card and
+   * `undoLastTurn` put the whole turn back from it. A review baseline moves
+   * forward every time a review settles, so a file edited twice in one turn
+   * shows its second diff against what the user just agreed to rather than
+   * re-proposing changes they already accepted.
+   */
+  private readonly reviewBaselines = new Map<string, FileSnapshot>();
+  /**
+   * Reviews opened while the turn is still running, one after another.
+   *
+   * Every diff used to wait for `session/prompt` to resolve, so a turn that
+   * edited three files sat silent and then produced three diffs at the end.
+   * A review is worth most while the edit is fresh and the next one has not
+   * been made yet, so a write-like tool reaching a terminal status opens its
+   * file's review there and then. The queue is what keeps that to one diff on
+   * screen at a time, and what the end of the turn waits on.
+   */
+  private reviewQueue: Promise<void> = Promise.resolve();
+  /** Which files each tool call touched, so its completion can review them. */
+  private readonly toolCallPaths = new Map<string, Set<string>>();
+  /** Tool calls whose terminal status has already been acted on. */
+  private readonly settledToolCalls = new Set<string>();
   /** A write routed through the ACP fs callback must not be reviewed twice. */
   private readonly clientReviewedPaths = new Set<string>();
   /**
@@ -275,6 +326,30 @@ export class KiroSession {
    * second one cannot be answered without contradicting the first.
    */
   private readonly answeredPaths = new Set<string>();
+  /**
+   * Permission questions are asked one at a time.
+   *
+   * `AcpClient.handleIncomingRequest` answers each incoming request on its own
+   * promise and never waits for the last one, which is right for reads and
+   * wrong for questions: Kiro writes several notifications in one stdio write,
+   * so two `session/request_permission` calls dispatched from the same chunk
+   * both reached the panel and stacked two cards in the pinned bar. Two
+   * questions on screen at once is not a thing anyone can answer — and the
+   * digit shortcuts answer the newest card, which is not the one being read.
+   *
+   * Only the part that asks a human is queued. The fast answers — no options,
+   * `autoApproveTools`, the one-gate write skip — must not wait behind a card
+   * nobody has looked at yet.
+   */
+  private permissionQueue: Promise<void> = Promise.resolve();
+  /** How many queued questions have not been shown yet. */
+  private permissionsWaiting = 0;
+  /**
+   * Bumped by anything that abandons the conversation, so a question queued
+   * behind another is dropped rather than shown to answer for a turn that has
+   * already gone. The reviewer's `generation` counter, for the same reason.
+   */
+  private permissionGeneration = 0;
   private turnCancelled = false;
   /**
    * Pre-turn snapshots of everything the last turn changed, kept after the
@@ -660,6 +735,7 @@ export class KiroSession {
   cancel(): void {
     this.turnCancelled = true;
     this.changeReviewer.cancelPending();
+    this.cancelQueuedPermissions();
     if (this.client?.isRunning && this.sessionId) {
       this.client.notify("session/cancel", { sessionId: this.sessionId });
     }
@@ -668,6 +744,7 @@ export class KiroSession {
   async newSession(): Promise<void> {
     this.turnCancelled = true;
     this.changeReviewer.cancelPending();
+    this.cancelQueuedPermissions();
     this.sessionId = undefined;
     this.client?.stop();
     this.client = undefined;
@@ -682,6 +759,7 @@ export class KiroSession {
 
   dispose(): void {
     this.changeReviewer.dispose();
+    this.cancelQueuedPermissions();
     this.client?.stop();
     this.client = undefined;
     this.sessionId = undefined;
@@ -864,6 +942,9 @@ export class KiroSession {
           `[tool] ${tool.status} ${tool.title}${tool.purpose ? ` — ${tool.purpose}` : ""}`
         );
         this.events.onTool(tool);
+        // A step that has finished is an edit that has landed. Review it now,
+        // while it is the only one, rather than banking it for the end.
+        this.reviewFinishedTool(update, tool.status);
         break;
       }
       case "turn_end":
@@ -1122,6 +1203,9 @@ export class KiroSession {
     this.turnBaselines.clear();
     this.directFileChanges.clear();
     this.toolTouchedPaths.clear();
+    this.reviewBaselines.clear();
+    this.toolCallPaths.clear();
+    this.settledToolCalls.clear();
     this.observedWriteTools.clear();
     this.clientReviewedPaths.clear();
     this.answeredPaths.clear();
@@ -1265,9 +1349,25 @@ export class KiroSession {
      * which is the gentler surface for "this changed, was that you?".
      */
     const reviewable = !isReadOnlyTool(update);
+    const announcedBy = String(update?.toolCallId ?? update?.id ?? "");
     for (const full of this.pathsMentionedBy(update)) {
       if (!this.captureBaseline(full)) continue;
-      if (reviewable) this.toolTouchedPaths.add(this.pathKey(full));
+      if (!reviewable) continue;
+      const key = this.pathKey(full);
+      this.toolTouchedPaths.add(key);
+      /*
+       * Remembered against the call, not just the turn.
+       *
+       * `tool_call_update` is the only notification carrying a status, and in
+       * the wild it can be little more than an id and that status — the
+       * `rawInput` and `locations` that named the file arrived on the earlier
+       * `tool_call`. Without this map there would be nothing to review when
+       * the step reports that it finished.
+       */
+      if (!announcedBy) continue;
+      const touched = this.toolCallPaths.get(announcedBy);
+      if (touched) touched.add(key);
+      else this.toolCallPaths.set(announcedBy, new Set([key]));
     }
 
     // Shared with askPermission, which uses the same answer to decide that an
@@ -1319,10 +1419,89 @@ export class KiroSession {
   }
 
   /**
+   * A step has finished, so whatever it wrote can be looked at now.
+   *
+   * This is the difference between watching Kiro work and being handed a pile
+   * of diffs afterwards. Every review used to wait for `session/prompt` to
+   * resolve, which meant a three-file turn showed nothing at all and then
+   * three diffs in a row, each about an edit made minutes earlier.
+   *
+   * `tool_call_update` is the only notification carrying a status, and it
+   * repeats — the same terminal status can arrive more than once — so each
+   * call is acted on exactly once.
+   */
+  private reviewFinishedTool(update: any, status: string): void {
+    if (!TERMINAL_TOOL_STATUS.has(status.trim().toLowerCase())) return;
+    const toolId = String(update?.toolCallId ?? update?.id ?? "");
+    if (!toolId || this.settledToolCalls.has(toolId)) return;
+    this.settledToolCalls.add(toolId);
+    for (const key of this.toolCallPaths.get(toolId) ?? []) this.queueLiveReview(key);
+  }
+
+  /**
+   * Whether a review may open while the turn is still running.
+   *
+   * Only when one would really open and be answerable. The other endings —
+   * the turn was cancelled, writes are off, Plan mode — all *revert* the file,
+   * and reverting one under a running agent desynchronises it from disk: its
+   * next `strReplace` looks for text that is no longer there. Those stay where
+   * they have always been, at the end of the turn, when nothing else is
+   * writing.
+   */
+  private liveReviewsEnabled(): boolean {
+    if (this.turnCancelled || this.turnReadOnly) return false;
+    const config = vscode.workspace.getConfiguration("kiroChat");
+    return (
+      config.get<boolean>("reviewDuringTurn", true) &&
+      config.get<boolean>("reviewFileWrites", true) &&
+      config.get<boolean>("allowFileWrites", true)
+    );
+  }
+
+  /**
+   * Put one file's review at the back of the queue.
+   *
+   * Deliberately not awaited by its caller: this is reached from
+   * `handleNotification`, which runs inside `AcpClient.dispatch` and is
+   * synchronous by design — the read loop walks several notifications out of
+   * one stdio write, and anything thrown here would cost the rest of them. So
+   * the queue owns the errors, and the end of the turn owns the waiting.
+   */
+  private queueLiveReview(key: string): void {
+    if (!this.liveReviewsEnabled()) return;
+    const run = this.reviewQueue.then(async () => {
+      // Re-checked at the front of the queue, not when it was joined: Stop,
+      // or a setting changed mid-turn, overtakes anything still waiting.
+      if (!this.liveReviewsEnabled()) return;
+      await this.settlePath(key);
+    });
+    this.reviewQueue = run.then(
+      () => undefined,
+      (err) => {
+        this.output.appendLine(
+          `Could not review a change as it landed: ${
+            err instanceof Error ? err.message : String(err)
+          }`
+        );
+      }
+    );
+  }
+
+  /**
    * Put Kiro's direct writes back to their pre-turn state, then feed the final
    * versions through the same selectable reviewer as an ACP callback write.
+   *
+   * The sweep, not the whole story. Anything a finished tool call already
+   * offered mid-turn has had its review baseline moved forward, so it is
+   * skipped here for being unchanged. What is left is what the live path could
+   * not take: a tool that never reported finishing, a path only named at the
+   * end, and every ending that reverts rather than reviews.
    */
   private async finishDirectFileReviews(): Promise<void> {
+    // Whatever is still on screen belongs to this turn and has to settle
+    // before the turn can be called over.
+    await this.reviewQueue;
+
     /*
      * Everything a tool touched, not only what looked like a write.
      *
@@ -1338,107 +1517,178 @@ export class KiroSession {
      * them, and a file the *user* edited mid-turn must not be handed back as a
      * diff offering to undo their own work.
      */
-    const candidates = new Map<string, DirectFileChange>();
+    const candidates = new Set<string>();
     for (const key of this.toolTouchedPaths) {
-      const before = this.turnBaselines.get(key);
-      if (before) candidates.set(key, { before });
+      if (this.turnBaselines.has(key)) candidates.add(key);
     }
-    for (const [key, tracked] of this.directFileChanges) candidates.set(key, tracked);
+    for (const key of this.directFileChanges.keys()) candidates.add(key);
 
-    this.directFileChanges.clear();
     this.toolTouchedPaths.clear();
-    if (candidates.size === 0) return;
-    const changes = [...candidates.entries()];
+    if (candidates.size === 0) {
+      this.directFileChanges.clear();
+      return;
+    }
+
+    for (const key of candidates) await this.settlePath(key);
+    this.directFileChanges.clear();
+  }
+
+  /**
+   * Offer one file's changes, however this turn is being supervised.
+   *
+   * One routine for both routes on purpose. A review opened as the edit lands
+   * and one opened at the end of the turn differ in *when* they happen and in
+   * nothing else — the file goes back, the diff is a proposal, and what the
+   * user accepts is written through the editor so it can be undone. An
+   * earlier version made the live case behave differently and quietly lost
+   * Ctrl+Z; see the note above `restoreSnapshot` below.
+   */
+  private async settlePath(key: string): Promise<void> {
+    if (this.clientReviewedPaths.has(key)) return;
+    /*
+     * The review baseline, which is the turn baseline until a review settles.
+     *
+     * A file edited twice in one turn would otherwise show its second diff
+     * against the pre-turn content and re-propose the hunks the user had
+     * already accepted — with no way to tell those apart from the new edit.
+     */
+    const before = this.reviewBaselines.get(key) ?? this.turnBaselines.get(key);
+    if (!before) return;
+    const tracked: DirectFileChange = {
+      before,
+      expected: this.directFileChanges.get(key)?.expected,
+    };
+
+    const current = await this.readExistingFile(tracked.before.full);
+    if (current.exists === tracked.before.exists && current.content === tracked.before.content) {
+      return;
+    }
 
     const config = vscode.workspace.getConfiguration("kiroChat");
     const writesEnabled = config.get<boolean>("allowFileWrites", true);
     const allowWrites = writesEnabled && !this.turnReadOnly;
     const reviewWrites = config.get<boolean>("reviewFileWrites", true);
 
-    for (const [key, tracked] of changes) {
-      if (this.clientReviewedPaths.has(key)) continue;
-      const current = await this.readExistingFile(tracked.before.full);
-      if (
-        current.exists === tracked.before.exists &&
-        current.content === tracked.before.content
-      ) {
-        continue;
-      }
+    const relative = this.displayPath(tracked.before.full);
 
-      const relative = this.displayPath(tracked.before.full);
-
-      /*
-       * `expected` is a simulation of what Kiro's tool input should produce,
-       * chained across every edit to this file in the turn. It used to have to
-       * match the file byte for byte or the review was abandoned.
-       *
-       * That was backwards. The simulation drifts for entirely ordinary
-       * reasons — several edits to one file, a replace the simulation models
-       * differently from Kiro — and when it drifted the review was skipped
-       * while Kiro's edit stayed on disk. The one outcome nobody wants is an
-       * unreviewed edit, and that is precisely what it produced.
-       *
-       * The review does not need the prediction to be right. It shows what is
-       * on disk now against the pre-turn snapshot and lets the user decide, so
-       * a surprise is something they see rather than something that is applied
-       * behind a warning. The mismatch is still worth logging.
-       */
-      if (tracked.expected !== undefined && current.content !== tracked.expected) {
-        this.output.appendLine(
-          `${relative} does not match the simulated result of Kiro's edit. ` +
-            "Reviewing what is actually on disk instead."
-        );
-      }
-
-      if (!reviewWrites && allowWrites && !this.turnCancelled) continue;
-      await this.restoreSnapshot(tracked.before);
-
-      if (this.turnCancelled) {
-        this.output.appendLine(`Reverted Kiro's cancelled change to ${relative}.`);
-        continue;
-      }
-      if (!allowWrites) {
-        const message = this.turnReadOnly
-          ? `Kiro tried to edit ${relative} in Plan mode. The edit was reverted.`
-          : `Kiro tried to edit ${relative}, but file writing is turned off. The edit was reverted.`;
-        this.output.appendLine(message);
-        this.events.onError(message);
-        continue;
-      }
-
-      const landed: AppliedState = {};
-      const decision = await this.changeReviewer.review({
-        path: relative,
-        sourcePath: tracked.before.full,
-        before: tracked.before.content,
-        after: current.content,
-        creating: !tracked.before.exists,
-        applyContent: this.createReviewApplier(
-          tracked.before.full,
-          { exists: tracked.before.exists, content: tracked.before.content },
-          landed
-        ),
-      });
-      this.answeredPaths.add(key);
-      if (!decision.accepted) {
-        this.output.appendLine(`Kept the original ${relative}.`);
-        continue;
-      }
-
-      const now = await this.readExistingFile(tracked.before.full);
-      if (now.exists && now.content === decision.content) continue;
-      // A formatter running on save leaves the file final but not identical to
-      // the accepted text. That is the applier's work, not an outside edit.
-      if (now.exists === landed.exists && now.content === landed.content) continue;
-      if (now.exists !== tracked.before.exists || now.content !== tracked.before.content) {
-        const message = `${relative} changed while its review was open. The approved lines were not applied.`;
-        this.output.appendLine(message);
-        this.events.onError(message);
-        continue;
-      }
-      if (tracked.before.exists && decision.content === tracked.before.content) continue;
-      await this.writeFileContent(tracked.before.full, decision.content);
+    /*
+     * `expected` is a simulation of what Kiro's tool input should produce,
+     * chained across every edit to this file in the turn. It used to have to
+     * match the file byte for byte or the review was abandoned.
+     *
+     * That was backwards. The simulation drifts for entirely ordinary
+     * reasons — several edits to one file, a replace the simulation models
+     * differently from Kiro — and when it drifted the review was skipped
+     * while Kiro's edit stayed on disk. The one outcome nobody wants is an
+     * unreviewed edit, and that is precisely what it produced.
+     *
+     * The review does not need the prediction to be right. It shows what is
+     * on disk now against the pre-turn snapshot and lets the user decide, so
+     * a surprise is something they see rather than something that is applied
+     * behind a warning. The mismatch is still worth logging.
+     */
+    if (tracked.expected !== undefined && current.content !== tracked.expected) {
+      this.output.appendLine(
+        `${relative} does not match the simulated result of Kiro's edit. ` +
+          "Reviewing what is actually on disk instead."
+      );
     }
+
+    if (!reviewWrites && allowWrites && !this.turnCancelled) return;
+
+    /*
+     * The file goes back before the diff opens — during the turn as well as
+     * at the end of it.
+     *
+     * A live review briefly did not, on the reasoning that putting a file back
+     * under a running agent leaves its next edit computed against text that is
+     * no longer there. That cost Ctrl+Z, which is worse. Kiro CLI writes the
+     * file itself and a raw disk write is invisible to the editor, so leaving
+     * its version in place meant accepting everything produced content
+     * identical to what was already there: no workspace edit ran, the document
+     * gained no undo entry, and an accepted change could not be taken back the
+     * ordinary way — in the file, where the user is already looking.
+     *
+     * The desync that was avoiding is handled where it actually can be:
+     * `askPermission` holds Kiro's next edit until the review queue drains, so
+     * nothing is building on the restored file behind the user's back.
+     */
+    await this.restoreSnapshot(tracked.before);
+
+    if (this.turnCancelled) {
+      this.output.appendLine(`Reverted Kiro's cancelled change to ${relative}.`);
+      return;
+    }
+    if (!allowWrites) {
+      const message = this.turnReadOnly
+        ? `Kiro tried to edit ${relative} in Plan mode. The edit was reverted.`
+        : `Kiro tried to edit ${relative}, but file writing is turned off. The edit was reverted.`;
+      this.output.appendLine(message);
+      this.events.onError(message);
+      return;
+    }
+
+    // What the applier must find on disk before its first write: the file as
+    // it was, which is what `restoreSnapshot` above has just put back.
+    const applied = { exists: tracked.before.exists, content: tracked.before.content };
+
+    const landed: AppliedState = {};
+    const decision = await this.changeReviewer.review({
+      path: relative,
+      sourcePath: tracked.before.full,
+      before: tracked.before.content,
+      after: current.content,
+      creating: !tracked.before.exists,
+      applyContent: this.createReviewApplier(tracked.before.full, applied, landed),
+    });
+    this.answeredPaths.add(key);
+    if (!decision.accepted) {
+      this.output.appendLine(`Kept the original ${relative}.`);
+      /*
+       * A rejected review is a revert the reviewer performed itself,
+       * through `applyDecision`. Recording where that left the file is what
+       * stops the end-of-turn sweep seeing a difference from the pre-turn
+       * baseline and asking the same question a second time.
+       */
+      await this.rememberReviewBaseline(key, tracked.before.full);
+      return;
+    }
+
+    const now = await this.readExistingFile(tracked.before.full);
+    const finish = async () => this.rememberReviewBaseline(key, tracked.before.full);
+    if (now.exists && now.content === decision.content) return finish();
+    // A formatter running on save leaves the file final but not identical to
+    // the accepted text. That is the applier's work, not an outside edit.
+    if (now.exists === landed.exists && now.content === landed.content) return finish();
+    if (now.exists !== applied.exists || now.content !== applied.content) {
+      /*
+       * Something wrote the file while the diff was open. Nothing is forced
+       * over it — but the baseline is deliberately left where it was, so the
+       * sweep at the end of the turn offers the newer content rather than
+       * treating a change nobody looked at as settled.
+       */
+      const message = `${relative} changed while its review was open. The approved lines were not applied.`;
+      this.output.appendLine(message);
+      this.events.onError(message);
+      return;
+    }
+    if (tracked.before.exists && decision.content === tracked.before.content) return finish();
+    await this.writeFileContent(tracked.before.full, decision.content);
+    await finish();
+  }
+
+  /**
+   * Move this file's review baseline to whatever the decision actually left on
+   * disk, so the next diff of it is about the next edit and nothing else.
+   *
+   * Read back rather than assumed, for the reason `createReviewApplier`
+   * re-reads: format-on-save can change the bytes on the way through, and a
+   * baseline recording what was asked for would make the next edit look like
+   * somebody else had been in the file.
+   */
+  private async rememberReviewBaseline(key: string, full: string): Promise<void> {
+    const landed = await this.readExistingFile(full);
+    this.reviewBaselines.set(key, { full, exists: landed.exists, content: landed.content });
   }
 
   /**
@@ -1622,6 +1872,20 @@ export class KiroSession {
         `Letting an edit through without a prompt; the review diff is the gate: ` +
           `${String(params?.toolCall?.title ?? params?.toolCall?.kind ?? "edit")}`
       );
+      /*
+       * One file at a time, and this is what enforces it.
+       *
+       * Kiro is blocked on this reply, so waiting here for the reviews already
+       * on screen is the only way to stop it starting the next edit while the
+       * last one is still being read. Without it, reviewing as edits land is
+       * only a change of timing: Kiro can still write a file whose diff is
+       * open, and the applier would then refuse every hunk the user had
+       * already clicked.
+       *
+       * The queue as it stands, not as it becomes: a review opened by this
+       * very edit must not be something this call waits for.
+       */
+      await this.reviewQueue;
       return { outcome: { outcome: "selected", optionId: allow.optionId ?? allow.id } };
     }
 
@@ -1631,24 +1895,81 @@ export class KiroSession {
       label: String(option.name ?? option.optionId ?? option.id),
       kind: String(option.kind ?? ""),
     }));
-    let pickedId: string | undefined;
-    if (this.events.onPermission) {
-      pickedId = await this.events.onPermission({ title, options: choices });
-    } else {
-      // The chat view normally owns this interaction. Keep a non-modal
-      // fallback for callers that run Kiro without resolving the panel.
-      const label = await vscode.window.showInformationMessage(
-        `Kiro wants to ${title}.`,
-        ...choices.map((choice) => choice.label)
-      );
-      pickedId = choices.find((choice) => choice.label === label)?.id;
-    }
+    this.output.appendLine(
+      `Asking about ${title}` +
+        `${params?.toolCall?.toolCallId ? ` (${String(params.toolCall.toolCallId)})` : ""}` +
+        `${this.permissionsWaiting ? `; ${this.permissionsWaiting} already waiting` : ""}`
+    );
 
+    const pickedId = await this.queuePermission(title, choices);
     if (!pickedId) return { outcome: { outcome: "cancelled" } };
     const chosen = options.find(
       (option) => String(option.optionId ?? option.id) === pickedId
     );
     if (!chosen) return { outcome: { outcome: "cancelled" } };
     return { outcome: { outcome: "selected", optionId: chosen.optionId ?? chosen.id } };
+  }
+
+  /**
+   * Put one question on screen, and only one.
+   *
+   * Chained onto `permissionQueue` so a second request waits for the first to
+   * be answered rather than posting a card beside it. The generation is
+   * re-checked at the front of the queue, not when the task was made: a
+   * question queued behind another may have been overtaken by Stop, a new
+   * session or the panel going away, and asking it then would be asking about
+   * a turn that no longer exists.
+   *
+   * `waiting` rides along so the card can say how many are behind it. A
+   * serialised queue is otherwise indistinguishable from Kiro having hung —
+   * which is the honest version of the information the old stack of cards
+   * gave away by accident.
+   */
+  private queuePermission(
+    title: string,
+    choices: Array<{ id: string; label: string; kind: string }>
+  ): Promise<string | undefined> {
+    const generation = this.permissionGeneration;
+    this.permissionsWaiting++;
+    const task = this.permissionQueue.then(() => {
+      this.permissionsWaiting--;
+      if (generation !== this.permissionGeneration) {
+        this.output.appendLine(`Dropped a queued question about ${title}; the turn had ended.`);
+        return undefined;
+      }
+      return this.showPermission(title, choices);
+    });
+    this.permissionQueue = task.then(
+      () => undefined,
+      () => undefined
+    );
+    return task;
+  }
+
+  private async showPermission(
+    title: string,
+    choices: Array<{ id: string; label: string; kind: string }>
+  ): Promise<string | undefined> {
+    if (this.events.onPermission) {
+      return this.events.onPermission({ title, options: choices, waiting: this.permissionsWaiting });
+    }
+    // The chat view normally owns this interaction. Keep a non-modal
+    // fallback for callers that run Kiro without resolving the panel.
+    const label = await vscode.window.showInformationMessage(
+      `Kiro wants to ${title}.`,
+      ...choices.map((choice) => choice.label)
+    );
+    return choices.find((choice) => choice.label === label)?.id;
+  }
+
+  /**
+   * Drop every question that has not been shown yet.
+   *
+   * The cards already on screen are the provider's to cancel — it holds the
+   * resolvers. These are the ones that never got that far, and without this
+   * they would surface one at a time after the turn they belong to had gone.
+   */
+  private cancelQueuedPermissions(): void {
+    this.permissionGeneration++;
   }
 }

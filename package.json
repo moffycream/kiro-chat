@@ -2,7 +2,7 @@
   "name": "kiro-chat",
   "displayName": "Kiro Chat",
   "description": "Chat with the Kiro agent inside VS Code, like Copilot Chat.",
-  "version": "0.30.7",
+  "version": "0.32.0",
   "publisher": "local",
   "license": "MIT",
   "engines": {
@@ -120,11 +120,6 @@
           "group": "navigation@2"
         },
         {
-          "command": "kiroChat.showUsage",
-          "when": "view == kiroChat.view",
-          "group": "navigation@0"
-        },
-        {
           "command": "kiroChat.showHistory",
           "when": "view == kiroChat.view",
           "group": "navigation@3"
@@ -205,6 +200,11 @@
           "type": "boolean",
           "default": true,
           "description": "Open an inline editor review for Kiro's proposed changes, with red/green highlights, per-hunk CodeLens actions, and keyboard shortcuts."
+        },
+        "kiroChat.reviewDuringTurn": {
+          "type": "boolean",
+          "default": true,
+          "description": "Open each file's review as soon as Kiro finishes editing it, rather than queueing every diff until the end of the turn. Kiro waits for your answer before starting the next edit. Turn this off to review everything together at the end."
         },
         "kiroChat.command": {
           "type": "string",

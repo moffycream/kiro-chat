@@ -1,0 +1,127 @@
+{
+ "success": true,
+ "message": "Context breakdown - 6% used",
+ "data": {
+  "model": "auto",
+  "contextUsagePercentage": 6.218999862670898,
+  "verbose": false,
+  "initialExpanded": false,
+  "breakdown": {
+   "contextFiles": {
+    "tokens": 5401,
+    "percent": 2.700500011444092,
+    "items": [
+     {
+      "name": "AGENTS.md",
+      "tokens": 0,
+      "matched": false,
+      "percent": 0
+     },
+     {
+      "name": "README.md",
+      "tokens": 5401,
+      "matched": true,
+      "percent": 2.700500011444092
+     }
+    ]
+   },
+   "tools": {
+    "tokens": 6979,
+    "percent": 3.489499807357788,
+    "groups": [
+     {
+      "name": "Built-in",
+      "source": "built-in",
+      "tokens": 6979,
+      "percent": 3.489499807357788,
+      "items": [
+       {
+        "name": "code",
+        "tokens": 671,
+        "percent": 0.33550000190734863
+       },
+       {
+        "name": "glob",
+        "tokens": 286,
+        "percent": 0.14299999177455902
+       },
+       {
+        "name": "goal",
+        "tokens": 608,
+        "percent": 0.30400002002716064
+       },
+       {
+        "name": "grep",
+        "tokens": 468,
+        "percent": 0.23399998247623444
+       },
+       {
+        "name": "introspect",
+        "tokens": 346,
+        "percent": 0.1730000078678131
+       },
+       {
+        "name": "knowledge",
+        "tokens": 1166,
+        "percent": 0.5830000042915344
+       },
+       {
+        "name": "read",
+        "tokens": 540,
+        "percent": 0.27000001072883606
+       },
+       {
+        "name": "shell",
+        "tokens": 203,
+        "percent": 0.101500004529953
+       },
+       {
+        "name": "subagent",
+        "tokens": 655,
+        "percent": 0.32750001549720764
+       },
+       {
+        "name": "todo_list",
+        "tokens": 772,
+        "percent": 0.38600000739097595
+       },
+       {
+        "name": "use_aws",
+        "tokens": 443,
+        "percent": 0.22150000929832458
+       },
+       {
+        "name": "web_fetch",
+        "tokens": 205,
+        "percent": 0.10249999910593033
+       },
+       {
+        "name": "web_search",
+        "tokens": 121,
+        "percent": 0.060499999672174454
+       },
+       {
+        "name": "write",
+        "tokens": 495,
+        "percent": 0.2475000023841858
+       }
+      ]
+     }
+    ]
+   },
+   "kiroResponses": {
+    "tokens": 0,
+    "percent": 0
+   },
+   "yourPrompts": {
+    "tokens": 58,
+    "percent": 0.028999999165534973
+   },
+   "sessionFiles": {
+    "tokens": 0,
+    "percent": 0
+   }
+  }
+ }
+}
+

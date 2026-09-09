@@ -80,6 +80,15 @@ opens a read-only virtual source document in the editor. Theme-aware decorations
 deletions red and insertions green. A CodeLens provider supplies whole-file
 **Accept all** / **Reject all** and per-hunk **Accept** / **Reject**.
 
+**An editable review was tried and reverted.** The document was moved to a
+`FileSystemProvider` (a `TextDocumentContentProvider` is read-only, always) so it could be
+typed into and saved. That forces the buffer to hold *one* version of the file rather than
+both sides — a document showing the old lines and the new ones at once has no single answer
+to "what did you mean to keep" — so the red deleted lines had to leave the buffer for a
+hover marker. Losing the side-by-side red/green is what killed it: it is most of why the
+review is readable. Keep the merged, read-only rendering; if editing comes up again, it
+needs an answer that does not cost that.
+
 **Do not swap these for inlay hints.** A hint label part carrying a `command` is painted as
 a chip and looks far more like a button, but it is only reachable through VS Code's
 `ClickLinkGesture`, which fires solely while the trigger modifier is held — a plain click
@@ -286,6 +295,21 @@ passes Kiro's option ids and labels through `SessionEvents.onPermission`; the pr
 posts an inline permission card and resolves the request when `chat.js` returns a
 `permissionDecision`. The VS Code notification is only a fallback when no panel exists.
 
+**One question at a time, and only the part that asks a human is queued.**
+`AcpClient.handleIncomingRequest` answers each incoming request on its own promise and
+never waits for the last — right for reads, wrong for questions. Kiro writes several
+notifications in one stdio write, so two `session/request_permission` calls dispatched out
+of the same chunk both reached the panel and `permissionBar.appendChild` stacked two
+cards; `livePermissionCard()` then pointed the `1`–`9` shortcuts at the newest one rather
+than the one being read. `queuePermission` chains onto `permissionQueue`, and the fast
+answers — no options, `autoApproveTools`, the one-gate write skip — must stay outside it,
+or an auto-approval waits behind a card nobody has looked at. The generation is re-checked
+at the *front* of the queue, not when the task was joined: Stop, a new session or a
+disposal overtakes anything still waiting, and asking then would be asking about a turn
+that no longer exists. `waiting` rides along with the request so the card can say what is
+behind it — a serialised queue is otherwise indistinguishable from Kiro having hung, which
+is the honest version of what the stack of cards gave away by accident.
+
 **The card claims nothing until the extension has answered.** Clicking used to disable the
 buttons and write "Selected: Allow" on the spot, whatever became of the decision — and a
 request that had already gone (turn ended, stopped, errored) is dropped by the provider in
@@ -327,7 +351,77 @@ first-option fallback applies only when no option declares itself an allow.
 **A permission goes into the chat's record.** It lived only in the DOM, so reopening a chat
 left no trace that Kiro had asked to do anything. `recordPermission` stores
 `role: "permission"` with the title, options and choice, and `restoreHistory` rebuilds the
-same card with `settled: true` — buttons spent, choice marked. One card renderer, not two.
+same card with `settled: true`. One card renderer, not two — and `settlePermissionCard` is
+the one function that turns a live card into an answered one, reached both by
+`permissionSettled` and by the restore path.
+
+**An answered card is a record, not a control.** It used to keep every option on screen as
+a disabled button with the choice named underneath: three or four rows to record one word,
+in a panel three inches wide, and a turn can ask several times. `settlePermissionCard`
+removes the actions, the queue note and the status line, and leaves one row — a
+`.permission-outcome` pill and the question in the past tense. Three details there are
+load-bearing:
+
+- **The options live on `card.dataset.options`, not on the buttons.** `recordPermission`
+  used to read them back off `.permission-actions button`, which is nothing once the card
+  has been answered.
+- **The choice comes from the settling message, never from `button.chosen`.** The click
+  and the outcome are deliberately different events — a request that had already gone is
+  answered `ok: false` however it was clicked — and reading the class would put the card
+  back to claiming an approval that reached nobody.
+- **`ok: true` with an option id nothing matches still renders as answered.** Falling
+  through to the stale branch there would report the opposite of what happened.
+  `test/permissionCard.test.js` runs the function against a small DOM rather than matching
+  its source, which is what that class of bug needs.
+
+**A running turn is said in one place: a light travelling the border of the message box.**
+`.composer.working .input-wrap::before` rotates a conic gradient, and the class is toggled
+in `setBusy` on `status === "busy"` specifically — not the `busy` variable beside it, which
+also covers connecting, and a box lit before the first message would be announcing work on
+nothing. Four things there are load-bearing:
+
+- **`@property --edge-angle` is what makes it move at all.** A plain custom property is a
+  string as far as animation is concerned, so the angle would jump 0deg → 360deg in one
+  frame and nothing would appear to happen.
+- **The wrapper is `display: flex`.** A textarea is inline, so a plain wrapper stands a few
+  pixels taller than it, and the gradient behind shows through that gap as a band along the
+  bottom rather than a line along the edge. This is what the first attempt looked like.
+- **The gradient is one arc with a transparent tail, not a full ring — and one colour, the
+  theme's own.** A whole spectrum all the way round is a decoration; a run of colour with
+  darkness behind it is a light going round something, which is the thing being described.
+  It was RGB first and that belongs to no theme in particular, so it is
+  `--vscode-focusBorder` now — the light the box already wears when you click into it,
+  which makes a running turn read as this box being active rather than as something bolted
+  onto it. Held under full strength through `color-mix`: it should be catchable at the edge
+  of vision and then ignorable, which is the difference between a progress indicator and a
+  warning light. A test forbids a hardcoded hex in that rule.
+- **Under `prefers-reduced-motion` the arc parks lit rather than disappearing.** Motion is
+  how this speaks, so stopping it silently would remove the information instead of the
+  animation.
+
+Two earlier attempts are why it is this and not something simpler, and both are worth not
+repeating: a **blinking caret** (`steps()` on `.cursor::after`) was too loud for the size it
+sits at and read as cheap, and it is dark during exactly the silences that need covering —
+while Kiro reads and edits, no text is arriving to blink after. A **pulsing glow** on the
+textarea reads as an alarm: it takes your attention again every two seconds, when what is
+wanted is something glanceable and then ignorable. `.cursor::after` is deliberately static.
+
+**`#permission-bar` and `#change-bar` are siblings of the composer, not children of it.**
+They still sit between the transcript and the message box, and still for the reason each
+gives — a question blocking the turn, and a decision about what it changed, neither of
+which may scroll away. But inside the composer's border they read as a toolbar bolted to
+the thing you type in, when they are the last word of the conversation above it. Out there
+they carry their own `margin: 0 var(--gap) var(--gap)`, which the composer's padding used
+to supply.
+
+**A second live status line was tried and reverted.** The turn's progress was duplicated
+onto a `.activity` line — first pinned between the transcript and the composer, then at the
+foot of the agent bubble — on the reasoning that the steps header scrolls out of sight
+behind a long reply. Both were worse than the header they were meant to help: the pinned
+one read as part of the message box rather than as something Kiro was saying, and the
+in-bubble one either repeated the header word for word or forced the header to give up
+naming the step to avoid it. The header remains the single live status. If this comes up
+again, the thing to fix is the header, not a second place to look.
 
 **Neither is `isWriteLikeTool`, and for the same reason.** It used to gate the pre-turn
 snapshot in `observeToolPaths` (called `observeDirectFileWrite` until 0.25.0, when it
@@ -352,6 +446,52 @@ Baselines taken from prompt attachments are deliberately **not** in `toolTouched
 file gets a snapshot either because a tool touched it or because the user attached it, and
 only the first means Kiro was working on it — reviewing the second would offer to undo the
 user's own mid-turn edit.
+
+**Reviews open as the edits land, and `finishDirectFileReviews` is now the sweep
+rather than the whole story.** Every diff used to wait for `session/prompt` to resolve, so
+a three-file turn showed nothing while it worked and then three diffs in a row, each about
+an edit made some time ago. `reviewFinishedTool` acts on a `tool_call_update` carrying a
+terminal status — that is the only notification carrying a status at all — and puts that
+call's paths on `reviewQueue`. Four things there are load-bearing:
+
+- **`toolCallPaths` exists because a `tool_call_update` may be little more than an id and
+  a status.** The `rawInput` and `locations` that named the file arrived on the earlier
+  `tool_call`, so without the map there is nothing to review when the step reports it
+  finished. `settledToolCalls` is what stops a repeated terminal status reviewing twice.
+- **`queueLiveReview` is deliberately not awaited.** It is reached from
+  `handleNotification`, which runs inside `AcpClient.dispatch` and is synchronous by
+  design; a throw there costs every remaining notification in that stdio write. The queue
+  owns the errors and `finishDirectFileReviews` awaits it before sweeping.
+- **Every review restores the file before opening, live ones included — and that is not
+  negotiable, because Ctrl+Z depends on it.** 0.32.0 briefly had the live case leave Kiro's
+  version in place, reasoning that putting a file back under a running agent leaves its
+  next `strReplace` looking for text that is no longer there. It cost undo, silently: Kiro
+  CLI writes the file itself and a raw disk write is invisible to the editor, so accepting
+  everything produced content identical to what was already on disk, `applyDecision`
+  short-circuited, no workspace edit ran, and the document gained no undo entry. The
+  existing "accepted change is written through the editor" test passed throughout — it
+  only drives the end-of-turn path. The desync is handled where it actually can be: the
+  permission gate holds Kiro's next edit until the review queue drains. Every ending that
+  *reverts* rather than reviews — cancelled, writes off, Plan mode — still stays at the end
+  of the turn, which is what `liveReviewsEnabled` encodes.
+- **`reviewBaselines` is not `turnBaselines`.** A turn baseline is the file before Kiro
+  started and must stay that way: the keep-or-undo card and `undoLastTurn` restore from
+  it. A review baseline moves forward every time a review settles, so a file edited twice
+  in one turn shows its second diff against what the user just agreed to. Without the
+  split the second diff re-proposes the hunks they already accepted, with nothing to tell
+  those apart from the new edit. `rememberReviewBaseline` reads the file back rather than
+  recording the decision, for the reason `createReviewApplier` re-reads: format-on-save
+  changes the bytes on the way through.
+
+**The one-gate skip is also what serialises Kiro.** `askPermission` awaits `reviewQueue`
+before letting a write-like tool through without a prompt. Kiro is blocked on that reply,
+so it is the only lever that stops the next edit starting while the last one is still on
+screen — otherwise reviewing as edits land is merely a change of timing, and the applier
+refuses every hunk already clicked on a file Kiro has since rewritten. It waits on the
+queue *as it stands*, never as it becomes, or the edit would wait for its own review.
+`kiroChat.reviewDuringTurn` is the kill switch and is deliberately **not** one of
+`EditGates`: `editModeOf` reads four named keys, and adding a fifth would report every
+mode as `custom`.
 
 **`DirectFileChange.expected` is a hint, never a gate.** It simulates what a tool input
 should produce, chained across every edit to a file in the turn. It used to have to match
@@ -726,14 +866,46 @@ number is honest where a wrong one is not.
 decimals and drops trailing zeros. Session credits used to be `toFixed(2)` and account
 credits were concatenated raw, so a plan total arrived as `1234.5678901234 credits on Pro`.
 
-**The context dropdown uses the current session's reported percentage.** `readMeter`
-accepts only finite percentages from 0 through 100; missing, null, blank, and invalid
-values must not become zero. `ModelInfo.contextWindowTokens` preserves the numeric
-capacity from the model command alongside the display label. `renderContextPanel` uses
-that capacity to estimate token counts and labels them as estimates. Do not infer category
-totals or compaction buffers. Unknown usage remains visible as "Context not reported".
-The 80% and 95% guidance thresholds do not trigger resets. Opening the dropdown does not
-fetch account usage; its explicit button does. Model and usage updates redraw an open panel.
+**The context panel shows Kiro's own breakdown, and the category totals really are
+available.** This file used to say "do not infer category totals or compaction buffers",
+which was right about the *meter* — one percentage is all it carries. `/context` is a
+different source and carries the rest. Measured by driving `kiro-cli acp`:
+`{ command: "context", args: {} }` answers with `contextUsagePercentage`, `model`, and a
+`breakdown` holding `contextFiles` (naming each file, with `matched: false` for one it
+looked for and did not find), `tools` (nested one level deeper, under `groups`),
+`kiroResponses`, `yourPrompts` and `sessionFiles` — each with `tokens` and `percent`.
+`{ value: "show" }` returns identical numbers and only flips `initialExpanded`, so the
+plain call is the one to make. `test/fixtures/kiro-context.json` is that captured payload
+and `readContextCommand` in `usage.ts` (free of `vscode`) parses it.
+
+Four things there are easy to get wrong:
+
+- **`Number(null)` is 0, and 0 is a valid percentage.** A missing reading passed through
+  the obvious coercion arrives as the confident claim that the context is empty, so
+  `readContextCommand` guards the percentage exactly as `readMeter` does. A test drives
+  every shape of nothing through it.
+- **Only the percentage is ever taken off a command result**, never a credit figure: a
+  command's own cost is not the conversation's spend, and folding it into `sessionCredits`
+  inflates the strip every time the panel is opened.
+- **The panel asks on every open, unlike account usage.** `/context` is answered locally
+  and instantly; `/usage` is a billing round trip and stays behind its button. A breakdown
+  is cleared when a chat is cleared or another is opened — it describes the conversation it
+  came from.
+- **A command cannot run during a turn**, so this fails while Kiro is working. The reason
+  is shown under the last breakdown rather than blanking the panel, because it is temporary.
+
+`ModelInfo.contextWindowTokens` still supplies the capacity the headline is measured
+against. The 80% and 95% thresholds are one line of advice and trigger nothing. Unknown
+usage still reads "not reported" rather than zero. Model and usage updates redraw an open
+panel.
+
+**The panel is figures, not prose.** It used to derive four rows from the meter percentage
+times the capacity and sit them under two paragraphs explaining that the categories were
+unavailable and the tokens were estimates — an apology where the numbers should have been.
+The account half likewise reprinted Kiro's own `/usage` text, which is a paragraph wrapped
+into a strip three inches wide, when the three figures anyone opens it for were already
+parsed on the way to that strip. The raw report is shown only when nothing could be parsed
+out of it, because then it is all there is.
 
 ## Webview constraints
 

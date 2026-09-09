@@ -311,3 +311,108 @@ export function parseAccountUsage(report: string): Partial<UsageInfo> {
 
   return out;
 }
+
+/**
+ * What Kiro says is actually in its context, category by category.
+ *
+ * Measured by driving `kiro-cli acp` directly: `_kiro.dev/commands/execute`
+ * with `{ command: "context", args: {} }` answers with a real breakdown —
+ * `contextFiles` (with the matched files named), `tools` (grouped by source),
+ * `kiroResponses`, `yourPrompts` and `sessionFiles`, each carrying a token
+ * count and a percentage, alongside `contextUsagePercentage` and the model.
+ * `{ value: "show" }` returns the same numbers and only flips
+ * `initialExpanded`, so the plain call is the one to make.
+ *
+ * This is why the panel no longer says category totals are unavailable: they
+ * were unavailable from the *meter*, which is all it used to have.
+ */
+export interface ContextEntry {
+  name: string;
+  tokens: number;
+  percent: number;
+  /** Context files only: a file Kiro looked for and did not find. */
+  matched?: boolean;
+}
+
+export interface ContextCategory {
+  key: string;
+  label: string;
+  tokens: number;
+  percent: number;
+  items: ContextEntry[];
+}
+
+export interface ContextBreakdown {
+  percent?: number;
+  model?: string;
+  categories: ContextCategory[];
+  totalTokens: number;
+}
+
+/** The categories Kiro reports, in the order they are worth reading. */
+const CONTEXT_CATEGORIES: Array<{ key: string; label: string }> = [
+  { key: "contextFiles", label: "Context files" },
+  { key: "sessionFiles", label: "Files in this chat" },
+  { key: "yourPrompts", label: "Your messages" },
+  { key: "kiroResponses", label: "Kiro's replies" },
+  { key: "tools", label: "Tool definitions" },
+];
+
+function finite(value: any): number {
+  const number = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(number) ? number : 0;
+}
+
+/**
+ * Items come two ways: `items` directly, or nested one level under `groups`
+ * (which is how tools arrive, grouped by where they came from). Flattening
+ * the groups keeps one shape for the panel to draw.
+ */
+function entriesOf(block: any): ContextEntry[] {
+  const out: ContextEntry[] = [];
+  const push = (item: any) => {
+    const name = String(item?.name ?? "").trim();
+    if (!name) return;
+    const entry: ContextEntry = { name, tokens: finite(item?.tokens), percent: finite(item?.percent) };
+    if (typeof item?.matched === "boolean") entry.matched = item.matched;
+    out.push(entry);
+  };
+  if (Array.isArray(block?.items)) for (const item of block.items) push(item);
+  if (Array.isArray(block?.groups)) {
+    for (const group of block.groups) {
+      if (Array.isArray(group?.items)) for (const item of group.items) push(item);
+    }
+  }
+  return out;
+}
+
+export function readContextCommand(data: any): ContextBreakdown | undefined {
+  const breakdown = data?.breakdown;
+  if (!breakdown || typeof breakdown !== "object") return undefined;
+
+  const categories: ContextCategory[] = [];
+  let totalTokens = 0;
+  for (const { key, label } of CONTEXT_CATEGORIES) {
+    const block = breakdown[key];
+    if (!block || typeof block !== "object") continue;
+    const tokens = finite(block.tokens);
+    totalTokens += tokens;
+    categories.push({ key, label, tokens, percent: finite(block.percent), items: entriesOf(block) });
+  }
+  if (categories.length === 0) return undefined;
+
+  const out: ContextBreakdown = { categories, totalTokens };
+  /*
+   * Only a percentage that could be one, read exactly as `readMeter` reads
+   * it. `Number(null)` is 0, and 0 is a perfectly good percentage — so a
+   * missing reading, passed through the obvious coercion, arrives as the
+   * confident claim that the context is empty.
+   */
+  const raw = data?.contextUsagePercentage;
+  const percent =
+    typeof raw === "number" || (typeof raw === "string" && raw.trim()) ? Number(raw) : NaN;
+  if (Number.isFinite(percent) && percent >= 0 && percent <= 100) out.percent = percent;
+  const model = String(data?.model ?? "").trim();
+  if (model) out.model = model;
+  return out;
+}

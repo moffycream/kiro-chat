@@ -671,6 +671,15 @@ body.vscode-high-contrast-light .tok-fn {
   .thinking-dots i {
     opacity: 0.7;
   }
+  /*
+   * The travelling light says "still working" by moving, so it has to stop —
+   * and something has to be left saying it. The arc parks itself along the
+   * top edge and stays there, lit, for as long as the turn runs.
+   */
+  .composer.working .input-wrap::before {
+    animation: none;
+    --edge-angle: 90deg;
+  }
 }
 
 .permission-card {
@@ -776,10 +785,6 @@ body.vscode-high-contrast-light .tok-fn {
   text-align: center;
 }
 
-.permission-done .permission-key {
-  display: none;
-}
-
 /*
  * Answered: a record of what was asked, not a question still standing.
  *
@@ -790,16 +795,41 @@ body.vscode-high-contrast-light .tok-fn {
  * blue.
  */
 .permission-done {
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 7px;
+  padding: 5px 9px;
   border-color: var(--vscode-panel-border);
 }
 
 .permission-done .permission-title {
+  font-weight: normal;
   color: var(--vscode-descriptionForeground);
 }
 
-.permission-done .permission-option.primary {
-  color: var(--vscode-button-secondaryForeground);
-  background: var(--vscode-button-secondaryBackground);
+/*
+ * The answer, said once.
+ *
+ * An answered card used to keep every option on screen as a disabled button
+ * with the choice named underneath — four lines to record one word, in a
+ * panel three inches wide. A refusal keeps its red, for the same reason the
+ * live button does: it is the one outcome worth spotting at a glance.
+ */
+.permission-outcome {
+  flex: 0 0 auto;
+  padding: 0 6px;
+  border: 1px solid var(--vscode-panel-border);
+  border-radius: 3px;
+  color: var(--vscode-foreground);
+  font-size: 0.85em;
+  line-height: 1.6;
+}
+
+.permission-outcome[data-kind*="reject"],
+.permission-outcome[data-kind*="deny"] {
+  color: var(--vscode-errorForeground);
+  border-color: var(--vscode-errorForeground);
 }
 
 /*
@@ -814,7 +844,16 @@ body.vscode-high-contrast-light .tok-fn {
 .permission-option:disabled { opacity: 0.62; cursor: default; }
 .permission-option.chosen { opacity: 1; outline: 1px solid var(--vscode-focusBorder); }
 .permission-status { min-height: 1em; color: var(--vscode-descriptionForeground); font-size: 0.85em; }
+.permission-waiting { color: var(--vscode-descriptionForeground); font-size: 0.85em; }
 
+/*
+ * Deliberately still.
+ *
+ * A blinking caret was tried and reverted: at the size and contrast this sits
+ * at, right under the reply, it reads as something cheap flashing at you
+ * rather than as a cursor. The message box says the turn is running, in one
+ * place, calmly. Two things moving for the same reason is one too many.
+ */
 .cursor::after {
   content: "▌";
   opacity: 0.6;
@@ -850,6 +889,85 @@ textarea {
 textarea:focus {
   outline: 1px solid var(--vscode-focusBorder);
   outline-offset: -1px;
+}
+
+/*
+ * A light travels the border of the message box while Kiro is working.
+ *
+ * The one thing on screen that is always in the same place, whatever the
+ * transcript is doing, so it can answer "is it still running?" through a
+ * whole turn — including the long silences while Kiro reads and edits and no
+ * text is arriving. A pulsing glow was tried first and read as an alarm: it
+ * gets your attention over and over, when the point is to be glanceable and
+ * then ignorable. Something moving steadily around an edge says the same
+ * thing without ever asking to be looked at.
+ *
+ * Drawn on a wrapper behind the box rather than on the box itself. A border
+ * cannot hold a gradient that moves; a conic gradient on a layer underneath
+ * can, and the textarea's own background masks all of it but the edge.
+ *
+ * `@property` is what makes the angle animatable at all — a plain custom
+ * property is a string as far as animation is concerned, so it would jump
+ * from 0deg to 360deg in one frame and look like nothing is happening.
+ */
+@property --edge-angle {
+  syntax: "<angle>";
+  initial-value: 0deg;
+  inherits: false;
+}
+
+/*
+ * `flex`, not `block`. A textarea is inline by default, so a plain wrapper is
+ * a few pixels taller than it — the descender space under an inline box — and
+ * the gradient behind shows through that gap as a band along the bottom
+ * instead of a line along the edge.
+ */
+.input-wrap {
+  position: relative;
+  display: flex;
+  border-radius: var(--radius);
+}
+
+.input-wrap textarea {
+  position: relative;
+  z-index: 1;
+}
+
+.composer.working .input-wrap::before {
+  content: "";
+  position: absolute;
+  inset: -1.5px;
+  border-radius: calc(var(--radius) + 1.5px);
+  z-index: 0;
+  /*
+   * One travelling arc in one colour, not a rainbow ring.
+   *
+   * The colour is the editor's own focus border — the light the box already
+   * wears when you click into it — so a running turn reads as this box being
+   * active rather than as something bolted onto it, and it follows whatever
+   * theme is loaded instead of glowing the same arbitrary pink in all of
+   * them.
+   *
+   * Held under full strength on purpose, and fading to nothing behind the
+   * head. It is meant to be caught at the edge of vision and then ignored,
+   * which is the difference between a progress indicator and a warning light.
+   */
+  background: conic-gradient(
+    from var(--edge-angle),
+    transparent 0deg,
+    transparent 238deg,
+    color-mix(in srgb, var(--vscode-focusBorder) 16%, transparent) 284deg,
+    color-mix(in srgb, var(--vscode-focusBorder) 48%, transparent) 322deg,
+    color-mix(in srgb, var(--vscode-focusBorder) 72%, transparent) 349deg,
+    transparent 360deg
+  );
+  animation: edge-travel 4.5s linear infinite;
+}
+
+@keyframes edge-travel {
+  to {
+    --edge-angle: 360deg;
+  }
 }
 
 /*
@@ -2282,8 +2400,50 @@ button:disabled {
   font-variant-numeric: tabular-nums;
 }
 
-.context-row:first-child { font-weight: 600; }
 .context-row > :last-child { text-align: right; }
+
+/* The section's own line: what it is, and the one number that sums it up. */
+.context-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: baseline;
+  font-weight: 600;
+}
+
+.context-figure {
+  font-weight: normal;
+  font-variant-numeric: tabular-nums;
+  color: var(--vscode-descriptionForeground);
+}
+
+.context-amount {
+  color: var(--vscode-descriptionForeground);
+  white-space: nowrap;
+}
+
+/*
+ * A file inside a category, indented under it. Named rather than counted,
+ * because which files Kiro is holding is the answer to "what does it know
+ * about my project" — and one it looked for and did not find is usually why
+ * an instruction did not take.
+ */
+.context-item {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 3px 0 3px 12px;
+  font-size: 0.82em;
+  font-variant-numeric: tabular-nums;
+  color: var(--vscode-descriptionForeground);
+}
+
+.context-item.missing > :last-child {
+  opacity: 0.75;
+  font-style: italic;
+}
+
+.context-note.warn { color: var(--vscode-errorForeground); }
 
 .context-track {
   height: 7px;
@@ -2362,6 +2522,19 @@ button:disabled {
  * somewhere above. Answered cards are moved into the conversation, so this is
  * empty and hidden whenever nothing is being asked.
  */
+/*
+ * Both bars sit between the transcript and the composer, outside it.
+ *
+ * They used to be inside the composer's box, which read as a toolbar bolted
+ * to the thing you type in — but they are the last word of the turn above,
+ * not a control for the next message. Outside they carry their own side
+ * padding, which the composer used to give them.
+ */
+.permission-bar,
+.change-bar {
+  margin: 0 var(--gap) var(--gap);
+}
+
 .permission-bar {
   flex: 0 0 auto;
   display: flex;
