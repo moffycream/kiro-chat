@@ -67,6 +67,27 @@ export function quote(value: string): string {
  * taskkill. Returns undefined whenever an ordinary kill() is the right thing:
  * a real .exe we spawned directly, or any other platform.
  */
+/**
+ * Turn a JSON-RPC error object into something worth reading.
+ *
+ * `message` alone is often the standard text for the code and says nothing:
+ * a session that cannot be reopened arrives as -32603 "Internal error" with
+ * the actual reason — "Session is active in another process (PID 29752)" —
+ * sitting in `data`, which used to be dropped here. That cost twice over: the
+ * user was shown a sentence with no content in it, and `KiroSession` could not
+ * recognise a failure it knows how to repair.
+ *
+ * `data` is kept on the error as well as folded into the message, because
+ * matching on a sentence is what the repair does and it should not have to
+ * pick the message apart again.
+ */
+export function rpcError(error: any): Error {
+  const message = typeof error?.message === "string" ? error.message : "";
+  const data = typeof error?.data === "string" ? error.data : undefined;
+  const text = [message, data].filter(Boolean).join(": ") || JSON.stringify(error);
+  return Object.assign(new Error(text), { code: error?.code, data });
+}
+
 export function killArgs(
   pid: number | undefined,
   viaShell: boolean,
@@ -301,8 +322,7 @@ export class AcpClient {
       clearTimeout(entry.timer);
     }
     if (message.error) {
-      const text = message.error?.message ?? JSON.stringify(message.error);
-      entry.reject(new Error(text));
+      entry.reject(rpcError(message.error));
     } else {
       entry.resolve(message.result);
     }

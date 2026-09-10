@@ -2,7 +2,7 @@
   "name": "kiro-chat",
   "displayName": "Kiro Chat",
   "description": "Chat with the Kiro agent inside VS Code, like Copilot Chat.",
-  "version": "0.32.0",
+  "version": "0.33.0",
   "publisher": "local",
   "license": "MIT",
   "engines": {
@@ -247,7 +247,7 @@
     "test": "npm run compile && node --test \"test/*.test.js\""
   },
   "devDependencies": {
-    "@types/node": "^20.11.0",
+    "@types/node": "^20.19.43",
     "@types/vscode": "^1.85.0",
     "typescript": "^5.4.0"
   },

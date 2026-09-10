@@ -1867,126 +1867,163 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
   <div id="dropzone" class="dropzone" hidden><span>Drop anywhere here to attach</span></div>
 
   <!--
-    Outside the composer, not inside it.
+    The dock: the question, the decision and the message box, floating over the
+    conversation rather than standing in a band beneath it.
 
-    These two ask for a decision about what Kiro has done; the composer is
-    where you say what it should do next. Sitting inside its box they read as
-    part of the message control — a toolbar attached to the thing you type in
-    — when they are the last word of the turn above. They keep their place
-    between the transcript and the composer, where they cannot scroll away.
+    It used to be three more rows of the page's flex column, so the composer
+    took its height out of the transcript permanently and a border ruled the
+    panel into two sections. In a sidebar three inches wide that is a lot of
+    reading space spent on something that is mostly empty, and it made the box
+    read as a separate tool rather than as the end of the conversation.
+
+    Absolutely positioned instead, so the messages keep the full height and
+    scroll underneath. Nothing here may scroll away, which is why all three are
+    in one overlay and not in the transcript — the reasoning each of them
+    already had, now paid for out of the panel's z-order rather than its
+    height. Pointer events are off on the dock and back on for its children,
+    so the empty space around the box scrolls the conversation behind it.
   -->
-  <div id="permission-bar" class="permission-bar" hidden></div>
-  <div id="change-bar" class="change-bar" hidden></div>
-
-  <form id="composer" class="composer">
+  <div class="dock">
     <!--
-      The instructions box: a panel over the transcript rather than a row in
-      the menu, because the menu scrolls and closes on a click and a textarea
-      inside it would fight both. Anchored on .composer, not .mode-wrap, so it
-      spans the panel instead of the width of one small button.
-    -->
-    <div id="instructions-panel" class="instructions-panel" hidden>
-      <label class="instructions-label" for="instructions-text">Instructions</label>
-      <div class="instructions-note">Added to the front of every message.</div>
-      <textarea id="instructions-text" class="instructions-text" rows="6" spellcheck="false" placeholder="Always reply in Bahasa Malaysia.&#10;Use tabs, never spaces.&#10;Write the test before the fix."></textarea>
-      <div class="instructions-foot">
-        <span id="instructions-count" class="instructions-count"></span>
-        <span class="spacer"></span>
-        <button type="button" id="instructions-cancel" class="instructions-cancel">Cancel</button>
-        <button type="button" id="instructions-save" class="primary">Save</button>
-      </div>
-    </div>
-    <!--
-      Kiro's own slash commands. Anchored on .composer for the same reason the
-      instructions box is: a menu as wide as one control is too narrow to read
-      a command and its description in, and this list is both.
+      Outside the composer, not inside it.
 
-      This one *does* declare a role, unlike the mode and model menus. Their
-      reasoning was that a container role promises arrow-key navigation they do
-      not implement, and that they hold a mixture no single role admits. Both
-      are the other way round here: the list is nothing but commands, and the
-      arrows really do move a highlight while focus stays in the textarea —
-      which is exactly the state a screen reader is told nothing about without
-      aria-activedescendant. Declaring listbox here is describing what the
-      code does, not claiming what it does not.
-
-      No backticks in this comment, and none anywhere in this page: the whole
-      document is a TypeScript template literal, so one would end it.
+      These two ask for a decision about what Kiro has done; the composer is
+      where you say what it should do next. Sitting inside its box they read as
+      part of the message control — a toolbar attached to the thing you type in
+      — when they are the last word of the turn above. They keep their place
+      between the transcript and the composer, where they cannot scroll away.
     -->
-    <div id="slash-menu" class="popup slash-menu" role="listbox" aria-label="Kiro commands" hidden></div>
-    <div id="chips" class="chips" hidden></div>
+    <div id="permission-bar" class="permission-bar" hidden></div>
+    <div id="change-bar" class="change-bar" hidden></div>
 
-    <!--
-      aria-autocomplete, aria-controls and aria-activedescendant, and no
-      aria-expanded: the textbox role does not support that state, and the only
-      way to make it valid is role="combobox" on this element. That is the
-      wrong trade. The box is a multi-line message composer every second of the
-      session and a command picker for the moment a menu is open; overriding
-      its role would have it announce as a combobox, and lose "multi-line",
-      throughout. What a reader actually needs is which row is current, and
-      aria-activedescendant carries that on a textbox legally — appearing when
-      the list opens and going when it closes.
-    -->
-    <!--
-      The wrapper exists for one reason: a border cannot hold a gradient that
-      moves, so the travelling light is painted on a layer behind the box and
-      the textarea's own background masks all but its edge. Nothing else hangs
-      off it.
-    -->
-    <div class="input-wrap">
-      <textarea id="input" rows="2" placeholder="Ask Kiro&#8230;" aria-autocomplete="list" aria-controls="slash-menu"></textarea>
-    </div>
-
-    <div class="composer-row">
-      <div class="attach-wrap">
-        <button type="button" id="attach" class="icon" title="Attach files, folders or an image" aria-label="Attach files, folders or an image" aria-haspopup="true" aria-expanded="false">
-          <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M8.5 3a.5.5 0 0 0-1 0v4.5H3a.5.5 0 0 0 0 1h4.5V13a.5.5 0 0 0 1 0V8.5H13a.5.5 0 0 0 0-1H8.5V3Z"/></svg>
-        </button>
-        <div id="attach-menu" class="popup" hidden>
-          <button type="button" data-act="attachFiles">Files from this project</button>
-          <button type="button" data-act="attachFolders">A folder</button>
-          <button type="button" data-act="attachImage">An image</button>
+    <form id="composer" class="composer">
+      <!--
+        The instructions box: a panel over the transcript rather than a row in
+        the menu, because the menu scrolls and closes on a click and a textarea
+        inside it would fight both. Anchored on .composer, not .mode-wrap, so it
+        spans the panel instead of the width of one small button.
+      -->
+      <div id="instructions-panel" class="instructions-panel" hidden>
+        <label class="instructions-label" for="instructions-text">Instructions</label>
+        <div class="instructions-note">Added to the front of every message.</div>
+        <textarea id="instructions-text" class="instructions-text" rows="6" spellcheck="false" placeholder="Always reply in Bahasa Malaysia.&#10;Use tabs, never spaces.&#10;Write the test before the fix."></textarea>
+        <div class="instructions-foot">
+          <span id="instructions-count" class="instructions-count"></span>
+          <span class="spacer"></span>
+          <button type="button" id="instructions-cancel" class="instructions-cancel">Cancel</button>
+          <button type="button" id="instructions-save" class="primary">Save</button>
         </div>
       </div>
-      <div class="mode-wrap">
-        <button type="button" id="mode-btn" class="mode-btn" title="Workflow" aria-haspopup="true" aria-expanded="false">
-          <svg class="btn-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M2 4.5A.5.5 0 0 1 2.5 4h5a.5.5 0 0 1 0 1h-5a.5.5 0 0 1-.5-.5Zm0 3.5a.5.5 0 0 1 .5-.5h11a.5.5 0 0 1 0 1h-11A.5.5 0 0 1 2 8Zm0 3.5a.5.5 0 0 1 .5-.5h8a.5.5 0 0 1 0 1h-8a.5.5 0 0 1-.5-.5Z"/></svg>
-          <span id="mode-label">Default</span>
-        </button>
-        <!--
-          No container role, deliberately. This holds group headings, notes,
-          one-of rows, switches and a file row carrying two buttons, and there
-          is no ARIA container that admits that mixture: a listbox takes only
-          options, and it said "listbox" while holding none of the above.
-          Every role that would fit — listbox, menu, radiogroup — also promises
-          arrow-key navigation this does not implement, and declaring one puts
-          a screen reader into a mode where Tab stops working, which is the
-          navigation that does. A plain container of real <button>s announces
-          each control correctly and keeps the keyboard behaviour the code
-          actually has. Claiming a state we are not in is the mistake this
-          codebase keeps paying for elsewhere.
-        -->
-        <div id="mode-menu" class="mode-menu" hidden></div>
+      <!--
+        Kiro's own slash commands. Anchored on .composer for the same reason the
+        instructions box is: a menu as wide as one control is too narrow to read
+        a command and its description in, and this list is both.
+
+        This one *does* declare a role, unlike the mode and model menus. Their
+        reasoning was that a container role promises arrow-key navigation they do
+        not implement, and that they hold a mixture no single role admits. Both
+        are the other way round here: the list is nothing but commands, and the
+        arrows really do move a highlight while focus stays in the textarea —
+        which is exactly the state a screen reader is told nothing about without
+        aria-activedescendant. Declaring listbox here is describing what the
+        code does, not claiming what it does not.
+
+        No backticks in this comment, and none anywhere in this page: the whole
+        document is a TypeScript template literal, so one would end it.
+      -->
+      <div id="slash-menu" class="popup slash-menu" role="listbox" aria-label="Kiro commands" hidden></div>
+      <div id="chips" class="chips" hidden></div>
+
+      <!--
+        aria-autocomplete, aria-controls and aria-activedescendant, and no
+        aria-expanded: the textbox role does not support that state, and the only
+        way to make it valid is role="combobox" on this element. That is the
+        wrong trade. The box is a multi-line message composer every second of the
+        session and a command picker for the moment a menu is open; overriding
+        its role would have it announce as a combobox, and lose "multi-line",
+        throughout. What a reader actually needs is which row is current, and
+        aria-activedescendant carries that on a textbox legally — appearing when
+        the list opens and going when it closes.
+      -->
+      <!--
+        The wrapper exists for one reason: a border cannot hold a gradient that
+        moves, so the travelling light is painted on a layer behind the box and
+        the textarea's own background masks all but its edge. Nothing else hangs
+        off it.
+      -->
+      <!--
+        One surface, not two.
+
+        The box and its controls were two blocks: a bordered textarea with an
+        unbordered row of buttons floating underneath it. The row read as part
+        of the panel rather than as part of the message being written, and two
+        edges at two widths made the foot of the panel look like an accident.
+        The border, the background and the focus ring now belong to one shell
+        holding both, and the textarea gives up all three.
+
+        The wrapper outside it still exists for the one reason it always did: a
+        border cannot hold a gradient that moves, so the travelling light is
+        painted on a layer behind the shell, and the shell's own background is
+        what masks everything but the edge that spills past it.
+      -->
+      <div class="input-wrap">
+        <div class="input-shell">
+          <textarea id="input" rows="2" placeholder="Ask Kiro&#8230;" aria-autocomplete="list" aria-controls="slash-menu"></textarea>
+
+          <div class="composer-row">
+            <div class="attach-wrap">
+              <button type="button" id="attach" class="icon" title="Attach files, folders or an image" aria-label="Attach files, folders or an image" aria-haspopup="true" aria-expanded="false">
+                <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M8.5 3a.5.5 0 0 0-1 0v4.5H3a.5.5 0 0 0 0 1h4.5V13a.5.5 0 0 0 1 0V8.5H13a.5.5 0 0 0 0-1H8.5V3Z"/></svg>
+              </button>
+              <div id="attach-menu" class="popup" hidden>
+                <button type="button" data-act="attachFiles">Files from this project</button>
+                <button type="button" data-act="attachFolders">A folder</button>
+                <button type="button" data-act="attachImage">An image</button>
+              </div>
+            </div>
+            <div class="mode-wrap">
+              <button type="button" id="mode-btn" class="mode-btn" title="Workflow" aria-haspopup="true" aria-expanded="false">
+                <svg class="btn-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M2 4.5A.5.5 0 0 1 2.5 4h5a.5.5 0 0 1 0 1h-5a.5.5 0 0 1-.5-.5Zm0 3.5a.5.5 0 0 1 .5-.5h11a.5.5 0 0 1 0 1h-11A.5.5 0 0 1 2 8Zm0 3.5a.5.5 0 0 1 .5-.5h8a.5.5 0 0 1 0 1h-8a.5.5 0 0 1-.5-.5Z"/></svg>
+                <span id="mode-label">Default</span>
+              </button>
+              <!--
+                No container role, deliberately. This holds group headings, notes,
+                one-of rows, switches and a file row carrying two buttons, and there
+                is no ARIA container that admits that mixture: a listbox takes only
+                options, and it said "listbox" while holding none of the above.
+                Every role that would fit — listbox, menu, radiogroup — also promises
+                arrow-key navigation this does not implement, and declaring one puts
+                a screen reader into a mode where Tab stops working, which is the
+                navigation that does. A plain container of real <button>s announces
+                each control correctly and keeps the keyboard behaviour the code
+                actually has. Claiming a state we are not in is the mistake this
+                codebase keeps paying for elsewhere.
+              -->
+              <div id="mode-menu" class="mode-menu" hidden></div>
+            </div>
+            <div class="model-wrap">
+              <button type="button" id="model-btn" class="model-btn" title="Model" aria-haspopup="true" aria-expanded="false" disabled>
+                <svg class="btn-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M6 1.5a.5.5 0 0 1 1 0V3h2V1.5a.5.5 0 0 1 1 0V3h.5A1.5 1.5 0 0 1 12 4.5V5h1.5a.5.5 0 0 1 0 1H12v2h1.5a.5.5 0 0 1 0 1H12v.5a1.5 1.5 0 0 1-1.5 1.5H10v1.5a.5.5 0 0 1-1 0V11H7v1.5a.5.5 0 0 1-1 0V11h-.5A1.5 1.5 0 0 1 4 9.5V9H2.5a.5.5 0 0 1 0-1H4V6H2.5a.5.5 0 0 1 0-1H4v-.5A1.5 1.5 0 0 1 5.5 3H6V1.5ZM5 4.5v5a.5.5 0 0 0 .5.5h5a.5.5 0 0 0 .5-.5v-5a.5.5 0 0 0-.5-.5h-5a.5.5 0 0 0-.5.5Z"/></svg>
+                <span id="model-label">Default model</span>
+              </button>
+              <!-- Same reasoning, and it was worse here: this one holds an empty-state
+                   note and a footer with a "Check account usage" *button* inside it,
+                   none of which a listbox may contain. -->
+              <div id="model-menu" class="model-menu" hidden></div>
+            </div>
+            <span class="spacer"></span>
+            <button type="button" id="stop" class="icon danger" hidden title="Stop this reply" aria-label="Stop this reply">
+              <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><rect x="4" y="4" width="8" height="8" rx="1.5"/></svg>
+            </button>
+            <button type="submit" id="send" class="icon primary" title="Send" aria-label="Send">
+              <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M2 8a.75.75 0 0 1 .75-.75h8.19L7.72 4.03a.75.75 0 0 1 1.06-1.06l4.5 4.5a.75.75 0 0 1 0 1.06l-4.5 4.5a.75.75 0 1 1-1.06-1.06l3.22-3.22H2.75A.75.75 0 0 1 2 8Z"/></svg>
+            </button>
+          </div>
+        </div>
       </div>
-      <div class="model-wrap">
-        <button type="button" id="model-btn" class="model-btn" title="Model" aria-haspopup="true" aria-expanded="false" disabled>
-          <svg class="btn-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M6 1.5a.5.5 0 0 1 1 0V3h2V1.5a.5.5 0 0 1 1 0V3h.5A1.5 1.5 0 0 1 12 4.5V5h1.5a.5.5 0 0 1 0 1H12v2h1.5a.5.5 0 0 1 0 1H12v.5a1.5 1.5 0 0 1-1.5 1.5H10v1.5a.5.5 0 0 1-1 0V11H7v1.5a.5.5 0 0 1-1 0V11h-.5A1.5 1.5 0 0 1 4 9.5V9H2.5a.5.5 0 0 1 0-1H4V6H2.5a.5.5 0 0 1 0-1H4v-.5A1.5 1.5 0 0 1 5.5 3H6V1.5ZM5 4.5v5a.5.5 0 0 0 .5.5h5a.5.5 0 0 0 .5-.5v-5a.5.5 0 0 0-.5-.5h-5a.5.5 0 0 0-.5.5Z"/></svg>
-          <span id="model-label">Default model</span>
-        </button>
-        <!-- Same reasoning, and it was worse here: this one holds an empty-state
-             note and a footer with a "Check account usage" *button* inside it,
-             none of which a listbox may contain. -->
-        <div id="model-menu" class="model-menu" hidden></div>
-      </div>
-      <span class="spacer"></span>
-      <button type="button" id="stop" class="icon danger" hidden title="Stop this reply" aria-label="Stop this reply">
-        <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><rect x="4" y="4" width="8" height="8" rx="1.5"/></svg>
-      </button>
-      <button type="submit" id="send" class="icon primary" title="Send" aria-label="Send">
-        <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M2 8a.75.75 0 0 1 .75-.75h8.19L7.72 4.03a.75.75 0 0 1 1.06-1.06l4.5 4.5a.75.75 0 0 1 0 1.06l-4.5 4.5a.75.75 0 1 1-1.06-1.06l3.22-3.22H2.75A.75.75 0 0 1 2 8Z"/></svg>
-      </button>
-    </div>
-  </form>
+    </form>
+  </div>
+
 
   <script nonce="${n}" src="${media("chat.js")}"></script>
 </body>

@@ -292,6 +292,88 @@ test("the pickers lead with an icon and Send and Stop are icons", () => {
   assert.doesNotMatch(markup, />Stop</);
 });
 
+/*
+ * The pickers used to draw outside their own wrappers.
+ *
+ * The wrappers shrink correctly — they carry `min-width: 0`, so the flex row
+ * can take them below their content width. Nothing passed that on to the
+ * button inside, which kept its full content width and simply overflowed: at
+ * a sidebar width of 220px a 57px wrapper held a 118px button and the label
+ * ran out over the edge of the message box. The ellipsis on the label could
+ * never engage either, because the button it sits in was never asked to be
+ * any smaller.
+ */
+test("a picker cannot grow wider than the wrapper holding it", () => {
+  const rule = css.match(/^\.mode-btn,\s*\n\.model-btn \{([^}]*)\}/m);
+  assert.ok(rule, "the two pickers share a rule");
+  assert.match(
+    rule[1],
+    /max-width: min\(190px, 100%\)/,
+    "a fixed cap alone lets the button overflow its wrapper"
+  );
+  assert.match(rule[1], /min-width: 0/, "or min-content becomes the floor and the cap does nothing");
+});
+
+/*
+ * Three answers to a narrowing panel, in order: shorten the labels, drop them
+ * for the icon alone, and only then break the row over two lines. A sidebar
+ * can be dragged narrower than any arrangement of five controls in a row, so
+ * the narrowest case needs an answer of its own rather than a smaller version
+ * of the widest one.
+ */
+test("the composer row gives up its labels before it gives up its line", () => {
+  const row = css.match(/^\.composer-row \{([^}]*)\}/m);
+  assert.ok(row, ".composer-row needs a rule");
+  assert.match(row[1], /flex-wrap: wrap/, "the last resort");
+
+  /*
+   * The width that decides this is the box's own, not the window's. They
+   * agree today because the webview is the whole view, but a viewport query
+   * measures that coincidence rather than the thing it cares about — and it
+   * cannot be exercised against a panel rendered at a chosen width inside a
+   * larger page, which is how these are tested.
+   */
+  assert.match(
+    css,
+    /^\.input-shell \{[\s\S]*?container-type: inline-size;[\s\S]*?container-name: composer-box;/m,
+    "the box has to name itself as the container being measured"
+  );
+  const query = css.match(/@container composer-box \(max-width: \d+px\) \{([\s\S]*?)\n\}/);
+  assert.ok(query, "and the labels drop against that container, not the viewport");
+  assert.match(query[1], /#mode-label,\s*\n\s*#model-label \{\s*display: none/, "both labels go together");
+  assert.match(query[1], /width: var\(--control-h\)/, "and the buttons become square like the rest of the row");
+});
+
+/*
+ * Hiding a label destroys what it was saying unless somewhere else says it.
+ * The icon is `aria-hidden`, so with the label gone these buttons would have
+ * no accessible name at all — and the workflow button's title used to drop
+ * the supervision half, which is the part that changes what happens to your
+ * files.
+ */
+test("a picker that has lost its label still says what is in it", () => {
+  const setMode = js.slice(js.indexOf("function setMode(modeId"));
+  const modeBody = setMode.slice(0, setMode.indexOf("\n  }"));
+  assert.match(modeBody, /modeBtn\.title = /, "the current workflow belongs on hover");
+  assert.match(
+    modeBody,
+    /modeBtn\.setAttribute\("aria-label"/,
+    "and in the accessibility tree, or the button is nameless when the label goes"
+  );
+  // The supervision half rides on modeButtonLabel(), not on mode.label.
+  assert.match(modeBody, /const shown = modeButtonLabel\(\)/);
+  assert.doesNotMatch(
+    modeBody,
+    /title = `\$\{mode\.label\}/,
+    "the title must not drop the supervision the button is showing"
+  );
+
+  const setModels = js.slice(js.indexOf("function setModels(list"));
+  const modelBody = setModels.slice(0, setModels.indexOf("\n  }"));
+  assert.match(modelBody, /modelBtn\.title = /, "the markup's static title names the picker, not the model");
+  assert.match(modelBody, /modelBtn\.setAttribute\("aria-label"/);
+});
+
 test("each toggled element has exactly one rule block", () => {
   for (const selector of [".dropzone", ".chips", ".usage-bar", ".popup", ".usage-panel"]) {
     const matches = css.match(new RegExp(`^\\${selector} \\{`, "gm")) ?? [];
@@ -797,6 +879,178 @@ test("a running turn is a light travelling the message box border", () => {
   assert.ok(block, "there should be a reduced-motion block");
   assert.match(block[0], /\.composer\.working \.input-wrap::before \{\s*animation: none;/);
   assert.match(block[0], /--edge-angle:/, "the arc parks somewhere lit rather than vanishing");
+});
+
+/*
+ * The box and its controls are one surface.
+ *
+ * They used to be two blocks — a bordered textarea with an unbordered row of
+ * buttons floating underneath — so the row read as part of the panel rather
+ * than as part of the message being written, and two edges at two widths made
+ * the foot of the panel look accidental.
+ */
+test("the composer is one bordered surface holding the controls", () => {
+  const shell = provider.indexOf('<div class="input-shell">');
+  const wrap = provider.indexOf('<div class="input-wrap">');
+  const area = provider.indexOf('<textarea id="input"');
+  const row = provider.indexOf('class="composer-row"');
+  assert.ok(wrap > -1 && shell > wrap, "the shell sits inside the gradient wrapper");
+  assert.ok(area > shell && row > shell, "and holds the textarea and the controls both");
+
+  // The border and the background belong to the shell, not to the textarea.
+  const rule = css.match(/^\.input-shell \{([^}]*)\}/m);
+  assert.ok(rule, ".input-shell needs a rule");
+  assert.match(rule[1], /border: 1px solid/, "the surface wears what the textarea used to");
+  assert.match(rule[1], /background: var\(--vscode-input-background\)/);
+
+  /*
+   * The mask has to be a layer above the gradient. `.input-wrap::before` is a
+   * positioned child, and a positioned child paints above its parent's own
+   * background — so a background on the wrapper would be covered by the very
+   * thing it is meant to hide. That is the whole reason there are two
+   * elements here rather than one.
+   */
+  assert.match(rule[1], /position: relative/);
+  assert.match(rule[1], /z-index: 1/, "or the travelling light paints over the box");
+  const wrapRule = css.match(/^\.input-wrap \{([^}]*)\}/m);
+  assert.doesNotMatch(wrapRule[1], /background/, "the surface may never move onto the wrapper");
+
+  /*
+   * One border to light, so one thing to say about being in the composer:
+   * clicking into the text and tabbing to the workflow picker are the same
+   * act. Lighting only the textarea would leave the pickers looking like they
+   * belonged to something else, which is the fault being fixed.
+   */
+  assert.match(css, /^\.input-shell:focus-within \{[^}]*outline: 1px solid var\(--vscode-focusBorder\)/m);
+  assert.match(
+    css,
+    /^\.input-shell textarea:focus \{[^}]*outline: none/m,
+    "and the textarea must give up its own ring, or there are two"
+  );
+
+  /*
+   * `transparent`, not `none`. A rule carrying both `background: none` and
+   * `border: none` is read by the plain-button test above as a control that
+   * opted out of the global styling and owes a `:hover`. A textarea owes no
+   * such thing, and adding one to satisfy a test about buttons would be
+   * answering the wrong question.
+   */
+  const areaRule = css.match(/^\.input-shell textarea \{([^}]*)\}/m);
+  assert.ok(areaRule, ".input-shell textarea needs a rule");
+  assert.doesNotMatch(areaRule[1], /background:\s*none/, "so the button test stays about buttons");
+
+  /*
+   * The shell is positioned, so it is the containing block for the two menus
+   * inside it. Measuring from the box is the better anchor than the old fixed
+   * offset up from the composer, which drifted into the text as soon as the
+   * message ran past two lines.
+   */
+  const menus = css.match(/^\.mode-menu,\s*\n\.model-menu \{([^}]*)\}/m);
+  assert.ok(menus, "the two menus share a rule");
+  assert.match(menus[1], /bottom: calc\(100% \+ \d+px\)/, "anchored to the box, not a fixed height");
+});
+
+/*
+ * The composer floats over the conversation instead of standing in a band
+ * beneath it.
+ *
+ * It used to be three more rows of the page's flex column, so the box took its
+ * height out of the transcript permanently and a border ruled the panel into
+ * two sections — a lot of a three-inch sidebar spent on something mostly
+ * empty, and it made the box read as a separate tool rather than as the end of
+ * the conversation.
+ */
+test("the pinned bars and the composer float over the transcript", () => {
+  const dock = provider.indexOf('<div class="dock">');
+  const messages = provider.indexOf('id="messages"');
+  const permission = provider.indexOf('id="permission-bar"');
+  const form = provider.indexOf('<form id="composer"');
+  assert.ok(dock > -1, "the three need one overlay to sit in");
+  assert.ok(messages < dock, "which floats over the transcript, not above it");
+  assert.ok(dock < permission && permission < form, "and holds all three");
+
+  const rule = css.match(/^\.dock \{([^}]*)\}/m);
+  assert.ok(rule, ".dock needs a rule");
+  assert.match(rule[1], /position: absolute/, "or it takes height from the transcript again");
+  assert.match(rule[1], /bottom: 0/);
+
+  /*
+   * The empty space around the box belongs to the conversation underneath, so
+   * scrolling beside the box still moves it. Off on the dock and back on for
+   * each child — without the second half every control in the composer is
+   * dead.
+   */
+  assert.match(rule[1], /pointer-events: none/);
+  assert.match(css, /^\.dock > \* \{[^}]*pointer-events: auto/m, "or nothing in the dock can be clicked");
+
+  /*
+   * The border along the top was what made this a section of the panel: a line
+   * across the width announcing the conversation had ended and a tool begun.
+   */
+  const composer = css.match(/^\.composer \{([^}]*)\}/m);
+  assert.ok(composer, ".composer needs a rule");
+  assert.doesNotMatch(composer[1], /border-top/, "a floating box does not rule a line behind itself");
+  assert.match(composer[1], /position: relative/, "the menus still anchor here");
+});
+
+/*
+ * What scrolls behind the floating box has to go somewhere, and the usual
+ * answer — a scrim in the panel's own colour — has no colour to name here.
+ * The panel is dragged between the sidebar, the bottom panel and the secondary
+ * sidebar, each with its own background, which is why `body` is transparent.
+ * Fading the content itself needs no colour at all.
+ */
+test("the transcript dissolves into the dock rather than being cut off by it", () => {
+  const rule = css.match(/^\.messages \{([^}]*)\}/m);
+  assert.ok(rule, ".messages needs a rule");
+
+  // Both halves: the clearance and the fade are driven off the same measurement.
+  assert.match(rule[1], /padding-bottom: calc\(var\(--dock-h\) \+ var\(--dock-fade\)\)/);
+  assert.match(rule[1], /mask-image: var\(--dock-mask\)/);
+  assert.match(rule[1], /-webkit-mask-image: var\(--dock-mask\)/, "Chromium still wants the prefix");
+
+  const mask = css.match(/--dock-mask: linear-gradient\(([\s\S]*?)\);/);
+  assert.ok(mask, "the mask needs defining");
+  // No colour is named anywhere in it; a mask only has alpha to say.
+  assert.doesNotMatch(mask[1], /--vscode-/, "a named background would be wrong in two of the three places this panel lives");
+
+  /*
+   * The ramp is spent by the time it reaches the dock. Running it *inside* the
+   * dock leaves everything above the box at full strength and then stops it
+   * dead on the box's top edge — the same hard cut the old border made, drawn
+   * in text instead of in a line.
+   */
+  assert.match(
+    mask[1],
+    /transparent calc\(100% - var\(--dock-h\)\)/,
+    "the fade must finish at the dock's top edge, not somewhere inside it"
+  );
+});
+
+/*
+ * The dock's height is not a constant — the box grows with the message, chips
+ * come and go, a permission card can double it — and both the clearance and
+ * the fade are measured from it.
+ */
+test("the dock is measured, and measuring it does not lose the bottom", () => {
+  assert.match(js, /new ResizeObserver\(measureDock\)/, "the height has to be watched, not guessed");
+  const fn = js.slice(js.indexOf("function measureDock()"));
+  const body = fn.slice(0, fn.indexOf("\n  }"));
+  assert.match(body, /setProperty\("--dock-h"/, "and written where the CSS reads it");
+
+  /*
+   * Growing the padding moves the content up, so a reply streaming into a box
+   * that is itself growing would walk away from the bottom a line at a time.
+   * Read before the change, restored after.
+   */
+  assert.ok(
+    body.indexOf("atBottom()") < body.indexOf("setProperty"),
+    "whether we were at the bottom must be read before the padding changes"
+  );
+  assert.ok(
+    body.indexOf("setProperty") < body.lastIndexOf("scroll(was)"),
+    "and the bottom restored after it"
+  );
 });
 
 /*

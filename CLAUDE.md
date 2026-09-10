@@ -383,9 +383,11 @@ nothing. Four things there are load-bearing:
 - **`@property --edge-angle` is what makes it move at all.** A plain custom property is a
   string as far as animation is concerned, so the angle would jump 0deg → 360deg in one
   frame and nothing would appear to happen.
-- **The wrapper is `display: flex`.** A textarea is inline, so a plain wrapper stands a few
-  pixels taller than it, and the gradient behind shows through that gap as a band along the
-  bottom rather than a line along the edge. This is what the first attempt looked like.
+- **The wrapper is `display: flex`.** It has to be exactly as tall as what it holds or the
+  gradient shows through the surplus as a band along the bottom rather than a line along the
+  edge — which is what the first attempt looked like, because a textarea is inline and a
+  plain wrapper stands a few pixels taller than one. `.input-shell` is a block and has no
+  such gap, but flex is what keeps the wrapper welded to whatever ends up inside it.
 - **The gradient is one arc with a transparent tail, not a full ring — and one colour, the
   theme's own.** A whole spectrum all the way round is a decoration; a run of colour with
   darkness behind it is a light going round something, which is the thing being described.
@@ -405,6 +407,91 @@ sits at and read as cheap, and it is dark during exactly the silences that need 
 while Kiro reads and edits, no text is arriving to blink after. A **pulsing glow** on the
 textarea reads as an alarm: it takes your attention again every two seconds, when what is
 wanted is something glanceable and then ignorable. `.cursor::after` is deliberately static.
+
+**The box and its controls are one surface, and that costs an extra element.** The composer
+used to be two blocks — a bordered textarea with an unbordered row of buttons floating
+underneath — so the controls read as belonging to the panel rather than to the message being
+written, and two edges at two widths made the foot of the panel look accidental. The border,
+the background, the radius and the focus ring now live on `.input-shell`, which holds the
+textarea *and* `.composer-row`; the textarea gives up all four and `:focus-within` lights the
+whole box, because clicking into the text and tabbing to the workflow picker are the same act.
+Three consequences:
+
+- **`.input-shell` exists because `::before` paints above its parent's background.** The
+  travelling light is `.input-wrap::before`, a positioned child, so the surface that masks
+  it cannot be the wrapper — it would be covered by the very thing it hides. It has to be one
+  layer up. That is the whole reason these are two elements and not one, and it is why the
+  background may never move onto `.input-wrap`.
+- **The textarea says `background: transparent`, not `background: none`.** A rule carrying
+  both `background: none` and `border: none` is read by `test/webview.test.js` as a button
+  that opted out of the global styling and owes a matching `:hover`. A textarea owes no such
+  thing, and adding a hover rule to satisfy a test about buttons would be answering the wrong
+  question.
+- **`.mode-menu` / `.model-menu` resolve against `.input-shell` now**, since it is positioned
+  and they sit inside it. They are `left: 0; right: 0; bottom: calc(100% + 6px)` rather than
+  the old `var(--gap)` inset and fixed `bottom: 46px` — measuring from the box is the better
+  anchor anyway, because the fixed offset drifted into the text as soon as the message ran
+  past two lines. `.slash-menu` and `.instructions-panel` are direct children of `.composer`
+  and still anchor there.
+
+**A narrowing panel gets three answers, in order, and the first one was a bug.**
+`.mode-wrap` / `.model-wrap` carry `min-width: 0` and shrink correctly; nothing passed
+that on to the button inside, which kept its content width and drew *outside its own
+wrapper* — at a sidebar width of 220px a 57px wrapper held a 118px button and the label
+ran over the edge of the message box. `max-width: min(190px, 100%)` is the fix, and
+`min-width: 0` beside it, or the button's own min-content width becomes the floor and
+the cap has nothing to do. Then, in order of preference:
+
+- **Icon-only, through a container query.** `.input-shell` declares
+  `container-type: inline-size` and `container-name: composer-box`; below 310px of
+  *content* width the labels are `display: none` and the pickers go square on
+  `--control-h`. It is a container query and not a media query because the width that
+  decides this is the box's, not the window's — they agree today, since the webview is
+  the whole view, but a viewport query measures that coincidence, and it cannot be
+  exercised against a panel rendered at a chosen width inside a larger page, which is
+  how this is tested. Where container queries are unsupported it never matches and the
+  labels stay, which the wrap below still catches.
+- **`setMode` and `setModels` put the label's content into `title` and `aria-label`.**
+  The icon is `aria-hidden`, so with the label hidden these buttons would have no
+  accessible name at all. The workflow title also had to start using
+  `modeButtonLabel()` rather than `mode.label`: it was dropping the supervision half,
+  which is the part that changes what happens to your files.
+- **`flex-wrap: wrap` on `.composer-row` is the last resort**, not the first. A sidebar
+  can be dragged narrower than any arrangement of five controls in a row, so that width
+  needs an answer of its own rather than a smaller version of the wide one.
+
+**The dock floats; it does not take a row.** `#permission-bar`, `#change-bar` and the
+composer live in one absolutely positioned `.dock` over the foot of the transcript.
+They were three more rows of the page's flex column, so the composer's height came
+out of the transcript permanently and its `border-top` ruled the panel into two
+sections. Everything each of them already required — a question that blocks the turn
+and a decision about what changed, neither of which may scroll away — is now paid for
+out of the panel's z-order rather than its height. Four things there are load-bearing:
+
+- **The fade is a mask on `.messages`, not a scrim on the dock.** The usual way to hide
+  what scrolls behind a floating box is a gradient in the panel's own colour, and there
+  is no such colour to name: this panel is dragged between the sidebar, the bottom panel
+  and the secondary sidebar, each with its own background, which is exactly why `body`
+  is `transparent`. Any named colour is right in one place and wrong in the other two.
+  Fading the content itself needs no colour at all, and the mask is fixed to the
+  scroller's own box rather than to what is inside it, so it stays at the foot of the
+  panel while the conversation moves through it.
+- **The ramp ends at the dock's top edge, and must not run inside it.** Fading within
+  the dock leaves everything above the box at full strength and then stops it dead on
+  the box's edge — the same hard cut the old border made, drawn in text instead of a
+  line. That was the first attempt and it looks like no fade at all. `--dock-fade` is
+  therefore added to the transcript's bottom padding as well, so the last message comes
+  to rest exactly where the gradient begins: clear of the box, and at full strength.
+- **`--dock-h` is measured, never assumed.** The box grows with the message, chips come
+  and go, a permission card can double the dock's height, and both the clearance and the
+  fade are derived from it. A `ResizeObserver` rewrites it. `measureDock` reads
+  `atBottom()` *before* changing the padding and restores it after, or a reply streaming
+  into a box that is itself growing walks away from the bottom a line at a time.
+- **Pointer events are off on `.dock` and on again for `.dock > *`.** The space around
+  the box belongs to the conversation underneath, so scrolling beside it still moves the
+  chat. This is also why `.composer` carries `margin` rather than `padding` — padding
+  would be part of the form and would swallow the pointer. `.slash-menu` lost its
+  `var(--gap)` inset in the same move, because that inset was the padding.
 
 **`#permission-bar` and `#change-bar` are siblings of the composer, not children of it.**
 They still sit between the transcript and the message box, and still for the reason each
@@ -672,6 +759,37 @@ WebSocket engine behind `kiro-cli serve`. Compaction and rewinding go through
 `_kiro.dev/commands/execute` like everything else. Grepping the binary for method names is a
 good way to find candidates and a bad way to decide one exists.
 
+**A refused `session/load` is repaired once, and only against proof.** Kiro writes
+`~/.kiro/sessions/cli/<id>.lock` holding the pid that opened a session, and refuses to
+load one whose pid is still alive. It stores `started_at` beside the pid and never
+compares it, so a number Windows has reissued reads as the original owner and the chat
+is unreachable permanently. `AcpClient.stop` kills the agent with `taskkill /t /f`, so
+Kiro never removes its own lock — every session the panel opens leaves one, and it is
+only the recycled ones that bite. `clearStaleSessionLock` deletes the file and retries
+exactly once. Four things there are load-bearing:
+
+- **`isStaleLock` (`sessionLocks.ts`, free of `vscode`) defaults to leaving the file
+  alone.** Three findings count as proof: nothing runs under that number, what runs is
+  not `kiro-cli`, or it started more than a second after the lock was written. Anything
+  else — a running Kiro with no readable start time, a lock with no timestamp, a process
+  we could not identify — is a refusal. Deleting a live session's lock puts two agents
+  on one conversation, which is worse than the fault being fixed and invisible from the
+  panel.
+- **"Gone" must be said, never inferred.** `readFacts` returns `{ running: true }` for
+  every answer it cannot read, because a lookup that failed is not evidence a process is
+  dead. `JSON.parse("null")` succeeds and reading `running` off it gives `undefined`,
+  which under the obvious `!== true` test reads as proof of death — that shape shipped
+  in a first draft and a test caught it.
+- **The match is on Kiro's sentence, not on the error code.** The failure arrives as
+  -32603 "Internal error", which is also every other internal error, so `lockedPidFrom`
+  keys on "Session is active in another process (PID n)". The pid it finds must equal
+  the pid in the file, or the lock has been rewritten since the refusal and describes a
+  claim nobody tested.
+- **`rpcError` in `acpClient.ts` is what makes any of this possible.** A JSON-RPC error's
+  real content is in `data`; only `message` was being kept, so the reason was destroyed
+  at the door — the user saw "Internal error" and the repair had nothing to match on.
+  It is folded into the message *and* kept on the error object.
+
 ### Kiro-specific protocol quirks
 
 These are the things that were expensive to discover; the comments in `kiroSession.ts` cover them at length:
@@ -775,7 +893,7 @@ The viewer lives entirely in the webview and needs no extension-host message.
 
 ### Modules kept free of `vscode` on purpose
 
-`src/usage.ts`, `src/setupWatcher.ts`, `src/startupError.ts`, `src/history.ts`, `src/promptBlocks.ts`, `src/editModes.ts` and the `needsShell`/`quote` exports of `src/acpClient.ts` have no `vscode` import so the tests can `require("../out/...")` directly. There is no VS Code test harness in this repo — that constraint is the entire testing strategy. Keep new parsing and logic modules importable without `vscode`.
+`src/usage.ts`, `src/setupWatcher.ts`, `src/startupError.ts`, `src/history.ts`, `src/promptBlocks.ts`, `src/editModes.ts`, `src/sessionLocks.ts`, `src/processFacts.ts` and the `needsShell`/`quote` exports of `src/acpClient.ts` have no `vscode` import so the tests can `require("../out/...")` directly. There is no VS Code test harness in this repo — that constraint is the entire testing strategy. Keep new parsing and logic modules importable without `vscode`.
 
 `setupWatcher.ts` additionally takes its timers through an injected `Scheduler`, so `test/setupWatcher.test.js` drives the whole state machine without waiting out a real interval. Follow that pattern for anything else that polls.
 
@@ -926,7 +1044,7 @@ requires that, if any of its classes restyles the background, one of them carrie
 `:hover`. Per element, not per class: `.chip chip-muted` is covered by `.chip-muted:hover`.
 A hover rule need not be bare `.name:hover` either — `.permission-option:hover:not(:disabled)`
 counts, and a descendant rule deliberately does not.
-- Menus are anchored inside positioned parents (`.attach-wrap`, `.composer`) so they can't spill out of a narrow sidebar.
+- Menus are anchored inside positioned parents (`.attach-wrap`, `.input-shell`, `.composer`) so they can't spill out of a narrow sidebar.
 
 **CSP is nonce-based** (`script-src 'nonce-...'`), so there are no inline handlers in the HTML — everything is wired up in `chat.js`. Text from Kiro goes through `escapeHtml` before the small hand-rolled markdown renderer runs, so a reply cannot inject markup.
 

@@ -1,5 +1,61 @@
 # Changelog
 
+## 0.33.0
+
+- **Fixed: the workflow and model buttons ran out over the edge of the message
+  box in a narrow panel.** Their wrappers shrank as the panel did; the buttons
+  inside them did not, so the labels simply drew outside — and the ellipsis
+  that was supposed to shorten them could never take effect, because the
+  button it was in was never asked to be any smaller.
+- **The pickers become icons when there is no room for a label.** A label
+  shortened to "Def…" beside "Cla…" has given up its name while still spending
+  the width of a word, so below a certain width the label goes and the button
+  becomes square like the others in the row. What it was saying moves to the
+  tooltip, which now names the workflow and the model rather than just naming
+  the picker. Narrower still, the row breaks over two lines rather than
+  shaving the controls past the point of being hittable.
+
+- **The message box floats over the conversation.** It used to stand in a band
+  of its own beneath the transcript, with a border ruling the panel into two
+  sections — which in a sidebar three inches wide spends a lot of reading space
+  on something that is mostly empty, and makes the box read as a separate tool
+  rather than as the end of the conversation. The transcript now runs the full
+  height of the panel and scrolls underneath, dissolving into the box rather
+  than stopping dead against it. The empty space around the box belongs to the
+  conversation too, so scrolling there moves the chat behind it.
+
+- **A chat that Kiro refused to reopen now repairs itself.** Kiro records the
+  process that owns a session in a lock file beside it and refuses to load one
+  whose process is still running — but it checks only the process number, not
+  the start time it stored alongside it. Windows reuses those numbers, so once
+  an unrelated program inherited it the conversation was unreachable for good,
+  and all it said was "Internal error". The panel now clears the leftover lock
+  and opens the chat. It does so only where the evidence is positive — nothing
+  is running under that number, or what is running is not Kiro, or it started
+  after the lock was written — and a session genuinely open elsewhere is left
+  alone. Whatever it decides is written to the **Kiro Chat** output channel.
+- **Errors from Kiro say what went wrong.** A JSON-RPC failure carries a
+  generic headline and the actual reason underneath it; only the headline was
+  being shown, which is how a stale lock came to announce itself as "Internal
+  error".
+
+- **The message box and its controls are one box.** The attach button, the
+  workflow and model pickers and Send used to sit on an unbordered row
+  underneath the box rather than inside it, so they read as part of the panel
+  rather than as part of the message you were writing — two edges at two
+  widths across the foot of the panel. They are inside the border now, and
+  clicking into the text or tabbing to a picker lights the same single edge,
+  because being in either is the same thing: being in the composer.
+- **The light that travels the border while a turn runs goes round all of
+  it.** Same light, same colour, same reason — there is simply more box for it
+  to go round now that the controls are inside.
+
+- **Fixed: the workflow and model menus drifted over your text on a long
+  message.** They opened a fixed distance up from the bottom of the panel,
+  which was the right distance for a two-line box and the wrong one for
+  anything taller. They now sit on top of the box whatever height it has
+  grown to.
+
 ## 0.32.0
 
 - **The panel shows what Kiro actually has in context.** Kiro's own `context`

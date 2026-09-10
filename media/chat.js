@@ -574,6 +574,38 @@
     if (was) messagesEl.scrollTop = messagesEl.scrollHeight;
   };
 
+  /*
+   * Keep the transcript's clearance matching the floating dock.
+   *
+   * The dock's height is not a constant: the box grows with the message, the
+   * chip row appears and goes, a permission card or the keep-or-undo card can
+   * double it. Both things that depend on it — the padding that keeps the last
+   * line readable, and the fade that takes content out of sight behind the box
+   * — are driven off `--dock-h`, so it has to be remeasured rather than
+   * guessed.
+   *
+   * Whether the transcript was at the bottom is read *before* the change and
+   * restored after: growing the padding moves the content up, and a reply
+   * streaming into a box that is itself growing would otherwise walk away from
+   * the bottom of the panel a line at a time.
+   */
+  const dockEl = document.querySelector(".dock");
+  function measureDock() {
+    if (!dockEl) return;
+    const was = atBottom();
+    const height = Math.ceil(dockEl.getBoundingClientRect().height);
+    document.documentElement.style.setProperty("--dock-h", height + "px");
+    scroll(was);
+  }
+
+  if (dockEl && typeof ResizeObserver === "function") {
+    new ResizeObserver(measureDock).observe(dockEl);
+  }
+  // The observer fires on its own once observation begins, but not every
+  // browser guarantees it before the first paint, and a wrong clearance is
+  // visible immediately.
+  measureDock();
+
   function addBubble(kind, text) {
     clearEmptyState();
     const was = atBottom();
@@ -1555,7 +1587,12 @@
     models = list || [];
     currentModelId = currentId || "";
     const active = models.find((m) => m.modelId === currentModelId);
-    modelLabel.textContent = active ? active.name : "Default model";
+    const shown = active ? active.name : "Default model";
+    modelLabel.textContent = shown;
+    // Same as the workflow button: the markup's static "Model" says which
+    // picker this is but not what is in it, which is all the label was for.
+    modelBtn.title = `Model: ${shown}`;
+    modelBtn.setAttribute("aria-label", `Model: ${shown}`);
     modelBtn.disabled = busy;
     renderModelMenu();
   }
@@ -1851,8 +1888,18 @@
   function setMode(modeId, persist = true) {
     const mode = CHAT_MODES.find((candidate) => candidate.id === modeId) || CHAT_MODES[0];
     currentModeId = mode.id;
-    modeLabel.textContent = modeButtonLabel();
-    modeBtn.title = `${mode.label}: ${mode.description}`;
+    const shown = modeButtonLabel();
+    modeLabel.textContent = shown;
+    /*
+     * The button goes icon-only in a narrow panel, so the title and the
+     * accessible name have to carry what the label was saying — including the
+     * supervision half, which the title used to drop even though that is the
+     * part that changes what happens to your files. With the label hidden and
+     * the icon aria-hidden, a button without this has no accessible name at
+     * all.
+     */
+    modeBtn.title = `${shown} — ${mode.description}`;
+    modeBtn.setAttribute("aria-label", `Workflow: ${shown}`);
     renderModeMenu();
     if (persist) saveState();
   }

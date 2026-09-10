@@ -9,6 +9,8 @@ import { isReadOnlyTool, isWriteLikeTool } from "./writeTools";
 import { changedSinceBaseline, describeChange, TurnChange } from "./turnChanges";
 import { findKiro } from "./findKiro";
 import { isInsideAnyRoot, isInsideRoot } from "./workspacePaths";
+import { isStaleLock, lockedPidFrom, parseSessionLock, sessionLockPath } from "./sessionLocks";
+import { lookupProcess } from "./processFacts";
 import { looksLikeSignIn } from "./startupError";
 import {
   parseAvailableCommands,
@@ -444,11 +446,30 @@ export class KiroSession {
 
     this.replaying = true;
     try {
-      const result = await this.client.request(
-        "session/load",
-        { sessionId, cwd: this.workspaceRoot(), mcpServers: [] },
-        30000
-      );
+      const load = () =>
+        this.client!.request(
+          "session/load",
+          { sessionId, cwd: this.workspaceRoot(), mcpServers: [] },
+          30000
+        );
+
+      let result: any;
+      try {
+        result = await load();
+      } catch (err) {
+        /*
+         * One retry, and only behind a lock we have proved is a leftover.
+         *
+         * Kiro refuses to load a session whose lock file names a live pid, and
+         * never checks the start time it stored alongside it — so once Windows
+         * reissues that number the conversation is unreachable for good. The
+         * repair is to remove the dead lock and ask again; if it did not
+         * apply, the original failure is what the user should see, not a
+         * second one from a pointless retry.
+         */
+        if (!(await this.clearStaleSessionLock(sessionId, err))) throw err;
+        result = await load();
+      }
       this.sessionId = sessionId;
       /*
        * A different conversation, so this one's meter is not ours.
@@ -470,6 +491,64 @@ export class KiroSession {
       this.setStatus("ready");
     } finally {
       this.replaying = false;
+    }
+  }
+
+  /**
+   * Remove the lock behind a refused `session/load`, if it is provably dead.
+   *
+   * Answers whether anything was cleared, so the caller knows whether a retry
+   * has any reason to succeed. Every branch that declines says why in the
+   * output channel: this deletes a file belonging to another program, and the
+   * one question anybody will ask afterwards is what it thought it was doing.
+   *
+   * Deliberately silent about failure beyond that log. It runs inside a load
+   * that is already failing, and its own errors must not replace Kiro's.
+   */
+  private async clearStaleSessionLock(sessionId: string, err: unknown): Promise<boolean> {
+    const detail = err instanceof Error ? `${err.message} ${(err as any).data ?? ""}` : String(err);
+    const pid = lockedPidFrom(detail);
+    if (pid === undefined) return false;
+
+    const file = sessionLockPath(sessionId);
+    try {
+      const lock = parseSessionLock(await fs.readFile(file, "utf8"));
+      if (!lock) {
+        this.output.appendLine(`Session lock ${file} could not be read; leaving it alone.`);
+        return false;
+      }
+      /*
+       * The pid Kiro complained about and the pid in the file have to be the
+       * same one. If they differ, the file has been rewritten since the
+       * refusal and describes a claim nobody has tested.
+       */
+      if (lock.pid !== pid) {
+        this.output.appendLine(
+          `Session lock names pid ${lock.pid} but Kiro refused over ${pid}; leaving it alone.`
+        );
+        return false;
+      }
+
+      const facts = await lookupProcess(pid);
+      if (!isStaleLock(lock, facts)) {
+        this.output.appendLine(
+          `Kiro says session ${sessionId} is held by pid ${pid}, and that process is still a ` +
+            `running Kiro. Leaving the lock alone.`
+        );
+        return false;
+      }
+
+      await fs.unlink(file);
+      this.output.appendLine(
+        `Cleared the leftover lock on session ${sessionId}: pid ${pid} is ` +
+          `${facts.running ? `now ${facts.image ?? "another program"}` : "no longer running"}. ` +
+          `Reopening.`
+      );
+      return true;
+    } catch (cleanupErr) {
+      const message = cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr);
+      this.output.appendLine(`Could not clear the session lock ${file}: ${message}`);
+      return false;
     }
   }
 

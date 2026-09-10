@@ -1,6 +1,18 @@
 :root {
   --gap: 12px;
   --radius: 6px;
+  /*
+   * How much of the panel's foot the floating dock covers.
+   *
+   * Measured and rewritten by chat.js whenever the dock changes size — the
+   * box grows with the message, chips come and go, a permission card appears
+   * — and used twice: to keep the transcript's last line clear of the box,
+   * and to place the fade that takes content out of sight behind it. The
+   * value here is only what applies before the first measurement.
+   */
+  --dock-h: 96px;
+  /* How far above the dock the transcript starts dissolving. */
+  --dock-fade: 22px;
 }
 
 * {
@@ -71,10 +83,75 @@ body {
   flex: 1 1 auto;
   overflow-y: auto;
   padding: var(--gap);
+  /*
+   * Room for the dock floating over the foot of the panel, so the last line
+   * of a conversation can be read rather than sitting behind the message box.
+   */
+  padding-bottom: calc(var(--dock-h) + var(--dock-fade));
   display: flex;
   flex-direction: column;
   /* Between a question and its own answer. */
   gap: 14px;
+
+  /*
+   * The transcript dissolves into the dock instead of being cut off by it.
+   *
+   * The obvious way to hide what scrolls behind a floating box is a scrim in
+   * the panel's own colour — and there is no such colour to name here. This
+   * panel is dragged between the sidebar, the bottom panel and the secondary
+   * sidebar, each with its own background, which is exactly why `body` is
+   * transparent: whatever VS Code paints behind is the right answer. A
+   * gradient in any named colour would be right in one place and wrong in the
+   * other two.
+   *
+   * Fading the content itself needs no colour at all. The mask is fixed to
+   * the scroller's own box rather than to what is inside it, so the fade
+   * stays at the foot of the panel while the conversation moves through it.
+   */
+  -webkit-mask-image: var(--dock-mask);
+  mask-image: var(--dock-mask);
+}
+
+/*
+ * The ramp sits *above* the dock and is spent by the time it reaches it.
+ *
+ * Running it inside the dock instead was the first attempt and it does not
+ * read as a fade at all: everything above the box stays at full strength and
+ * then stops dead on its top edge, which is the hard cut the old border used
+ * to make, drawn in text instead of in a line. Ending the ramp on that edge is
+ * what makes the conversation look like it continues underneath.
+ *
+ * The padding above is the dock plus this ramp, so the last message comes to
+ * rest exactly where the gradient begins — clear of the box, and at full
+ * strength rather than half dissolved.
+ */
+:root {
+  --dock-mask: linear-gradient(
+    to bottom,
+    #000 0,
+    #000 calc(100% - var(--dock-h) - var(--dock-fade)),
+    transparent calc(100% - var(--dock-h))
+  );
+}
+
+/*
+ * The floating dock. Everything that must not scroll away, and nothing else.
+ *
+ * `pointer-events` is off here and on again for each child, so the empty
+ * space around the message box belongs to the conversation underneath and
+ * goes on scrolling. Below the drop overlay, which covers the whole panel.
+ */
+.dock {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 10;
+  pointer-events: none;
+}
+
+.dock > * {
+  pointer-events: auto;
 }
 
 /*
@@ -861,11 +938,22 @@ body.vscode-high-contrast-light .tok-fn {
 
 /* --- composer ---------------------------------------------------- */
 
+/*
+ * No border along the top, and margin rather than padding.
+ *
+ * The rule was what made this a *section* of the panel — a line across the
+ * width announcing that the conversation had ended and a tool had begun. The
+ * box floats over the transcript now, and a floating thing with one edge
+ * ruled across the panel behind it is neither one arrangement nor the other.
+ *
+ * Margin, so the space around the box is not part of the form: it belongs to
+ * the dock, which passes the pointer through, so scrolling anywhere beside
+ * the box still moves the conversation behind it.
+ */
 .composer {
   position: relative;
   flex: 0 0 auto;
-  padding: var(--gap);
-  border-top: 1px solid var(--vscode-panel-border);
+  margin: var(--gap);
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -917,10 +1005,11 @@ textarea:focus {
 }
 
 /*
- * `flex`, not `block`. A textarea is inline by default, so a plain wrapper is
- * a few pixels taller than it — the descender space under an inline box — and
- * the gradient behind shows through that gap as a band along the bottom
- * instead of a line along the edge.
+ * `flex`, not `block`. The wrapper must be exactly as tall as what it holds,
+ * or the gradient behind shows through the surplus as a band along the bottom
+ * instead of a line along the edge. That used to be the descender space under
+ * an inline textarea; the shell is a block and has none, but flex keeps the
+ * wrapper welded to it whatever ends up inside.
  */
 .input-wrap {
   position: relative;
@@ -928,9 +1017,79 @@ textarea:focus {
   border-radius: var(--radius);
 }
 
-.input-wrap textarea {
+/*
+ * The surface, and the mask — one element doing both, which is why there are
+ * two here rather than one.
+ *
+ * The gradient is painted by `.input-wrap::before`, a positioned child, and a
+ * positioned child paints *above* its parent's own background. So the
+ * background cannot live on the wrapper: it would be covered by the very
+ * thing it is meant to hide. It lives one layer up instead, and everything
+ * but the 1.5px spilling past this element's edge disappears behind it.
+ *
+ * Everything the box used to wear — the border, the background, the radius —
+ * is here, and the textarea below wears none of it. The controls sit inside
+ * this border rather than adrift under it, so the row reads as part of the
+ * message being written instead of as part of the panel.
+ */
+.input-shell {
+  /*
+   * The row inside is laid out against this box, so this box is what decides
+   * whether its labels fit — not the window. The two happen to agree today,
+   * because the webview is the whole view, but a viewport query measures that
+   * coincidence rather than the thing it cares about, and it cannot be
+   * exercised in a harness that renders the panel at a chosen width inside a
+   * larger page. Where container queries are missing this simply never
+   * matches and the labels stay, which the wrapping row below still catches.
+   */
+  container-type: inline-size;
+  container-name: composer-box;
   position: relative;
   z-index: 1;
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 6px 8px;
+  background: var(--vscode-input-background);
+  border: 1px solid var(--vscode-input-border, var(--vscode-panel-border));
+  border-radius: var(--radius);
+}
+
+/*
+ * `:focus-within`, so the ring answers the box rather than the textarea.
+ *
+ * Clicking into the text and tabbing to the workflow picker are the same act
+ * — being in the composer — and with one border to light there is one thing
+ * to say about it. Lighting only the textarea would leave the pickers looking
+ * like they belonged to something else, which is the whole fault being fixed.
+ */
+.input-shell:focus-within {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: -1px;
+}
+
+/*
+ * The textarea gives up its border, its background and its own focus ring;
+ * the shell holds all three now. `transparent` rather than `none` on purpose:
+ * a rule carrying both `background: none` and `border: none` is read by
+ * test/webview.test.js as a button that has opted out of the global styling
+ * and owes a matching `:hover`, and a textarea owes no such thing.
+ *
+ * No side padding, so the first character sits on the same left edge as the
+ * attach button directly beneath it. The shell supplies the breathing room.
+ */
+.input-shell textarea {
+  min-height: 38px;
+  padding: 1px 0;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+}
+
+.input-shell textarea:focus {
+  outline: none;
 }
 
 .composer.working .input-wrap::before {
@@ -983,6 +1142,15 @@ textarea:focus {
   display: flex;
   align-items: center;
   gap: 5px;
+  /*
+   * The last resort, below even the icon-only pickers: drop to a second line
+   * rather than shave the controls past the point of being hittable. A
+   * sidebar can be dragged narrower than any arrangement of five controls in
+   * a row, so there has to be an answer for that width and not merely a
+   * smaller version of the wide one.
+   */
+  flex-wrap: wrap;
+  row-gap: 6px;
 }
 
 /*
@@ -1558,12 +1726,27 @@ button:disabled {
  * that has none to spare and leaving the two pickers looking like a pair of
  * form fields rather than part of the same row of controls.
  */
+/*
+ * `max-width: 100%` is the one that matters, and its absence was a real bug.
+ *
+ * The wrappers shrink correctly — they carry `min-width: 0`, so the flex row
+ * can take them below their content width. Nothing passed that on to the
+ * button inside, which kept its full content width and simply drew outside
+ * its own wrapper: at a sidebar width of 220px a 57px wrapper held a 118px
+ * button, and the label ran out over the edge of the message box. The
+ * ellipsis on the label could never engage, because the button it was in was
+ * never asked to be smaller.
+ *
+ * `min-width: 0` alongside it, or the button's own min-content width becomes
+ * the floor and the cap has nothing to do.
+ */
 .mode-btn,
 .model-btn {
   display: flex;
   align-items: center;
   gap: 5px;
-  max-width: 190px;
+  min-width: 0;
+  max-width: min(190px, 100%);
   padding: 0 7px;
   border-radius: 4px;
   font-size: 0.82em;
@@ -1598,14 +1781,55 @@ button:disabled {
   font-size: 0.8em;
 }
 
-/* Anchored to the composer, not the button, so it can never spill out of a
-   narrow sidebar. */
+/*
+ * Narrow enough that a label is no longer a label.
+ *
+ * With the cap above in place the pickers ellipsise instead of overflowing,
+ * which is correct but stops being useful well before it stops being
+ * possible: "Def…" beside "Cla…" is two controls that have given up their
+ * names while still spending the width of a word each. The icon already says
+ * which picker this is, so below this width the label goes and the button
+ * becomes square like the others in the row.
+ *
+ * The width that decides this is the box's own, not the window's, so it is a
+ * container query — and it stays in step without any JavaScript.
+ *
+ * What the label was saying does not disappear with it: setMode and setModels
+ * put the current workflow and model into the button's title and aria-label,
+ * so the state is on hover and in the accessibility tree. Without that half
+ * this is a control with no name at all.
+ */
+@container composer-box (max-width: 310px) {
+  #mode-label,
+  #model-label {
+    display: none;
+  }
+
+  .mode-btn,
+  .model-btn {
+    width: var(--control-h);
+    padding: 0;
+    justify-content: center;
+  }
+}
+
+/*
+ * Anchored to the box, not to the button that opens it, so it can never spill
+ * out of a narrow sidebar and is wide enough to read a row in.
+ *
+ * It used to resolve against `.composer` and count 46px up from the bottom to
+ * clear the control row. `.input-shell` is positioned, so it is the
+ * containing block now — which is the better one to measure from: `bottom:
+ * 100%` sits the menu on top of the box whatever height the textarea has
+ * grown to, where the old fixed offset drifted into the text the moment the
+ * message ran past two lines.
+ */
 .mode-menu,
 .model-menu {
   position: absolute;
-  left: var(--gap);
-  right: var(--gap);
-  bottom: 46px;
+  left: 0;
+  right: 0;
+  bottom: calc(100% + 6px);
   z-index: 20;
   max-height: 340px;
   overflow-y: auto;
@@ -1936,7 +2160,8 @@ button:disabled {
   background: var(--vscode-list-dropBackground, rgba(127, 127, 127, 0.12));
 }
 
-.composer.drag-target textarea {
+/* The dashed edge follows the border, and the border moved to the shell. */
+.composer.drag-target .input-shell {
   border-color: var(--vscode-focusBorder);
   border-style: dashed;
 }
@@ -2627,8 +2852,8 @@ button.change-summary:hover {
  * the whole composer, so the chips and the box being typed into stay visible.
  */
 .slash-menu {
-  left: var(--gap);
-  right: var(--gap);
+  left: 0;
+  right: 0;
   bottom: 100%;
   max-height: 280px;
   overflow-y: auto;
