@@ -1134,6 +1134,42 @@ differently is worse than either rule on its own. That is why `appendThought` un
 block but does not unfold it, and leans on the header — "Thinking…" during the turn,
 "Thought in 4s" after — to say that something is in there.
 
+**Kiro's reasoning is one block above the rows, on one line, with the control on that
+line.** `openThought` prepends it and `appendThought` accumulates into it: one block per
+turn, whatever order the chunks arrive in. `.thought` is a flex row holding `.thought-text`
+and the toggle, aligned on `baseline` so the button sits on the same line as the text and
+stays against the first line when the block is opened. Three things there are load-bearing:
+
+- **The collapsed line is `white-space: nowrap` with `text-overflow: ellipsis`, not a
+  clamped height.** A multi-line clamp cuts on a hard edge with nothing to say it was cut,
+  and at this size the ellipsis is the entire affordance. `nowrap` also collapses the
+  model's own newlines into spaces, so the line reads as one sentence instead of stopping
+  wherever its first paragraph ended; `.thought-open` restores `pre-wrap`, because opened,
+  those breaks matter again.
+- **`syncThought` measures width, and has to be re-asked rather than answered once.** The
+  test is `scrollWidth > clientWidth` while collapsed, and `open ||` keeps the button on an
+  open block — which wraps, fits, and would otherwise lose the "Show less" that closes it.
+  The block lives inside the folded steps list, and an element in a `hidden` container
+  measures zero, so a thought that has been streaming for a minute reports that it fits.
+  Unfolding the list re-asks; a `ResizeObserver` re-asks when the panel changes width.
+- **`min-width: 0` on `.thought-text`**, or a flex item's floor is its own content and the
+  line pushes the button off the edge instead of ellipsising — the same bug the workflow
+  pickers had.
+
+**Splitting the reasoning per step was tried in 0.34.0 and reverted.** `closeThought` ended
+the open block whenever a `tool` row was created and handed its text to that step, so each
+piece of reasoning sat directly above the step it led to, and it was stored per step so a
+reopened chat could put it back there. The ordering was real — `kiroSession` forwards
+`agent_thought_chunk` interleaved with the tool events, and flattening it does lose which
+sentence went with which step. What killed it is what it looked like: prose, row, prose,
+row, prose, five or six blocks each with a rule down its left and a button of its own, and
+the list of steps stopped reading as a list. Watching Kiro read and edit is what the panel
+is for, and a log interrupted between every line is harder to scan than the same words in
+one place. If it comes back it needs a form that does not interrupt the rows. What survives
+of it: `restoreHistory` still joins any per-step `thought` it finds, because chats written
+by 0.34.0 hold the text in pieces and dropping them would lose reasoning the user could
+read yesterday.
+
 **`AcpClient.dispatch` is called inside a try/catch, and must stay that way.** Kiro often
 writes several notifications in one stdio write; the read loop walks them in order, so a
 throw in any handler used to abandon the loop and drop every remaining line in that write

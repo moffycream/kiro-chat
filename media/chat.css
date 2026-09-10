@@ -1318,8 +1318,19 @@ button:disabled {
 
 /* --- model picker ------------------------------------------------ */
 
+/*
+ * The gap before Send is an auto margin, not a growing box, and the
+ * difference decides who gets the slack.
+ *
+ * As a flex item with `flex: 1 1 auto` this competed with the two pickers for
+ * the free space and won a third of it, so a label could be truncated while
+ * empty space sat beside it. An auto margin is filled from what is left
+ * *after* the flexible lengths have resolved, so the pickers reach their
+ * natural width first and this takes whatever remains.
+ */
 .composer-row .spacer {
-  flex: 1 1 auto;
+  flex: 0 0 auto;
+  margin-left: auto;
 }
 
 /* --- usage strip ------------------------------------------------ */
@@ -1715,9 +1726,37 @@ button:disabled {
 
 /* --- mode and model menus ----------------------------------------- */
 
+/*
+ * The pickers take the space they need and no more, and they are the last
+ * thing in the row to give any of it up.
+ *
+ * `flex-basis: 0` is the load-bearing half, and it is about line *breaking*
+ * rather than about width. With `flex-wrap: wrap` on the row, flexbox decides
+ * where a line ends from each item's hypothetical size — its own content
+ * width — and shrinks nothing it could wrap instead. Two labelled pickers are
+ * wide, so the row would have gone to two lines while there was still room to
+ * spare, and the only defence was to drop the labels at a width where they
+ * still fitted comfortably. A basis of zero takes them out of that
+ * calculation: the row stays on one line, and `flex-grow` hands the space
+ * straight back.
+ *
+ * `max-content` is where the growing stops, so a picker is never a pill of
+ * empty space around a short word; what it does not need goes to the spacer
+ * and Send stays at the right edge. When there is not enough for both, the
+ * two share what there is — and a picker that has reached its natural width
+ * is frozen there, so a short workflow name leaves its slack to a long model
+ * name rather than sitting in a box it does not fill.
+ *
+ * `min-width` is the floor, and it restores the wrap that `flex-basis: 0`
+ * would otherwise have made unreachable: an item's hypothetical size is
+ * clamped by its minimum, so once even the square buttons no longer fit, the
+ * row breaks over two lines instead of shaving them past being hittable.
+ */
 .mode-wrap,
 .model-wrap {
-  min-width: 0;
+  flex: 1 1 0;
+  min-width: var(--control-h);
+  max-width: max-content;
 }
 
 /*
@@ -1791,6 +1830,17 @@ button:disabled {
  * which picker this is, so below this width the label goes and the button
  * becomes square like the others in the row.
  *
+ * The number is what the row actually needs, and it used to be a guess well
+ * above that. At 310 the labels went while around 90px of the row was still
+ * empty — the pickers had not begun to truncate, let alone truncate to
+ * nothing — because the flex rules above let the row break into two lines
+ * before it let a picker shrink, and dropping the labels early was the only
+ * thing holding that off. With the row staying on one line, this is now the
+ * width at which the two pickers, the attach button, Stop and Send leave a
+ * picker under about 75px: enough for the icon and six or seven characters,
+ * and the point past which a label really is a stub. Measured with Stop
+ * showing, because a turn running is the crowded case.
+ *
  * The width that decides this is the box's own, not the window's, so it is a
  * container query — and it stays in step without any JavaScript.
  *
@@ -1799,7 +1849,7 @@ button:disabled {
  * so the state is on hover and in the accessibility tree. Without that half
  * this is a control with no name at all.
  */
-@container composer-box (max-width: 310px) {
+@container composer-box (max-width: 235px) {
   #mode-label,
   #model-label {
     display: none;
@@ -3099,13 +3149,81 @@ button.change-summary:hover {
  * not compete with the reply for attention.
  */
 .thought {
+  /*
+   * One row: the line of reasoning, and the control that opens it, on that
+   * same line at the right. It was a block with the button underneath, which
+   * cost a second row of height for one word and left the button floating
+   * under a paragraph it did not obviously belong to.
+   *
+   * `baseline` and not `center`, so the button sits on the same baseline as
+   * the text beside it — and stays up there against the first line when the
+   * block is opened and the text below it runs on.
+   */
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
   margin: 0 0 6px;
   padding: 2px 0 2px 9px;
   border-left: 2px solid var(--vscode-panel-border);
   color: var(--vscode-descriptionForeground);
   font-size: 0.94em;
   line-height: 1.5;
-  /* The model's own line breaks are meaningful; long lines still wrap. */
+}
+
+/*
+ * One line, and the rest behind the button.
+ *
+ * Reasoning runs to whatever length it runs to, and all of it in the steps
+ * list buried the rows underneath and pushed the answer off a panel three
+ * inches wide. A clamp of a few lines was the first answer and it was still
+ * a paragraph sitting on top of a log; one line reads as a heading for what
+ * is folded behind it, which is what this is.
+ *
+ * `nowrap` rather than a height, because it is what makes `text-overflow`
+ * work: a clamped multi-line box cuts on a hard edge with nothing to say it
+ * was cut, and the ellipsis is the whole affordance at this size. It also
+ * collapses the model's own newlines into spaces, so the line reads as one
+ * sentence rather than stopping wherever the first paragraph ended.
+ *
+ * `min-width: 0` because a flex item's floor is its content, and without it
+ * the line would push the button off the edge instead of ellipsising.
+ */
+.thought-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Opened, the model's own line breaks matter again. */
+.thought-open .thought-text {
   white-space: pre-wrap;
+  overflow: visible;
   overflow-wrap: anywhere;
+}
+
+/*
+ * A link, not a button-shaped thing. It sits inside the reasoning, which is
+ * already the quietest text in the panel, and a filled control there would
+ * outweigh everything it is attached to. It opts out of the global button
+ * styling and so owes a hover of its own, or VS Code paints it solid primary
+ * the moment the pointer lands.
+ */
+.thought-toggle {
+  flex: 0 0 auto;
+  margin: 0;
+  padding: 1px 5px;
+  border: none;
+  background: none;
+  border-radius: 3px;
+  color: var(--vscode-textLink-foreground);
+  font-family: inherit;
+  font-size: 0.92em;
+  line-height: 1.4;
+}
+
+.thought-toggle:hover {
+  background: var(--vscode-toolbar-hoverBackground, var(--vscode-list-hoverBackground));
+  color: var(--vscode-textLink-activeForeground, var(--vscode-textLink-foreground));
 }

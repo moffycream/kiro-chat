@@ -1,5 +1,77 @@
 # Changelog
 
+## 0.35.0
+
+- **Kiro's reasoning is one line again, with "Show more" at the end of it.** 0.34.0
+  split it up and put each piece above the step it led to, which was true to
+  the order Kiro sent but read badly: prose, row, prose, row, prose, five or
+  six blocks each with a rule and a button of its own, and the list of steps
+  stopped looking like a list. It is one block above the rows again, and now a
+  single line — the opening of the reasoning, ellipsised, with the control on
+  that same line at the right rather than on a row of its own underneath.
+  Opening it shows the whole thing with the model's own paragraph breaks.
+- Reopening a chat written by 0.34.0 joins the pieces it stored back into one
+  block, so nothing written then is lost.
+
+## 0.34.0
+
+- **Kiro's reasoning now sits with the step it led to.** It was merged into one
+  block above the rows, which threw away the only thing that made it worth
+  reading: when Kiro thought it. A turn reads "thought, read the file, thought
+  again, edited it" — flattened into one wall of prose over three rows, it left
+  you to work out which sentence went with which step, so the answer to "why did
+  it do that?" was in there somewhere and findable by nobody. The order was
+  already in the stream; nothing rearranges it now. Each block is still clamped
+  to three lines with a "Show more", so a talkative turn does not bury what it
+  did. If Kiro happens to do all its thinking up front it looks exactly as it
+  did before, which is the point — nothing is claimed about an ordering Kiro did
+  not send.
+- **The steps header says "Thinking…" again between steps.** It named the newest
+  unfinished step and otherwise fell back to the last one, which went stale the
+  moment reasoning could arrive after a step: "Reading Foo.js" sat there for ten
+  seconds while Kiro worked out what to do about what it had read. A step that
+  is genuinely running still wins.
+- Reopening a chat puts the reasoning back beside the same steps. Chats stored
+  by 0.33.2 and 0.33.3 still show theirs above the rows, where it was written.
+
+## 0.33.3
+
+- **Kiro's reasoning is clamped to three lines rather than six.** Six still
+  spent most of a short panel on the model's working before anything it did
+  about it was visible. "Show more" is unchanged and still opens the whole of
+  it.
+
+## 0.33.2
+
+- **Kiro's reasoning is shown six lines at a time, with the rest behind a
+  button.** A minute of thinking arrived as one unbroken block: it buried the
+  tool rows under it and pushed the answer itself off the bottom of a panel
+  three inches wide. "Show more" opens the whole of it and "Show less" puts it
+  back, and the button appears only when there is actually more to see — a
+  control that does nothing looks exactly like one that does. While the
+  reasoning is still arriving the box follows the end of it, because a clamp
+  frozen on the opening sentence for forty seconds says nothing is happening;
+  once the turn is over it reads from the top again, as a record should.
+  Reopening a chat rebuilds the same block, through the same builder, so a
+  stored thought is not a wall of text nothing can shorten.
+
+## 0.33.1
+
+- **Fixed: the workflow and model pickers dropped their labels while the row
+  was still a third empty.** They went at a panel width where neither had even
+  begun to shorten — a sidebar at its usual width showed two anonymous square
+  buttons. The cause was underneath: the row wraps onto a second line as its
+  last resort, and flexbox breaks that line on each control's own content
+  width, in preference to making anything narrower. Two named pickers are
+  wide, so the row was ready to break well before it was full, and dropping
+  the labels early was the only thing holding that off. The pickers are now
+  sized from what the row has left rather than from where it would break, so
+  they keep their names down to roughly a third narrower than before, shorten
+  when they must, and share what is there — a short workflow name leaving its
+  slack to a long model name instead of sitting in a box it does not fill. The
+  gap before Send no longer competes for that space either; it takes what is
+  left once the pickers have been sized.
+
 ## 0.33.0
 
 - **Fixed: the workflow and model buttons ran out over the edge of the message

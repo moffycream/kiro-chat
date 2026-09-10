@@ -295,9 +295,9 @@ test("the pickers lead with an icon and Send and Stop are icons", () => {
 /*
  * The pickers used to draw outside their own wrappers.
  *
- * The wrappers shrink correctly — they carry `min-width: 0`, so the flex row
- * can take them below their content width. Nothing passed that on to the
- * button inside, which kept its full content width and simply overflowed: at
+ * The wrappers shrink correctly — they are flexible, so the row can take them
+ * below their content width. Nothing passed that on to the button inside,
+ * which kept its full content width and simply overflowed: at
  * a sidebar width of 220px a 57px wrapper held a 118px button and the label
  * ran out over the edge of the message box. The ellipsis on the label could
  * never engage either, because the button it sits in was never asked to be
@@ -312,6 +312,50 @@ test("a picker cannot grow wider than the wrapper holding it", () => {
     "a fixed cap alone lets the button overflow its wrapper"
   );
   assert.match(rule[1], /min-width: 0/, "or min-content becomes the floor and the cap does nothing");
+});
+
+/*
+ * The labels used to go while the row was still a third empty.
+ *
+ * Flexbox breaks a wrapping line on each item's hypothetical size — its own
+ * content width — and wraps in preference to shrinking, so two labelled
+ * pickers sent the row to a second line long before it was actually full, and
+ * dropping the labels early was the only thing holding that off. A basis of
+ * zero takes them out of that calculation, `flex-grow` hands the space back,
+ * and `max-content` stops them growing into pills of empty space.
+ *
+ * The spacer is the other half. With `flex: 1 1 auto` it competed for that
+ * free space and won a third of it, so a label was truncated while a gap sat
+ * beside it; an auto margin takes only what is left once the pickers have
+ * been sized.
+ */
+test("the pickers are sized by what is left, not by where the line breaks", () => {
+  const wraps = css.match(/^\.mode-wrap,\s*\n\.model-wrap \{([^}]*)\}/m);
+  assert.ok(wraps, "the two wrappers share a rule");
+  assert.match(
+    wraps[1],
+    /flex: 1 1 0/,
+    "a content-width basis wraps the row instead of shrinking the pickers"
+  );
+  assert.match(
+    wraps[1],
+    /max-width: max-content/,
+    "or a picker grows into empty space around a short label"
+  );
+  assert.match(
+    wraps[1],
+    /min-width: var\(--control-h\)/,
+    "and the square buttons need a floor, or a zero basis shrinks them past being hittable"
+  );
+
+  const spacer = css.match(/^\.composer-row \.spacer \{([^}]*)\}/m);
+  assert.ok(spacer, ".composer-row .spacer needs a rule");
+  assert.match(spacer[1], /margin-left: auto/, "the gap is what is left over, not a claim on it");
+  assert.doesNotMatch(
+    spacer[1],
+    /flex: 1/,
+    "a growing spacer takes a share the pickers needed"
+  );
 });
 
 /*
@@ -3581,9 +3625,10 @@ test("a thought is shown, kept and restored", () => {
   assert.match(js, /function appendThought\(text\)/);
 
   const append = sliceFrom(js, "function appendThought(text)");
-  assert.match(append, /bubble\.tools\.prepend/, "before the tool rows: reason, then act");
   assert.match(append, /textContent \+=/, "chunks accumulate rather than replace");
   assert.doesNotMatch(append, /innerHTML|renderMarkdown/, "the model's working is not markdown");
+  const open = sliceFrom(js, "function openThought(bubble)");
+  assert.match(open, /bubble\.tools\.prepend/, "before the tool rows: reason, then act");
 
   // A turn that only reasoned still has something to unfold, live and stored.
   const stop = sliceFrom(js, "function stopThinking(bubble)");
@@ -3593,4 +3638,101 @@ test("a thought is shown, kept and restored", () => {
   assert.match(js, /thought: thought \|\| ""/, "which means it has to be stored");
 
   assert.match(css, /^\.thought \{/m, "it needs a style of its own");
+});
+
+/*
+ * Reasoning runs to whatever length it runs to, and all of it landed in a
+ * panel three inches wide: the tool rows went under it and the answer itself
+ * off the bottom of the screen. One line, and the rest behind a button on
+ * that same line.
+ *
+ * `test/thoughtBlock.test.js` runs the collapse; this asserts the parts of it
+ * that live somewhere else and would otherwise drift apart — the style that
+ * makes one line one line, and the single builder both the live and the
+ * stored path go through.
+ */
+test("a long thought is one line, and the button is the way past it", () => {
+  const line = css.match(/^\.thought-text \{([^}]*)\}/m);
+  assert.ok(line, ".thought-text needs a rule, or the whole of it is on screen");
+  /*
+   * `nowrap` is what makes `text-overflow` work at all: a clamped multi-line
+   * box cuts on a hard edge with nothing to say it was cut, and at this size
+   * the ellipsis is the entire affordance.
+   */
+  assert.match(line[1], /white-space: nowrap/, "one line means it must not wrap");
+  assert.match(line[1], /text-overflow: ellipsis/, "and something has to say it was cut");
+  assert.match(line[1], /min-width: 0/, "or the line pushes the button off the edge instead");
+  assert.match(
+    css,
+    /^\.thought-open \.thought-text \{[^}]*white-space: pre-wrap/m,
+    "opened, the model's own line breaks matter again"
+  );
+
+  /*
+   * The control sits on the line, not under it: a second row of height for
+   * one word, and a button floating below a paragraph it did not obviously
+   * belong to.
+   */
+  const block = css.match(/^\.thought \{([^}]*)\}/m);
+  assert.ok(block, ".thought needs a rule");
+  assert.match(block[1], /display: flex/, "the line and its control are one row");
+  assert.match(block[1], /align-items: baseline/, "sat on the same baseline as the text beside it");
+  assert.match(
+    css,
+    /^\.thought-toggle \{[^}]*flex: 0 0 auto/m,
+    "and the control keeps its width while the line gives up its own"
+  );
+
+  /*
+   * One builder, live and restored. Two of them is the second-renderer
+   * mistake the permission card already paid for: the block grew a control,
+   * and only one of the two would have had it.
+   */
+  const restore = sliceFrom(js, "function restoreHistory(saved)");
+  assert.match(restore, /openThought\(bubble\)/, "a reopened chat gets the same block, built the same way");
+  assert.doesNotMatch(
+    restore,
+    /className = "thought"/,
+    "not a second one built by hand, which would restore a thought nothing can shorten"
+  );
+
+  /*
+   * Nothing inside a folded list has a size, so a thought in there measures
+   * zero and reports that it fits. Unfolding is the moment it can be asked.
+   */
+  const steps = sliceFrom(js, "function buildSteps()");
+  assert.match(steps, /syncThought\(block\)/, "unfolding the list re-asks the question");
+  assert.match(js, /new ResizeObserver/, "and so does the panel changing width");
+});
+
+/*
+ * Splitting the reasoning per step was tried in 0.34.0 and reverted.
+ *
+ * Closing the block whenever a row started put each piece of reasoning above
+ * the step it led to, which was true to the stream and read badly: prose,
+ * row, prose, row, prose, five or six blocks with a rule and a button each,
+ * and the list of steps stopped looking like a list. What the panel is for is
+ * watching Kiro read and edit, and a log interrupted between every line is
+ * harder to scan than the same words in one place.
+ *
+ * The revert has two halves that can drift apart, and the storage half fails
+ * quietly: a record written by 0.34.0 holds the reasoning in pieces, and
+ * dropping them loses text the user could read yesterday.
+ */
+test("the reasoning is one block, and an older chat's pieces are not lost", () => {
+  const tool = sliceFrom(js, 'case "tool": {');
+  assert.doesNotMatch(tool, /closeThought/, "a step starting no longer ends the block");
+  assert.doesNotMatch(js, /function closeThought/, "and nothing else does either");
+
+  const record = sliceFrom(js, "function recordAgent(text, tools, thought)");
+  assert.match(record, /tools: tools \|\| \[\]/, "steps are stored as they come");
+  assert.doesNotMatch(record, /thought: tool\.thought/, "the reasoning is the turn's, not the step's");
+
+  const restore = sliceFrom(js, "function restoreHistory(saved)");
+  assert.match(
+    restore,
+    /steps\.map\(\(tool\) => tool\.thought \|\| ""\)/,
+    "a 0.34.0 chat kept it per step, and those pieces are joined rather than dropped"
+  );
+  assert.match(restore, /\.join\("\\n\\n"\)/, "as paragraphs, which is how they were written");
 });

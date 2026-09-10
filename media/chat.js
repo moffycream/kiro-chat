@@ -161,7 +161,7 @@
     if (!text.trim() && (!tools || tools.length === 0) && !thought) return;
     // The thought is stored for the same reason a permission is: reopening a
     // chat should still show that Kiro reasoned, not a gap where the working
-    // used to be.
+    // used to be. One field for the turn, as one block on screen.
     history.push({ role: "agent", text, tools: tools || [], thought: thought || "" });
     saveState();
   }
@@ -733,6 +733,9 @@
       list.hidden = !on;
       head.setAttribute("aria-expanded", String(on));
       steps.classList.toggle("open", on);
+      // Nothing inside a folded list has a size, so a thought in there has
+      // been reporting that it fits. This is the moment it can be measured.
+      if (on) for (const block of list.querySelectorAll(".thought")) syncThought(block);
     };
     head.addEventListener("click", () => {
       // Once the user has an opinion, it sticks: the turn ending must not
@@ -819,20 +822,114 @@
    * It goes in the steps list rather than beside the answer, because that list
    * is already "what Kiro is doing" — it opens while the turn runs, folds when
    * it ends, and stays open if the user opened it. A second collapsible block
-   * would be a second thing to keep in step. It is prepended: Kiro reasons,
-   * then acts, and the rows below are the acting.
+   * would be a second thing to keep in step. One block, prepended: Kiro
+   * reasons, then acts, and the rows below are the acting.
+   *
+   * **Splitting it per step was tried and reverted.** 0.34.0 closed the open
+   * block whenever a tool row started and handed its text to that step, so
+   * the reasoning sat directly above the step it led to. The ordering was
+   * real and the argument for it was sound; what it looked like was not. A
+   * turn became prose, row, prose, row, prose — five or six blocks where
+   * there had been one, each with its own rule down the left and its own
+   * button, and the list of steps stopped reading as a list. The thing the
+   * panel is for is watching Kiro read and edit; a log broken up by
+   * commentary between every line is harder to scan than the same
+   * commentary in one place, whatever it costs in precision. If this comes
+   * back it needs a form that does not interrupt the rows.
    */
+  /*
+   * One builder, used live and on restore.
+   *
+   * There were two — `appendThought` made a div and `restoreHistory` made
+   * another one just like it — which is the second-renderer mistake the
+   * permission card already paid for: the moment the block grew a control,
+   * only one of the two would have had it, and a chat reopened from storage
+   * would have shown a wall of text nothing could shorten.
+   *
+   * `bubble.thought` stays pointing at the *text*, not at the block around
+   * it, so `textContent` still means the reasoning and nothing else. The
+   * button is a sibling; folded into the same element it would be stored as
+   * part of what Kiro said.
+   */
+  function thoughtBlock() {
+    const block = document.createElement("div");
+    block.className = "thought";
+    const text = document.createElement("div");
+    text.className = "thought-text";
+    const toggle = document.createElement("button");
+    toggle.type = "button";
+    toggle.className = "thought-toggle";
+    toggle.setAttribute("aria-expanded", "false");
+    toggle.textContent = "Show more";
+    // Hidden until the text is actually longer than the clamp. A "Show more"
+    // over three lines that are all already showing is a control that does
+    // nothing, and there is no way to tell that from one that does.
+    toggle.hidden = true;
+    toggle.addEventListener("click", () => {
+      const open = block.classList.toggle("thought-open");
+      toggle.textContent = open ? "Show less" : "Show more";
+      toggle.setAttribute("aria-expanded", String(open));
+      // Collapsing puts the reader back at the top of the reasoning rather
+      // than at whichever line the clamp happens to cut through.
+      if (!open) text.scrollTop = 0;
+    });
+    block.append(text, toggle);
+    if (thoughtSizes) thoughtSizes.observe(text);
+    return { block, text };
+  }
+
+  /*
+   * Whether the button is needed, and where the collapsed box is looking.
+   *
+   * Only a collapsed box can be measured: an open one is exactly as tall as
+   * its content, so the overflow test answers no and would take away the
+   * "Show less" that closes it again. Hence the `open ||`.
+   *
+   * It has to be re-asked rather than answered once. The block lives inside
+   * the steps list, which is folded until the header is clicked, and an
+   * element in a `hidden` container measures zero — so a thought that has
+   * been streaming for a minute reports that it fits. The same is true after
+   * the panel is dragged wider and the text rewraps, which is why a
+   * ResizeObserver asks again as well.
+   */
+  function syncThought(block) {
+    if (!block) return;
+    const text = block.querySelector(".thought-text");
+    const toggle = block.querySelector(".thought-toggle");
+    if (!text || !toggle) return;
+    const open = block.classList.contains("thought-open");
+    /*
+     * Width, not height: collapsed, the line is `nowrap` and runs off the
+     * side of its own box, so what says there is more is the scroll width.
+     * An open block wraps and is as tall as it needs to be, and measuring it
+     * would answer "it fits" and take away the "Show less" that closes it.
+     */
+    toggle.hidden = !open && text.scrollWidth <= text.clientWidth + 1;
+  }
+
+  const thoughtSizes =
+    typeof ResizeObserver === "function"
+      ? new ResizeObserver((entries) => {
+          for (const entry of entries) syncThought(entry.target.closest(".thought"));
+        })
+      : null;
+
+  /** The one block, above the rows. There is never a second. */
+  function openThought(bubble) {
+    const built = thoughtBlock();
+    bubble.tools.prepend(built.block);
+    bubble.thought = built.text;
+    return built;
+  }
+
   function appendThought(text) {
     if (!text) return;
     const bubble = startThinking();
-    if (!bubble.thought) {
-      bubble.thought = document.createElement("div");
-      bubble.thought.className = "thought";
-      bubble.tools.prepend(bubble.thought);
-    }
+    if (!bubble.thought) openThought(bubble);
     // textContent, not markdown: this is the model's own working, and running
     // it through a renderer would style half of it as headings and lists.
     bubble.thought.textContent += text;
+    syncThought(bubble.thought.parentElement);
     // Shown, but not unfolded. Tool rows in this same list wait for a click,
     // and two things in one list behaving differently is worse than either
     // rule on its own. The header says "Thinking…" while it runs and
@@ -4359,15 +4456,23 @@
         addCommandCard(item.label, item.text, item.ok);
       } else if (item.role === "agent") {
         const bubble = ensureAgentBubble();
-        // Before the tool rows, as it was live: Kiro reasons, then acts.
-        if (item.thought) {
-          const thought = document.createElement("div");
-          thought.className = "thought";
-          thought.textContent = item.thought;
-          bubble.tools.appendChild(thought);
-          bubble.thought = thought;
-        }
         const steps = (item.tools || []).filter((tool) => mergeToolStep(null, tool));
+        /*
+         * One block above the rows, as it is live.
+         *
+         * 0.34.0 stored the reasoning per step, so a chat written then holds
+         * it in pieces. They are joined rather than dropped: the text is what
+         * the user wants back, and the ordering those pieces recorded is the
+         * ordering they already read in.
+         */
+        const reasoning = [...steps.map((tool) => tool.thought || ""), item.thought || ""]
+          .filter(Boolean)
+          .join("\n\n");
+        if (reasoning) {
+          const built = openThought(bubble);
+          built.text.textContent = reasoning;
+          syncThought(built.block);
+        }
         for (const tool of steps) {
           const row = document.createElement("div");
           row.className = "tool";
