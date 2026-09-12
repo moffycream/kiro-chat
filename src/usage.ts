@@ -155,31 +155,88 @@ export function describeContextWindow(tokens: number | undefined): string | unde
 }
 
 /**
- * Read the meter Kiro attaches to its notifications. `meteringUsage` has been
- * seen as a bare number and as an object with the figure under one of several
- * names, so try each rather than assuming one shape.
+ * One reading off a `_kiro.dev/metadata` notification.
+ *
+ * `turnCredits` is the cost of the turn that just finished and **not** a
+ * running total — measured by driving `kiro-cli acp` over three turns in one
+ * session, which reported 0.0615, 0.0451 and 0.0427, each with a
+ * `turnDurationMs` matching that turn alone. `test/fixtures/kiro-metering.json`
+ * is that capture. The conversation's total is this accumulated, which
+ * `KiroSession` does, because only it knows where one turn ends.
  */
-export function readMeter(params: any): Partial<UsageInfo> {
-  const out: Partial<UsageInfo> = {};
+export interface MeterReading {
+  contextPercent?: number;
+  turnCredits?: number;
+}
+
+/**
+ * What a `meteringUsage` says a turn cost.
+ *
+ * **It is an array**, and that was the whole bug: kiro-cli 2.20.2 sends
+ * `[{ value, unit: "credit", unitPlural: "credits" }]`, which is `typeof
+ * "object"` and carries none of the key names this used to look for, so every
+ * reading was dropped and `sessionCredits` was never once set. The strip said
+ * "Kiro has not reported any credit use for this chat yet" for the life of
+ * every conversation, and it was right about the reading and wrong about Kiro.
+ *
+ * A unit is checked when there is one, in the spirit of the rest of this file:
+ * a figure is only a credit figure when something says it is. An entry with no
+ * unit at all is taken at face value, because the older shapes had none — but
+ * one that names some other unit is left alone rather than added to credits it
+ * is not.
+ */
+export function readTurnCredits(metering: unknown): number | undefined {
+  if (typeof metering === "number") {
+    return Number.isFinite(metering) ? metering : undefined;
+  }
+
+  if (Array.isArray(metering)) {
+    let total = 0;
+    let found = false;
+    for (const entry of metering) {
+      const value = numberFrom((entry as any)?.value ?? (entry as any)?.amount);
+      if (value === undefined) continue;
+      const unit = `${(entry as any)?.unit ?? ""} ${(entry as any)?.unitPlural ?? ""}`.trim();
+      if (unit && !/credit/i.test(unit)) continue;
+      total += value;
+      found = true;
+    }
+    return found ? total : undefined;
+  }
+
+  if (metering && typeof metering === "object") {
+    const source = metering as any;
+    const candidate = [
+      source.credits,
+      source.total,
+      source.amount,
+      source.creditsUsed,
+      source.used,
+      source.value,
+    ].find((v) => typeof v === "number" && Number.isFinite(v));
+    return candidate === undefined ? undefined : Number(candidate);
+  }
+
+  return undefined;
+}
+
+/**
+ * Read the meter Kiro attaches to its notifications.
+ *
+ * The array is the shape 2.20.2 actually sends; the bare number and the
+ * single object are kept because they cost two lines and a build that sends
+ * one of them would otherwise go silent in exactly the way this did.
+ */
+export function readMeter(params: any): MeterReading {
+  const out: MeterReading = {};
 
   const raw = params?.contextUsagePercentage;
-  const percent = typeof raw === "number" || (typeof raw === "string" && raw.trim())
-    ? Number(raw) : NaN;
+  const percent =
+    typeof raw === "number" || (typeof raw === "string" && raw.trim()) ? Number(raw) : NaN;
   if (Number.isFinite(percent) && percent >= 0 && percent <= 100) out.contextPercent = percent;
 
-  const metering = params?.meteringUsage;
-  if (typeof metering === "number" && Number.isFinite(metering)) {
-    out.sessionCredits = metering;
-  } else if (metering && typeof metering === "object") {
-    const candidate = [
-      metering.credits,
-      metering.total,
-      metering.amount,
-      metering.creditsUsed,
-      metering.used,
-    ].find((v) => typeof v === "number" && Number.isFinite(v));
-    if (candidate !== undefined) out.sessionCredits = Number(candidate);
-  }
+  const spent = readTurnCredits(params?.meteringUsage);
+  if (spent !== undefined) out.turnCredits = spent;
 
   return out;
 }

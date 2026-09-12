@@ -2613,6 +2613,41 @@ test("the webview handles every change message the provider posts", () => {
 });
 
 /*
+ * The cost of a turn, both halves.
+ *
+ * The same silent failure the change bar already paid for: the provider
+ * goes on posting into a switch with no case for it and nothing appears,
+ * with nothing anywhere saying why.
+ */
+test("the turn cost is posted, handled, drawn and stored", () => {
+  assert.match(provider, /type: "turnCredits"/, "the provider posts it");
+  assert.match(js, /case "turnCredits"/, "so the webview must handle it");
+  assert.match(js, /function turnCostLine\(/, "and draw it somewhere");
+  assert.match(
+    css,
+    /\.turn-cost\s*\{/,
+    "a class the stylesheet never styles renders as body text"
+  );
+});
+
+/*
+ * It has to survive the panel being dragged to another dock, like every
+ * other part of a turn. `restoreHistory` rebuilding a bubble without it
+ * would lose the figure on a move and on reopening the chat.
+ */
+test("a stored turn keeps what it cost", () => {
+  const record = sliceFrom(js, "function recordAgent(");
+  assert.match(record, /credits:/, "the record has to carry the figure");
+  assert.match(record, /model:/, "and the model that ran it");
+  const restore = sliceFrom(js, "function restoreHistory(");
+  assert.match(
+    restore,
+    /turnCostLine\(item\.credits, item\.model\)/,
+    "and a reopened chat has to draw it again"
+  );
+});
+
+/*
  * Every row the panel can offer must be a target the extension accepts.
  *
  * This is the test that was missing when "Add private project memory" shipped
@@ -3724,7 +3759,7 @@ test("the reasoning is one block, and an older chat's pieces are not lost", () =
   assert.doesNotMatch(tool, /closeThought/, "a step starting no longer ends the block");
   assert.doesNotMatch(js, /function closeThought/, "and nothing else does either");
 
-  const record = sliceFrom(js, "function recordAgent(text, tools, thought)");
+  const record = sliceFrom(js, "function recordAgent(");
   assert.match(record, /tools: tools \|\| \[\]/, "steps are stored as they come");
   assert.doesNotMatch(record, /thought: tool\.thought/, "the reasoning is the turn's, not the step's");
 

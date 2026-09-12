@@ -979,6 +979,102 @@ strip while you read a different conversation. Both call `clearSessionUsage` now
 chat's own credits are not stored anywhere, so nothing is put back in their place — no
 number is honest where a wrong one is not.
 
+**`meteringUsage` is an array, and reading it as anything else cost the whole
+feature.** kiro-cli 2.20.2 sends
+`[{ value: 0.0614, unit: "credit", unitPlural: "credits" }]` on
+`_kiro.dev/metadata`. `readMeter` accepted a bare number or an object with the
+figure under one of five key names; an array is `typeof "object"` and carries none
+of them, so **every reading was dropped and `sessionCredits` was never once set** —
+the strip said Kiro had reported no credits for the life of every conversation, and
+it was right about the reading and wrong about Kiro. `test/fixtures/kiro-metering.json`
+is the captured payload. The older shapes are still parsed, because dropping one
+goes silent in exactly this way.
+
+**It is the cost of one turn, not a running total.** Measured over three turns of
+one session: 0.0615, 0.0451, 0.0427, each beside a `turnDurationMs` for that turn
+alone. 0.36.0 assumed a cumulative figure and subtracted consecutive readings, which
+would have made the strip count *down* as a conversation went on. So `readTurnCredits`
+gives the turn's own figure, `KiroSession` keeps `completedCredits` because nothing
+sends a conversation total, and `sessionCredits` is that plus the turn in flight.
+
+**A turn is banked once, however many times it is metered.** `readUsage` *replaces*
+`currentTurnCredits` rather than adding to it, and `emitTurnCredits` folds it into
+`completedCredits` only as the turn ends. The meter has two delivery routes — its own
+notification and one bolted to a `session/update` — and adding on each would bill a
+turn twice if a build ever used both.
+
+**The reading lands about two milliseconds before `session/prompt` answers.**
+Comfortably before `emitTurnCredits`, which fires just ahead of `onTurnEnd` because
+the panel finishes the bubble and stores the turn on that event — but not by much, so
+`awaitingTurnCredits` plus `retryTurnCredits` catch a reading that arrives after its
+turn. The retry is **silent** when there is still nothing: it runs per notification,
+and `emitTurnCredits` has already said once that there was nothing to show. Nothing
+downstream needed changing, because `noteTurnCredits` already patches a stored turn —
+that is what its `recorded` branch is for.
+
+**Nothing Kiro sends names the model that answered.** Measured against 2.20.2:
+`_kiro.dev/metadata` carries `sessionId`, `contextUsagePercentage`, `meteringUsage`
+and `turnDurationMs`, and nothing else — with an explicit model set as well as under
+`auto`; `/context` answers `model: "auto"`, which is the setting rather than what
+ran. So the name on the line is the one that was **selected**, captured into
+`currentTurnModel` when the turn starts and stored with the turn. Reading it when the
+line is drawn would relabel every finished turn the moment the picker changed, and
+resolving the label in the panel would show a bare id for a model that has since left
+the list. **`auto` is shown as `auto`**: Kiro picks per task and never reports which,
+and printing a specific name there is the same invention as a credit figure nobody
+can check.
+
+**The model is the half of the line that gives way.** Model ids run long
+(`gpt-5.6-terra`) and a sidebar is three inches wide, so `.turn-model` takes
+`min-width: 0` — without it a flex item's floor is its own content and the line
+pushes the figure off the edge, the same bug the workflow pickers and the thought
+line each had. `.turn-credits` is `flex: none`: it is what the line is for, and half
+a credit figure is worse than none.
+
+**Two decimals is right for the strip and wrong for one turn.** A real turn costs
+around 0.04, close enough to the floor that `credits()` renders a cheap one as
+`0 credits` — the dishonest zero this feature refuses everywhere else, arriving
+through the formatter instead of the parser. `turnCostLine` says `<0.01 credits`
+below the floor.
+
+**The lesson, since it cost three versions: unit tests written from the same
+assumption as the code agree with it perfectly.** Every piece had a passing test
+while the feature showed nothing, because none of them touched the shape Kiro
+actually sends. `test/creditEndToEnd.test.js` starts at a captured notification and
+finishes at the text in the DOM, with the real parser and the real renderer in
+between. **Measure the protocol before designing against it** — this file already
+said so about `{ value }` and `/rewind`, and it was ignored here.
+
+**It goes under the bubble and not on the steps header.** The header is the panel's
+single live status — that is the whole finding behind "a second live status line was
+tried and reverted" — and this number does not exist until the turn is over, so
+putting it there would give one line two jobs and a different meaning before and
+after the turn ends.
+
+**The figure attaches to a bubble in either order.** `turnCredits` normally lands
+while the bubble is still live, and `finishAgentBubble` records it along with the
+turn; a `turn_end` notification can finish the bubble first, so `noteTurnCredits`
+branches on `bubble.recorded` and patches the stored entry instead of writing the
+turn twice. `lastAgent` is deliberately **not** cleared anywhere: eight places empty
+the transcript, and a removed node already answers `isConnected === false`, which is
+one check in one place rather than eight that can each be forgotten.
+
+**The panel draws the two scopes apart, and `parsed` belongs to the account.** The
+conversation's credits ride on the Context heading's own figure —
+`7% · 13.8k of 256k · 0.02 credits` — because both halves answer "how is this chat
+doing"; a section of their own was tried in 0.38.1 and was a heading and a border around
+four words, sitting above the section about the same conversation. `.context-head` wraps
+so the credits are not the half truncated in a narrow panel. "This chat" was a row under the *Account* heading, beside the plan total and
+the renewal date — and it set `parsed`, the flag deciding whether Kiro's raw printout
+stands in for figures and whether the button offers a first fetch or a refresh. Both
+readers mean "an account report was read". It was harmless only while unreachable:
+the meter was never parsed, so `sessionCredits` was never a number and the row never
+rendered. 0.37.0 fixed the parser, and from the first turn of every chat the panel
+claimed an account had been fetched that had not — the spend moved to the Context
+heading and `parsed` has one writer. **A latent bug behind a value that is
+always `undefined` ships the day that value starts arriving**, which is the second
+thing fixing the meter dug up.
+
 **Every credit figure goes through one formatter.** `formatCredits` (and its twin
 `credits()` in `chat.js`, which cannot import it — no build step) rounds to at most two
 decimals and drops trailing zeros. Session credits used to be `toFixed(2)` and account

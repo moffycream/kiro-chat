@@ -1,0 +1,46 @@
+{
+  "_comment": "Captured by driving kiro-cli 2.20.2 acp directly, three turns in one session. meteringUsage is an ARRAY, and each reading is that turn's own cost — the values fall rather than accumulating, and turnDurationMs matches the single turn beside it. Session ids replaced.",
+  "turns": [
+    {
+      "jsonrpc": "2.0",
+      "method": "_kiro.dev/metadata",
+      "params": {
+        "sessionId": "session-1",
+        "contextUsagePercentage": 2.424499988555908,
+        "meteringUsage": [
+          { "value": 0.0614601119402985, "unit": "credit", "unitPlural": "credits" }
+        ],
+        "turnDurationMs": 5165
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "_kiro.dev/metadata",
+      "params": {
+        "sessionId": "session-1",
+        "contextUsagePercentage": 2.435999870300293,
+        "meteringUsage": [
+          { "value": 0.04513180563847429, "unit": "credit", "unitPlural": "credits" }
+        ],
+        "turnDurationMs": 1253
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "_kiro.dev/metadata",
+      "params": {
+        "sessionId": "session-1",
+        "contextUsagePercentage": 2.446899890899658,
+        "meteringUsage": [
+          { "value": 0.042670777446102814, "unit": "credit", "unitPlural": "credits" }
+        ],
+        "turnDurationMs": 2437
+      }
+    }
+  ],
+  "contextOnly": {
+    "jsonrpc": "2.0",
+    "method": "_kiro.dev/metadata",
+    "params": { "sessionId": "session-1", "contextUsagePercentage": 6.253500461578369 }
+  }
+}

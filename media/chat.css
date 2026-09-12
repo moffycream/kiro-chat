@@ -241,6 +241,57 @@ body {
   align-self: stretch;
 }
 
+/*
+ * What the turn cost and what ran it, under the reply.
+ *
+ * A footnote's size and the theme's own codelens colour, which is what a
+ * theme uses for a note the editor adds beside work it did not write —
+ * exactly what this is. It falls back to the ordinary muted colour, as the
+ * step rows already do, for a theme that names no codelens colour.
+ *
+ * Ranged right so it does not start where the reply starts: it is a fact
+ * about the message rather than the last line of it, and a number set hard
+ * against the left margin reads as something Kiro said.
+ */
+.turn-cost {
+  display: flex;
+  justify-content: flex-end;
+  align-items: baseline;
+  gap: 5px;
+  margin-top: 6px;
+  font-size: 0.78em;
+  color: var(--vscode-editorCodeLens-foreground, var(--vscode-descriptionForeground));
+}
+
+/*
+ * The model is the half that gives way when the panel is narrow.
+ *
+ * Model ids run long (`gpt-5.6-terra`) and a sidebar is three inches wide,
+ * so without `min-width: 0` this flex item's floor is its own content and
+ * the line pushes the figure off the edge instead of ellipsising — the same
+ * bug the workflow pickers and the thought line each had. The cost never
+ * shrinks: it is the thing the line is for, and half a credit figure is
+ * worse than none. The full name stays in the tooltip.
+ */
+.turn-model {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.turn-dot {
+  flex: none;
+  opacity: 0.6;
+}
+
+/* Tabular figures keep a column of these from jittering down a long chat. */
+.turn-credits {
+  flex: none;
+  font-variant-numeric: tabular-nums;
+}
+
+
 .msg.error {
   padding: 8px 11px;
   border-radius: var(--radius);
@@ -2678,15 +2729,27 @@ button:disabled {
 .context-row > :last-child { text-align: right; }
 
 /* The section's own line: what it is, and the one number that sums it up. */
+/*
+ * The figure drops below the heading rather than off the side.
+ *
+ * It carries two facts now — "7% · 13.8k of 256k · 0.02 credits" — and a
+ * sidebar can be dragged narrower than that and the word Context together.
+ * Wrapping keeps both readable where truncating would take the credits off
+ * the end, which is the half with no other home. `margin-left: auto` on the
+ * figure is what keeps it ranged right once it has a line of its own:
+ * `space-between` puts a lone item on a wrapped line at the start.
+ */
 .context-head {
   display: flex;
+  flex-wrap: wrap;
   justify-content: space-between;
-  gap: 12px;
+  gap: 2px 12px;
   align-items: baseline;
   font-weight: 600;
 }
 
 .context-figure {
+  margin-left: auto;
   font-weight: normal;
   font-variant-numeric: tabular-nums;
   color: var(--vscode-descriptionForeground);

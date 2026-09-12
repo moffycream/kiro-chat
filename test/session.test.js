@@ -33,6 +33,104 @@ test("every path that rebuilds the model list also fetches the credit rates", ()
   }
 });
 
+/*
+ * Nothing Kiro sends names the model that answered a turn.
+ *
+ * Measured against kiro-cli 2.20.2: `_kiro.dev/metadata` carries the session
+ * id, the context reading, `meteringUsage` and `turnDurationMs` — and nothing
+ * else, with an explicit model set as well as under `auto`. So the model on
+ * the line is the one that was *selected*, captured when the turn starts.
+ * Reading it when the line is drawn would relabel finished turns the moment
+ * the picker changed.
+ */
+test("the model is captured when the turn starts, not when it is drawn", () => {
+  const send = session.slice(session.indexOf("async send("));
+  const body = send.slice(0, send.indexOf("private emitTurnCredits"));
+  assert.match(
+    body,
+    /this\.currentTurnModel = /,
+    "the turn has to take the model it began with"
+  );
+  const emit = session.slice(session.indexOf("private emitTurnCredits("));
+  assert.match(
+    emit.slice(0, emit.indexOf("private modelLabel")),
+    /model: this\.currentTurnModel/,
+    "and report that one, not whatever is selected now"
+  );
+});
+
+/*
+ * Kiro meters per turn, so the conversation's total is ours to keep.
+ *
+ * Measured over three turns of one session: 0.0615, 0.0451, 0.0427, each
+ * beside a `turnDurationMs` for that turn alone. Nothing sends a running
+ * total, so `completedCredits` accumulates one — and a turn is banked only
+ * when it ends, so a turn metered twice (the meter has two delivery routes)
+ * is still counted once.
+ */
+test("the conversation total is accumulated, and a turn is banked once", () => {
+  assert.match(session, /private completedCredits = 0/, "a total has to be kept");
+  const read = session.slice(session.indexOf("private readUsage("));
+  const body = read.slice(0, read.indexOf("private async handleRequest"));
+  assert.match(
+    body,
+    /this\.currentTurnCredits = reading\.turnCredits/,
+    "a reading replaces the turn's figure rather than adding to it"
+  );
+  assert.match(
+    body,
+    /completedCredits \+ reading\.turnCredits/,
+    "and the strip shows the finished turns plus the one in flight"
+  );
+  const emit = session.slice(session.indexOf("private emitTurnCredits("));
+  assert.match(
+    emit.slice(0, emit.indexOf("private retryTurnCredits")),
+    /completedCredits \+= spent/,
+    "the turn is banked as it ends, not as it is read"
+  );
+});
+
+/*
+ * The reading lands about two milliseconds before `session/prompt` answers
+ * — comfortably before the turn ends, but not by much. The wait is what
+ * stops that margin being a silent failure if it ever goes the other way.
+ */
+test("a reading that arrives after its turn still lands on that turn", () => {
+  const read = session.slice(session.indexOf("private readUsage("));
+  assert.match(
+    read.slice(0, read.indexOf("private async handleRequest")),
+    /retryTurnCredits/,
+    "a later meter has to try again"
+  );
+});
+
+/*
+ * And the wait has to close, twice over. A new turn takes the slot for
+ * itself, so a late reading is never credited to the wrong turn; a new or
+ * reopened conversation drops the total, because it describes a chat nobody
+ * is looking at any more.
+ */
+test("an open wait for a cost is closed by anything that moves on", () => {
+  const send = session.slice(session.indexOf("async send("));
+  const body = send.slice(0, send.indexOf("private emitTurnCredits"));
+  assert.match(
+    body,
+    /this\.awaitingTurnCredits = false/,
+    "a new turn must not inherit the last one's wait"
+  );
+  const clears = [...session.matchAll(/clearSessionUsage\(this\.usage\)/g)];
+  assert.ok(clears.length >= 2, "a new session and a loaded one both clear");
+  for (const match of clears) {
+    const before = session.slice(Math.max(0, match.index - 260), match.index);
+    assert.match(
+      before,
+      /completedCredits = 0/,
+      "each of them has to drop the conversation total too"
+    );
+    assert.match(before, /awaitingTurnCredits = false/, "and close an open wait");
+  }
+});
+
 // ---------------------------------------------------------------------------
 // One conversation, one turn at a time.
 //

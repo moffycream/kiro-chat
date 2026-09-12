@@ -209,6 +209,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         this.post({ type: "models", models, currentModelId }),
       onCommands: (commands) => this.postCommands(commands),
       onUsage: (usage) => this.post({ type: "usage", usage }),
+      // The cost of the turn, for the bubble it paid for. The strip above
+      // carries the running total for the chat, which answers how much has
+      // been spent and not what that answer cost.
+      onTurnCredits: (turn) =>
+        this.post({ type: "turnCredits", credits: turn.credits, model: turn.model }),
       onCapabilities: (caps) => this.post({ type: "capabilities", caps }),
       onPermission: (request) => this.requestPermissionInChat(request),
       onReviewActive: (info) => this.post({ type: "reviewActive", review: info }),

@@ -20,6 +20,7 @@ import {
 } from "./slashCommands";
 import {
   creditRateOf,
+  formatCredits,
   describeContextWindow,
   formatUsageReport,
   parseAccountUsage,
@@ -81,6 +82,21 @@ export interface SessionEvents {
   /** Kiro's own slash commands, as it announces them after `session/new`. */
   onCommands?: (commands: SlashCommand[]) => void;
   onUsage: (usage: UsageInfo) => void;
+  /**
+   * What the turn that just ended cost, in credits.
+   *
+   * Separate from `onUsage` because it describes a different scope.
+   * That one carries a running total for the conversation and fires
+   * throughout a turn; this fires once, at the end, about the one turn.
+   *
+   * The model rides along rather than being read off the session when the
+   * panel draws it. Nothing Kiro sends names the model that answered —
+   * measured, the metering notification carries only the session id, the
+   * context reading, the figure and a duration — so it can only be the one
+   * that was selected when the turn began, and the user may have changed
+   * it since.
+   */
+  onTurnCredits?: (turn: { credits: number; model?: string }) => void;
   onCapabilities: (caps: { image: boolean }) => void;
   /** A review is on screen, so the chat can offer to keep or undo the lot. */
   onReviewActive?: (info: ActiveReviewInfo | undefined) => void;
@@ -268,6 +284,35 @@ export class KiroSession {
   private sessionId: string | undefined;
   private starting: Promise<void> | undefined;
   private status: SessionStatus = "stopped";
+  /**
+   * What every finished turn in this conversation has cost, added up.
+   *
+   * Kiro meters **per turn** and never cumulatively — measured over three
+   * turns of one session, which reported 0.0615, 0.0451 and 0.0427. So the
+   * conversation's total is ours to keep; nothing sends it.
+   */
+  private completedCredits = 0;
+  /**
+   * The reading for the turn in flight, overwritten rather than added to.
+   *
+   * The meter can reach `readUsage` by two routes — its own notification
+   * and one bolted to a `session/update` — and 2.20.2 uses the first. If a
+   * build ever used both, adding would count one turn twice; replacing
+   * cannot.
+   */
+  private currentTurnCredits: number | undefined;
+  /**
+   * The model selected when the turn in flight began.
+   *
+   * Captured at the start rather than read at the end, because changing
+   * the model mid-conversation must not relabel a turn that has already
+   * run. `auto` is a real answer and is shown as one: Kiro picks per task
+   * and never reports which it picked, so naming a specific model there
+   * would be inventing one.
+   */
+  private currentTurnModel = "";
+  /** A turn has ended with no reading yet, and one may still come. */
+  private awaitingTurnCredits = false;
   private models: ModelInfo[] = [];
   private currentModelId = "";
   private usage: UsageInfo = {};
@@ -479,6 +524,9 @@ export class KiroSession {
        * one you just left. A past chat's own credits are not stored anywhere,
        * so there is no number to put back; showing none is the honest answer.
        */
+      this.completedCredits = 0;
+      this.currentTurnCredits = undefined;
+      this.awaitingTurnCredits = false;
       this.usage = clearSessionUsage(this.usage);
       this.events.onUsage({ ...this.usage });
       // Loading answers with the same model block a new session does — which
@@ -716,6 +764,15 @@ export class KiroSession {
     }
 
     this.turnReadOnly = options.readOnly === true;
+    /*
+     * A turn starts owing nothing. Kiro reports what the turn cost when it
+     * is over, so there is no reading to take here — only the last turn's
+     * to clear, and any wait it left open. From here on, a reading that
+     * arrives belongs to this turn.
+     */
+    this.currentTurnCredits = undefined;
+    this.awaitingTurnCredits = false;
+    this.currentTurnModel = this.modelLabel(this.currentModelId);
     this.beginTurnFileCapture(usable);
     this.setStatus("busy");
     try {
@@ -736,6 +793,7 @@ export class KiroSession {
       });
       await this.finishDirectFileReviews();
       this.reportTurnChanges();
+      this.emitTurnCredits();
       this.events.onTurnEnd(result?.stopReason);
     } catch (err) {
       // An edit can succeed before a later tool fails. It still needs to be
@@ -743,6 +801,9 @@ export class KiroSession {
       await this.finishDirectFileReviews();
       this.reportTurnChanges();
       this.events.onError(err instanceof Error ? err.message : String(err));
+      // A turn that failed part of the way through still spent what it
+      // spent, and that is the turn you most want the number for.
+      this.emitTurnCredits();
       this.events.onTurnEnd("error");
     } finally {
       this.turnReadOnly = false;
@@ -750,6 +811,65 @@ export class KiroSession {
     }
   }
 
+  /**
+   * Report what the turn cost, and bank it against the conversation.
+   *
+   * Fired before `onTurnEnd` on purpose: the panel finishes the agent
+   * bubble on that event and writes it into the chat's record, so a number
+   * arriving afterwards would have to be stitched into a turn already
+   * stored. Measured, the reading lands about two milliseconds before
+   * `session/prompt` answers — comfortably before this, but not by much,
+   * which is why the wait below exists rather than being assumed away.
+   */
+  private emitTurnCredits(): void {
+    const spent = this.currentTurnCredits;
+    if (spent === undefined) {
+      /*
+       * Said once, at the end of the turn. Logging only successes made
+       * "Kiro never meters" and "Kiro metered a moment late"
+       * indistinguishable from the one place there is to look — which is
+       * how a parser that dropped every reading went unnoticed.
+       */
+      this.output.appendLine(
+        "[usage] no cost reported for this turn yet; waiting for a reading."
+      );
+      this.awaitingTurnCredits = true;
+      return;
+    }
+    this.awaitingTurnCredits = false;
+    this.currentTurnCredits = undefined;
+    // Banked only now, so a turn is counted once however many readings
+    // arrived for it.
+    this.completedCredits += spent;
+    this.output.appendLine(`[usage] this turn cost ${formatCredits(spent)} credits`);
+    this.events.onTurnCredits?.({ credits: spent, model: this.currentTurnModel });
+  }
+
+  /**
+   * A model id as it should be read.
+   *
+   * Kiro's ids and names are the same string today (`claude-sonnet-4.5`
+   * both ways), so this is only worth the two lines because the name is
+   * resolved **here** and stored with the turn. Resolving it in the panel
+   * would leave a chat reopened next month showing an id for a model that
+   * has since left the list.
+   */
+  private modelLabel(id: string): string {
+    if (!id) return "";
+    return this.models.find((m) => m.modelId === id)?.name || id;
+  }
+
+  /**
+   * A reading that arrived after its turn had ended.
+   *
+   * Deliberately silent when there is still nothing: this runs on every
+   * meter notification while a wait is open, and `emitTurnCredits` has
+   * already said once that there was nothing to show.
+   */
+  private retryTurnCredits(): void {
+    if (this.currentTurnCredits === undefined) return;
+    this.emitTurnCredits();
+  }
   /**
    * Run one of Kiro's own commands — `usage`, `model` — and hand back what it
    * answered. This is the only route to the account credit picture and to the
@@ -830,6 +950,9 @@ export class KiroSession {
     // Only what belonged to the conversation that just ended. The plan
     // figures describe the account and are still true; wiping them made the
     // credits you had just fetched vanish for pressing "+".
+    this.completedCredits = 0;
+    this.currentTurnCredits = undefined;
+    this.awaitingTurnCredits = false;
     this.usage = clearSessionUsage(this.usage);
     this.events.onUsage({ ...this.usage });
     this.setStatus("stopped");
@@ -1036,10 +1159,34 @@ export class KiroSession {
 
   /** Fold whatever a notification carried into the running totals. */
   private readUsage(params: any): void {
-    this.usage = { ...this.usage, ...readMeter(params) };
+    const reading = readMeter(params);
+    if (reading.contextPercent !== undefined) {
+      this.usage = { ...this.usage, contextPercent: reading.contextPercent };
+    }
+    /*
+     * The conversation's total is ours to keep, because nothing sends one.
+     *
+     * `meteringUsage` is the cost of a single turn — three turns of one
+     * session reported 0.0615, 0.0451 and 0.0427, each beside a
+     * `turnDurationMs` for that turn alone. Treating it as a running total
+     * would have made the strip fall as the conversation went on. The
+     * current turn's reading is replaced rather than added to, and banked
+     * into `completedCredits` only when the turn ends, so a turn metered
+     * twice is still counted once.
+     */
+    if (reading.turnCredits !== undefined) {
+      this.currentTurnCredits = reading.turnCredits;
+      this.usage = {
+        ...this.usage,
+        sessionCredits: this.completedCredits + reading.turnCredits,
+      };
+    }
     this.events.onUsage({ ...this.usage });
+    // A reading that came in after its turn had already ended. The panel
+    // takes a cost arriving after the bubble was stored — the `recorded`
+    // branch in `noteTurnCredits` — so it still lands on the right turn.
+    if (this.awaitingTurnCredits) this.retryTurnCredits();
   }
-
   private async handleRequest(method: string, params: any): Promise<any> {
     switch (method) {
       case "fs/read_text_file":

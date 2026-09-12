@@ -113,7 +113,13 @@ them. The extension checks this when it connects.
 ## Seeing your usage
 
 A strip under the status line shows **credits used in this chat** and **how full the context
-is**, when Kiro reports them. **Click this strip above the chat messages** to open the
+is**, when Kiro reports them. Both were broken before **0.37.0**: Kiro sends the credit
+figure in a shape the panel did not read, so the strip always said none had been reported. Under each reply is **the model and what that turn
+cost**, like `claude-sonnet-4.5 · 0.42 credits`, as Kiro metered it. The model is the one
+selected when you sent that turn; **auto** stays **auto**, because Kiro chooses per task and
+does not report which model it picked. A turn Kiro did
+not report a cost for shows nothing rather than `0 credits`, since those two are not
+the same thing. Available from version **0.36.0**. **Click this strip above the chat messages** to open the
 session context panel. It shows the latest context percentage, model capacity, and used
 and remaining tokens. Token counts are estimates based on the reported percentage and
 capacity; if capacity is unavailable, the panel shows percentages only.

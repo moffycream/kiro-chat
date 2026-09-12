@@ -31,6 +31,19 @@
   const dropzone = el("dropzone");
 
   let current = null;
+  /**
+   * The newest agent bubble, live or finished.
+   *
+   * `current` is cleared the moment a turn ends, and the turn's cost can
+   * arrive either side of that — `turnCredits` is posted just before
+   * `turnEnd` on the ordinary path, but a `turn_end` notification can
+   * finish the bubble first. This is what the number attaches to in
+   * either order. It is never cleared when the transcript is: a removed
+   * node reports `isConnected === false`, which is the one check that
+   * covers all eight places the transcript can be emptied without any of
+   * them having to remember this.
+   */
+  let lastAgent = null;
   let buffer = "";
   /**
    * Set when a tool step appears, so the text that resumes after it starts a
@@ -157,12 +170,23 @@
     saveState();
   }
 
-  function recordAgent(text, tools, thought) {
+  function recordAgent(text, tools, thought, spent, model) {
     if (!text.trim() && (!tools || tools.length === 0) && !thought) return;
     // The thought is stored for the same reason a permission is: reopening a
     // chat should still show that Kiro reasoned, not a gap where the working
     // used to be. One field for the turn, as one block on screen.
-    history.push({ role: "agent", text, tools: tools || [], thought: thought || "" });
+    history.push({
+      role: "agent",
+      text,
+      tools: tools || [],
+      thought: thought || "",
+      // Only when there is one. A stored `0` would come back as a turn that
+      // cost nothing, which is not what an unreported cost means.
+      credits: typeof spent === "number" ? spent : undefined,
+      // Stored beside the figure, because the picker will not remember
+      // what was selected when this turn ran.
+      model: model || undefined,
+    });
     saveState();
   }
 
@@ -772,6 +796,7 @@
     root.appendChild(body);
     messagesEl.appendChild(root);
     current = { root, group, tools, body, toolList: [], startedAt: 0, timer: 0 };
+    lastAgent = current;
     buffer = "";
     return current;
   }
@@ -1563,12 +1588,130 @@
         recordAgent(
           buffer,
           current.toolList,
-          current.thought ? current.thought.textContent : ""
+          current.thought ? current.thought.textContent : "",
+          current.credits,
+          current.model
         );
+        // What tells a late cost to patch the stored turn rather than wait
+        // for a `recordAgent` that has already been and gone.
+        current.recorded = true;
       }
     }
     current = null;
     buffer = "";
+  }
+
+  /**
+   * What the turn cost, under the reply it paid for.
+   *
+   * The strip at the top of the panel has always carried a running total
+   * for the chat. That answers how much this conversation has spent; it
+   * does not answer what the last answer cost, and the second question is
+   * the one that changes what you type next — a figure you can only get
+   * from the strip by remembering what it said a minute ago.
+   *
+   * It goes under the bubble rather than on the steps header because the
+   * header is a live status while the turn runs and this number does not
+   * exist until the turn is over: putting it there would mean a header
+   * that says one thing during the work and another afterwards, and the
+   * header is already the single live status this panel has.
+   */
+  function turnCostLine(value, model) {
+    const line = document.createElement("div");
+    line.className = "turn-cost";
+
+    /*
+     * The model first, the cost second, and the model is the half that
+     * gives way in a narrow panel.
+     *
+     * Nothing Kiro sends names the model that answered a turn, so this is
+     * the one that was *selected* when the turn began — which is why it is
+     * stored with the turn rather than read off the picker, and why `auto`
+     * is shown as `auto`. Kiro picks per task under `auto` and never
+     * reports which it picked; printing a specific name there would be
+     * inventing one, which is the whole failure this feature already made
+     * once with the credit figure.
+     */
+    if (model) {
+      const name = document.createElement("span");
+      name.className = "turn-model";
+      name.textContent = model;
+      name.title =
+        model === "auto"
+          ? "Kiro chose the model for this turn by task, and does not report which"
+          : "The model selected when this turn was sent";
+      line.appendChild(name);
+
+      // Decoration between two facts, and read out as neither.
+      const dot = document.createElement("span");
+      dot.className = "turn-dot";
+      dot.setAttribute("aria-hidden", "true");
+      dot.textContent = "·";
+      line.appendChild(dot);
+    }
+
+    /*
+     * A turn too cheap to round to two decimals is not a free one.
+     *
+     * `credits` rounds as the strip does, and a real turn costs around
+     * 0.04 — so a short one lands close enough to the floor that a cheaper
+     * model or a one-word reply renders as "0 credits", which is the
+     * dishonest zero refused everywhere else in this feature, arriving by
+     * way of the formatter instead of the parser. Two decimals is the
+     * right precision for a strip totalling a whole conversation; at the
+     * scale of one turn it needs a floor.
+     */
+    const amount = value > 0 && value < 0.01 ? null : credits(value);
+    const cost = document.createElement("span");
+    cost.className = "turn-credits";
+    cost.textContent =
+      amount === null
+        ? "<0.01 credits"
+        : amount + (amount === "1" ? " credit" : " credits");
+    line.appendChild(cost);
+
+    line.title =
+      "What this turn cost, as Kiro metered it" +
+      (model ? `, on ${model}` : "");
+    return line;
+  }
+  /**
+   * Put the cost on the turn it belongs to, whichever way round it came.
+   *
+   * `isConnected` is the whole guard on a stale bubble. Every route that
+   * empties the transcript — a new chat, opening an old one, the setup
+   * screen — removes the node, so a `lastAgent` left pointing at one is
+   * refused here without any of those eight places having to know about
+   * this at all.
+   */
+  function noteTurnCredits(value, model) {
+    if (typeof value !== "number" || !Number.isFinite(value)) return;
+    const bubble = current || lastAgent;
+    if (!bubble || !bubble.root.isConnected) return;
+    const was = atBottom();
+    // A second reading replaces the first rather than sitting beside it.
+    const shown = bubble.root.querySelector(".turn-cost");
+    if (shown) shown.remove();
+    bubble.root.appendChild(turnCostLine(value, model));
+    if (bubble.recorded) {
+      // The turn was written to the record before the number arrived, so
+      // it is stitched into the entry that is already there. Rewriting it
+      // through `recordAgent` would store the same turn twice.
+      for (let i = history.length - 1; i >= 0; i--) {
+        if (history[i].role === "agent") {
+          history[i].credits = value;
+          history[i].model = model;
+          saveState();
+          break;
+        }
+      }
+    } else {
+      // The usual order: the bubble is still live, so the cost rides along
+      // when `finishAgentBubble` records it a moment later.
+      bubble.credits = value;
+      bubble.model = model;
+    }
+    scroll(was);
   }
 
   // ---------------------------------------------------------------
@@ -2276,6 +2419,18 @@
       account.appendChild(item);
     };
 
+    /*
+     * Whether an account report was read — and nothing else.
+     *
+     * It decides two things below: whether Kiro's raw printout is shown
+     * instead of figures, and whether the button offers to "Refresh" or to
+     * "Check account usage" for the first time. A row about *this chat*
+     * used to set it too, which was harmless only for as long as the credit
+     * meter was never read: once 0.37.0 fixed that parser the flag went
+     * true on the first turn of every conversation, so the panel claimed an
+     * account had been fetched that had not, and "Not fetched yet." became
+     * unreachable. One flag, one writer, and it has to be the account's.
+     */
     let parsed = false;
     if (typeof usage.accountCreditsUsed === "number") {
       parsed = true;
@@ -2289,10 +2444,6 @@
     if (usage.accountResetsOn) {
       parsed = true;
       row("Renews", usage.accountResetsOn);
-    }
-    if (typeof usage.sessionCredits === "number") {
-      parsed = true;
-      row("This chat", `${credits(usage.sessionCredits)} credits`);
     }
 
     if (!parsed) {
@@ -2398,12 +2549,32 @@
      * that and "6%" is not a difference anyone can act on — while two
      * decimals on a headline figure reads as precision that means something.
      */
-    figure.textContent =
+    const fullness =
       percent === undefined
         ? "not reported"
         : used
           ? `${Math.round(percent)}% · ${contextTokens(used)}${capacity ? ` of ${contextTokens(capacity)}` : ""}`
           : `${Math.round(percent)}%`;
+    /*
+     * The chat's spend rides on this line, not in a section of its own.
+     *
+     * It was a row under the *Account* heading, which was the wrong scope —
+     * `usage.ts` names the two apart and says which survives a chat ending.
+     * Moving it out gave it a section to itself, which was correct and
+     * wasteful: a heading and a border around four words, above the section
+     * describing the same conversation. Both figures answer "how is this
+     * chat doing", so they share the line, and only the account keeps a
+     * section of its own.
+     *
+     * Nothing is added when Kiro has reported nothing. A chat with no
+     * reading is not a chat that cost nothing — the rule this feature
+     * follows from the parser outwards.
+     */
+    const spend =
+      typeof usage.sessionCredits === "number"
+        ? `${credits(usage.sessionCredits)} credits`
+        : "";
+    figure.textContent = spend ? `${fullness} · ${spend}` : fullness;
     head.append(title, figure);
     section.appendChild(head);
 
@@ -4235,6 +4406,12 @@
         appendThought(message.text || "");
         break;
 
+      // What the turn cost. It is posted just before `turnEnd`, so the
+      // bubble is normally still live when this lands.
+      case "turnCredits":
+        noteTurnCredits(message.credits, message.model);
+        break;
+
       case "turnEnd":
         finishAgentBubble();
         break;
@@ -4497,6 +4674,13 @@
         buffer = item.text || "";
         bubble.body.innerHTML = renderMarkdown(buffer);
         bubble.body.classList.remove("cursor");
+        // The same line, drawn the same way as it was live. A stored turn
+        // is already in the record, so a cost arriving now would patch it
+        // rather than be written again.
+        if (typeof item.credits === "number") {
+          bubble.root.appendChild(turnCostLine(item.credits, item.model));
+        }
+        bubble.recorded = true;
         current = null;
         buffer = "";
       } else {

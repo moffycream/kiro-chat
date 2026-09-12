@@ -1,5 +1,99 @@
 # Changelog
 
+## 0.38.2
+
+- **The chat's credits now sit on the Context line**, as
+  `7% · 13.8k of 256k · 0.02 credits`. 0.38.1 gave them a section of their
+  own, which was the right scope and the wrong shape: a heading and a border
+  around four words, directly above the section describing the same
+  conversation. Both figures answer "how is this chat doing", so they share
+  a line, and only the account keeps a section to itself.
+- The heading wraps rather than truncating when the panel is narrow, so the
+  credits are not the half that falls off the end.
+
+## 0.38.1
+
+- **"This chat" has moved out of the Account section of the usage panel.**
+  It was the one row under that heading that was not about your account,
+  sitting beside the plan total and the renewal date. It now has its own
+  line at the top of the panel, where the conversation's own figures belong.
+- **Fixed: the panel claimed your account usage had been fetched when it had
+  not.** That row also set the flag meaning "an account report was read", so
+  from the first turn of every chat the button offered to **Refresh**
+  something never fetched, and **Check account usage** and "Not fetched
+  yet." became unreachable. Harmless while the credit meter was never read;
+  0.37.0 fixed that parser and this surfaced with it.
+
+## 0.38.0
+
+- **The line under each reply now names the model too**, like
+  `claude-sonnet-4.5 · 0.06 credits`.
+- It is the model that was **selected when you sent the turn**, captured
+  then and stored with it — so changing the picker afterwards does not
+  relabel replies that already ran on something else, and reopening the chat
+  next month still shows what each turn used.
+- **`auto` is shown as `auto`.** Kiro picks a model per task under `auto` and
+  never reports which one it picked — measured by driving `kiro-cli acp`,
+  where the metering notification carries the session, the context reading,
+  the figure and a duration, and no model at all, with an explicit model set
+  as well as under `auto`. Naming a specific model there would be inventing
+  one.
+- In a narrow panel the model name ellipsises and the credit figure never
+  shrinks; the full name stays in the tooltip.
+
+## 0.37.0
+
+- **Fixed: the credit meter was never read at all.** `meteringUsage` is an
+  array — `[{ value, unit: "credit" }]` — and it was being read as a plain
+  number or as an object with the figure under one of five key names. An
+  array is neither, so every reading Kiro sent was dropped at the door.
+  Measured by driving `kiro-cli acp` directly; the payload is now a test
+  fixture.
+- **This also fixes the usage strip, which has never worked.** It has been
+  saying "Kiro has not reported any credit use for this chat yet" for the
+  life of every conversation — right about the reading, wrong about Kiro.
+  Both the strip and the account panel now show the chat's spend.
+- **What Kiro reports is the cost of one turn, not a running total.** Three
+  turns of one session reported 0.0615, 0.0451 and 0.0427, each beside a
+  duration for that turn alone. 0.36.0 assumed a total and subtracted; it
+  now reads the figure directly, and the conversation's total is accumulated
+  rather than expected. Read the other way round the strip would have
+  counted *down* as a chat went on.
+- A turn too cheap to round to two decimals now reads `<0.01 credits` rather
+  than `0 credits` — a turn nobody was charged much for is not a free one.
+
+## 0.36.1
+
+- **Fixed: the cost of a turn often did not appear at all.** Kiro answering
+  the prompt is not a promise that it has finished accounting for it — the
+  metering notification is written separately, and for a short turn it
+  regularly lands *after* the reply is complete. The subtraction was made
+  only at the end of the turn, so it read zero, and a zero is deliberately
+  not shown. A reading that comes in late is now still credited to the turn
+  it belongs to, and the figure appears a moment after the reply.
+- **The log now says which it was.** It only ever recorded a success, so
+  "Kiro does not meter at all" and "Kiro metered a moment too late" looked
+  identical from the one place there is to look. **Kiro Chat: Show Log** now
+  prints both readings whenever there is no figure to show.
+
+## 0.36.0
+
+- **Each reply now says what it cost, under the bubble.** The strip at the
+  top has always carried a running total for the chat, which answers how
+  much the conversation has spent and not what the last answer cost — and
+  the second question is the one that changes what you type next. Getting
+  it out of the strip meant remembering what it said a minute ago. A small
+  figure now sits under each reply: `0.42 credits`.
+- It is the rise in Kiro's own running total across the turn, not an
+  estimate. Where that cannot be relied on — the total went down, or did
+  not move, or Kiro reported nothing — no figure is shown at all, because a
+  credit number nobody can check is worse than none. In particular a turn
+  Kiro did not meter is left blank rather than shown as `0 credits`.
+- A turn that failed part of the way through still shows what it spent,
+  which is the turn you most want the number for.
+- The figure is stored with the turn, so it survives dragging the panel to
+  another dock and reopening the chat from history.
+
 ## 0.35.0
 
 - **Kiro's reasoning is one line again, with "Show more" at the end of it.** 0.34.0

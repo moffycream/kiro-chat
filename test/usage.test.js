@@ -4,10 +4,13 @@
 // the account figures replaced. If Kiro changes shape, these are what tell us.
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const path = require("node:path");
 
 const {
   clearSessionUsage,
   creditRateOf,
+  readTurnCredits,
   describeContextWindow,
   formatCredits,
   formatUsageReport,
@@ -17,6 +20,11 @@ const {
   readUsageCommand,
   SESSION_USAGE_KEYS,
 } = require("../out/usage");
+
+/** The real `_kiro.dev/metadata` payloads, captured from kiro-cli 2.20.2. */
+const METERING = JSON.parse(
+  fs.readFileSync(path.join(__dirname, "fixtures", "kiro-metering.json"), "utf8")
+);
 
 const USAGE_DATA = {
   planName: "KIRO PRO+",
@@ -143,13 +151,88 @@ test("credit rate is never invented from an unrelated multiplier", () => {
   );
 });
 
-test("the meter is read whether it is a number or an object", () => {
-  assert.deepEqual(readMeter({ meteringUsage: 4.25 }), { sessionCredits: 4.25 });
-  assert.deepEqual(readMeter({ meteringUsage: { creditsUsed: 7 } }), {
-    sessionCredits: 7,
+/*
+ * The meter, against what Kiro actually sends.
+ *
+ * `meteringUsage` is an ARRAY — `[{ value, unit: "credit", unitPlural }]` — and
+ * for the life of this feature it was read as a bare number or an object with
+ * the figure under one of five key names. An array is `typeof "object"` and
+ * carries none of those names, so every reading fell through and
+ * `sessionCredits` was never once set. The strip said Kiro had reported no
+ * credits, and it was right about the reading and wrong about Kiro. The
+ * fixture is the real capture.
+ */
+test("the meter reads the array shape kiro-cli actually sends", () => {
+  const first = METERING.turns[0].params;
+  assert.deepEqual(readMeter(first), {
+    contextPercent: 2.424499988555908,
+    turnCredits: 0.0614601119402985,
   });
+  // Every captured turn has to read, not just the one that was looked at.
+  for (const turn of METERING.turns) {
+    const out = readMeter(turn.params);
+    assert.equal(typeof out.turnCredits, "number", "each turn reports a cost");
+    assert.ok(out.turnCredits > 0);
+  }
+  // A notification carrying only the context reading is the other real shape.
+  assert.deepEqual(readMeter(METERING.contextOnly.params), {
+    contextPercent: 6.253500461578369,
+  });
+});
+
+/*
+ * Those three readings fall — 0.0615, 0.0451, 0.0427 — and each sits beside a
+ * `turnDurationMs` for its own turn. It is the cost of one turn, not a running
+ * total. Reading it as a total would make the strip count *down* as a
+ * conversation went on, which is the bug this pins shut.
+ */
+test("the readings are per turn and do not accumulate", () => {
+  const values = METERING.turns.map((turn) => readMeter(turn.params).turnCredits);
+  assert.deepEqual(
+    values.map((v) => Number(v.toFixed(4))),
+    [0.0615, 0.0451, 0.0427]
+  );
+  assert.ok(values[1] < values[0], "a total could not fall");
+  assert.ok(values[2] < values[1]);
+});
+
+/* The older shapes still read, because dropping one goes silent exactly as this did. */
+test("a bare number and a single object are still understood", () => {
+  assert.deepEqual(readMeter({ meteringUsage: 4.25 }), { turnCredits: 4.25 });
+  assert.deepEqual(readMeter({ meteringUsage: { creditsUsed: 7 } }), { turnCredits: 7 });
+  assert.deepEqual(readMeter({ meteringUsage: { value: 2 } }), { turnCredits: 2 });
   assert.deepEqual(readMeter({ contextUsagePercentage: 42 }), { contextPercent: 42 });
   assert.deepEqual(readMeter({}), {});
+});
+
+/*
+ * A unit is checked when there is one, in the spirit of the rest of this file:
+ * a number is only a credit figure when something says it is. An entry with no
+ * unit is taken at face value, because the older shapes carry none.
+ */
+test("only credits are added up", () => {
+  assert.equal(
+    readTurnCredits([
+      { value: 1.5, unit: "credit", unitPlural: "credits" },
+      { value: 900, unit: "token", unitPlural: "tokens" },
+    ]),
+    1.5
+  );
+  assert.equal(readTurnCredits([{ value: 2 }, { value: 3 }]), 5, "two credit entries add");
+  assert.equal(readTurnCredits([{ value: 10, unit: "tokens" }]), undefined);
+  assert.equal(readTurnCredits([]), undefined, "an empty array reports nothing");
+  assert.equal(readTurnCredits([{}]), undefined, "and so does an entry with no figure");
+});
+
+/* A reading that is not one is never invented into a number. */
+test("a meter that says nothing reports nothing", () => {
+  for (const value of [undefined, null, "", NaN, Infinity, {}, "0.5"]) {
+    assert.equal(
+      readMeter({ meteringUsage: value }).turnCredits,
+      undefined,
+      `${String(value)} should report no cost`
+    );
+  }
 });
 
 test("missing and invalid context readings are not reported as empty sessions", () => {
