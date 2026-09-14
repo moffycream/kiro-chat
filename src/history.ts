@@ -36,6 +36,17 @@ export interface ChatRecord {
 const MAX_TITLE = 60;
 const MAX_PREVIEW = 90;
 
+/** Remove the newest turns, including their replies and tool records. */
+export function removeLatestTurns(items: HistoryItem[], remove: number): HistoryItem[] {
+  if (!Number.isInteger(remove) || remove < 0) throw new Error("Invalid checkpoint.");
+  if (remove === 0) return items.slice();
+  let remaining = remove;
+  for (let i = items.length - 1; i >= 0; i--) {
+    if (items[i].role === "user" && --remaining === 0) return items.slice(0, i);
+  }
+  return [];
+}
+
 /**
  * Name a chat after the first thing the user said. A message that carried
  * only attachments still counts — "screenshot.png" says more about the chat

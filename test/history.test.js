@@ -12,7 +12,36 @@ const {
   forWorkspace,
   pruneHistory,
   upsertRecord,
+  removeLatestTurns,
 } = require("../out/history");
+
+test("restoring chat eight keeps its answer and removes chats nine and ten", () => {
+  const history = Array.from({ length: 10 }, (_, i) => [
+    { role: "user", text: `Question ${i + 1}` },
+    { role: "permission", text: "Approved" },
+    { role: "agent", text: `Answer ${i + 1}` },
+  ]).flat();
+  const kept = removeLatestTurns(history, 2);
+  assert.equal(kept.length, 24);
+  assert.equal(kept.at(-1).text, "Answer 8");
+  assert.equal(history.length, 30, "does not mutate the original transcript");
+  assert.deepEqual(removeLatestTurns(history, 0), history);
+});
+
+test("checkpoint removal counts from the tail when earlier chats are no longer stored", () => {
+  const tail = [
+    { role: "agent", text: "Answer 7" },
+    { role: "user", text: "Question 8" },
+    { role: "agent", text: "Answer 8" },
+    { role: "user", text: "Question 9" },
+    { role: "agent", text: "Answer 9" },
+    { role: "user", text: "Question 10" },
+    { role: "agent", text: "Answer 10" },
+  ];
+  assert.deepEqual(removeLatestTurns(tail, 2), tail.slice(0, 3));
+  assert.deepEqual(removeLatestTurns(tail, 4), []);
+  assert.throws(() => removeLatestTurns(tail, -1));
+});
 
 // 2026-09-02 14:41 local time, the day this was written.
 const NOW = new Date(2026, 8, 2, 14, 41).getTime();

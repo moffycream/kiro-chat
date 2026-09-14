@@ -10,6 +10,11 @@
   const inputEl = el("input");
   const sendBtn = el("send");
   const stopBtn = el("stop");
+  const restoreCheckpointBtn = el("restore-checkpoint");
+  restoreCheckpointBtn.addEventListener("click", () => {
+    if (busy || inputEl.disabled) return;
+    vscode.postMessage({ type: "listRewind" });
+  });
   const chipsEl = el("chips");
   const attachBtn = el("attach");
   const attachMenu = el("attach-menu");
@@ -1292,14 +1297,14 @@
 
     const head = document.createElement("div");
     head.className = "command-label";
-    head.textContent = "/rewind";
+    head.textContent = "Restore checkpoint";
     card.appendChild(head);
 
     const note = document.createElement("div");
     note.className = "command-note";
     note.textContent = turns.length
-      ? "Go back to a turn. Everything after it is dropped, and Kiro carries on in a copy of this conversation."
-      : "There is nothing to rewind to yet.";
+      ? "Choose the last question and answer to keep. Later messages are removed from this chat and Kiro’s context. File edits stay as they are."
+      : "There are no checkpoints yet.";
     card.appendChild(note);
 
     turns.forEach((turn, index) => {
@@ -1308,13 +1313,14 @@
       row.className = "rewind-turn";
       const label = document.createElement("span");
       label.className = "rewind-label";
-      label.textContent = turn.label || "(no message)";
+      label.textContent = `Chat ${turns.length - index}: ${turn.label || "(no message)"}`;
       const meta = document.createElement("span");
       meta.className = "rewind-meta";
-      meta.textContent = turn.responseSnippet || "";
+      meta.textContent = `${index === 0 ? "Current checkpoint" : `Remove ${index} later ${index === 1 ? "chat" : "chats"}`} — ${turn.responseSnippet || ""}`;
       row.append(label, meta);
       row.title = turn.group ? `${turn.label} — ${turn.group} of the context` : turn.label;
       row.addEventListener("click", () => {
+        if (busy || inputEl.disabled) return;
         for (const button of card.querySelectorAll("button")) button.disabled = true;
         row.classList.add("chosen");
         note.textContent = "Rewinding…";
@@ -3196,6 +3202,7 @@
 
   function setBusy(status) {
     busy = status === "busy" || status === "starting";
+    restoreCheckpointBtn.disabled = busy;
     // Setup outranks this: a "ready" status arriving mid-setup must not hand
     // the user a live Send button pointing at a Kiro that is not there.
     sendBtn.disabled = busy || setup !== null;
@@ -4493,15 +4500,22 @@
       case "rewound": {
         runningCommand = null;
         const before = history.length;
-        history = trimHistoryToTurns(history, Number(message.keptTurns) || 0);
+        history = Array.isArray(message.history)
+          ? message.history
+          : trimHistoryToTurns(history, Number(message.keptTurns) || 0);
+        pendingReview = null;
+        pendingChanges = null;
+        renderChangeBar();
+        contextBreakdown = null;
+        contextError = "";
         current = null;
         buffer = "";
         restoreHistory(history);
         addBubble(
           "note",
           before === history.length
-            ? "Rewound. Kiro is carrying on in a copy of this conversation."
-            : "Rewound to an earlier turn. Kiro is carrying on in a copy of this conversation."
+            ? "Checkpoint restored. Continue from here."
+            : "Checkpoint restored. Later messages have been removed from this chat and Kiro’s context."
         );
         saveState();
         break;

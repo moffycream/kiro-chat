@@ -2,6 +2,14 @@
 
 ## 0.38.2
 
+- **Restore checkpoint** is available above the messages. Choose the last
+  question and answer to keep: selecting **Chat 8** removes chats 9 and 10
+  from the displayed conversation and Kiro's active context. The picker
+  numbers each chat, previews its answer, and shows how many later chats
+  will be removed. File edits stay unchanged.
+- Restored chats save the restored session and trimmed transcript, so
+  reopening them from history continues from the checkpoint. Later messages
+  are also removed correctly when earlier messages are no longer stored locally.
 - **The chat's credits now sit on the Context line**, as
   `7% · 13.8k of 256k · 0.02 credits`. 0.38.1 gave them a section of their
   own, which was the right scope and the wrong shape: a heading and a border

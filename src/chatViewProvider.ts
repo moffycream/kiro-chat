@@ -56,6 +56,7 @@ import {
   HistoryItem,
   previewOf,
   pruneHistory,
+  removeLatestTurns,
   stableTitle,
   upsertRecord,
 } from "./history";
@@ -178,6 +179,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
   private transcript: HistoryItem[] = [];
   /** True when the webview could only send us the tail of a longer chat. */
   private transcriptTruncated = false;
+  private restoringCheckpoint = false;
   /** The chat waiting to be written, held back so a turn is one write. */
   private pendingChat: ChatRecord | undefined;
   private flushTimer: NodeJS.Timeout | undefined;
@@ -254,6 +256,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     view.webview.html = this.html(view.webview);
 
     view.webview.onDidReceiveMessage(async (message) => {
+      if (this.restoringCheckpoint && message.type !== "ready") return;
       switch (message?.type) {
         case "ready":
           await this.onWebviewReady(Boolean(message.restored));
@@ -571,8 +574,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
    * An empty chat is not worth a row in the list, and a chat with no folder
    * could never be resumed against the right cwd, so neither is saved.
    */
-  private saveCurrentChat(): void {
-    if (this.transcript.length === 0) return;
+  private saveCurrentChat(allowEmpty = false): void {
+    if (this.transcript.length === 0 && !allowEmpty) return;
     const cwd = this.workspaceCwd();
     if (!cwd) return;
 
@@ -1414,6 +1417,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     includeActiveFile = true,
     modeValue: unknown = "default"
   ): Promise<void> {
+    if (this.restoringCheckpoint) return;
     const trimmed = text.trim();
     // Same rule the composer applies: chips that have already gone are not on
     // their own a message. A command reaching here always brings text.
@@ -1533,6 +1537,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
   }
 
   async newSession(): Promise<void> {
+    if (this.restoringCheckpoint) return;
     this.cancelPendingPermissions();
     // Keep what is on screen before it is thrown away. This used to lose the
     // conversation outright.
@@ -1692,6 +1697,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 
   /** Offer the turns `/rewind` can go back to. */
   private async offerRewind(): Promise<void> {
+    if (this.session.currentStatus !== "ready" || this.restoringCheckpoint) return;
+    if (this.chatSessionId && this.chatSessionId !== this.session.currentSessionId) return;
     this.post({ type: "commandRunning", label: "/rewind" });
     try {
       const turns = await this.session.rewindTurns();
@@ -1715,12 +1722,22 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
    * the same wrong-session bug `openChat` guards against from the other end.
    */
   private async rewindTo(logIndex: number, keptTurns: number): Promise<void> {
+    if (this.restoringCheckpoint || this.session.currentStatus !== "ready") return;
+    if (this.chatSessionId && this.chatSessionId !== this.session.currentSessionId) return;
+    this.restoringCheckpoint = true;
     this.post({ type: "commandRunning", label: "/rewind" });
     try {
+      // Resolve against the live log; old picker cards and client counts are not authoritative.
+      const turns = await this.session.rewindTurns();
+      const index = turns.findIndex((turn) => turn.logIndex === logIndex);
+      if (index < 0) throw new Error("This checkpoint is no longer available. Open Restore checkpoint again.");
+      keptTurns = turnsKeptByRewind(turns.length, index);
       const forked = await this.session.rewindTo(logIndex);
       this.chatSessionId = forked;
-      this.post({ type: "rewound", keptTurns });
-      this.saveCurrentChat();
+      this.transcript = removeLatestTurns(this.transcript, index);
+      this.saveCurrentChat(true);
+      this.flushChats();
+      this.post({ type: "rewound", keptTurns, history: this.transcript });
     } catch (error) {
       this.post({
         type: "commandResult",
@@ -1728,6 +1745,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         ok: false,
         text: error instanceof Error ? error.message : String(error),
       });
+    } finally {
+      this.restoringCheckpoint = false;
     }
   }
 
@@ -1862,6 +1881,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     <div id="usage-panel" class="usage-panel" hidden></div>
   </div>
 
+  <div class="checkpoint-toolbar"><button id="restore-checkpoint" type="button" title="Keep an earlier question and answer, and remove later conversation context">Restore checkpoint</button></div>
   <div id="messages" class="messages" role="log" aria-live="polite">
     <div class="empty">
       <p>Ask Kiro about your code.</p>
