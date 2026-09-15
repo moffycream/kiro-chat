@@ -2,9 +2,8 @@
 
 ## 0.38.5
 
-- Renamed back to **Kiro Chat**. The extension ID stays
-  `moffycream.kiro-agent-chat`, so this arrives as an update to the existing
-  install. Settings and commands are unchanged.
+- Maintenance release: the automated build now runs on Node 24 and passes on
+  GitHub's Windows runners. Nothing about how the extension behaves has changed.
 
 ## 0.38.4
 
