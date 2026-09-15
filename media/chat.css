@@ -1432,9 +1432,16 @@ button:disabled {
 }
 
 .usage-text {
-  flex: 0 0 auto;
+  /* Let the credits/context label fit narrow sidebars without page overflow. */
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
   font-size: 0.8em;
   color: var(--vscode-descriptionForeground);
+}
+
+.usage-bar > .caret {
+  flex: 0 0 auto;
 }
 
 .msg.note {

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.38.3
+
+- Fixed horizontal overflow in narrow chat sidebars when the credits/context
+  label is long. The label now wraps to fit the panel, and the usage dropdown
+  arrow stays visible.
+
 ## 0.38.2
 
 - **Restore checkpoint** is available above the messages. Choose the last
