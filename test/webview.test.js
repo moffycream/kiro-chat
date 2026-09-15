@@ -1677,7 +1677,10 @@ test("the mode picker carries the workflow, the supervision and what is sent", (
  */
 test("the session's numbers end with the session; the account's do not", () => {
   const session = fs.readFileSync(path.join(root, "src", "kiroSession.ts"), "utf8");
-  for (const method of ["async newSession()", "async loadSession(sessionId: string)"]) {
+  for (const method of [
+    "async newSession(options: { restart?: boolean } = {})",
+    "async loadSession(sessionId: string)",
+  ]) {
     const at = session.indexOf(method);
     assert.ok(at > -1, `${method} should exist`);
     const body = session.slice(at, session.indexOf("\n  }", at));
@@ -2034,7 +2037,7 @@ test("starting a new chat keeps the old one", () => {
   assert.match(body, /this\.transcript = \[\]/, "and start with an empty transcript");
 
   for (const [name, start] of [
-    ["the + button", "async newSession()"],
+    ["the + button", "async newSession(options: { restart?: boolean } = {})"],
     ["Try again on the setup screen", 'case "retry"'],
     ["a panel rebuilt blank", "if (this.everConnected) {"],
   ]) {
@@ -2043,6 +2046,55 @@ test("starting a new chat keeps the old one", () => {
       region.slice(0, 500),
       /beginFreshChat\(\)/,
       `${name} must archive the chat it is replacing`
+    );
+  }
+});
+
+/**
+ * A page restored after a window reload or a VS Code restart is not a panel
+ * move. Webview state survives both; the extension host does not, so the page
+ * came back showing a conversation while the host held a brand-new chat id and
+ * no session. The next message started a Kiro session that had never seen the
+ * transcript on screen, and saved that transcript under a new record — so
+ * every restart copied the previous chat into the next one, and the model was
+ * answering without the context the panel showed.
+ */
+test("a page restored by a new extension host reopens its chat", () => {
+  const save = sliceFrom(js, "function saveState(report)");
+  assert.match(
+    save.slice(0, save.indexOf("if (report === false)")),
+    /chatId,/,
+    "the chat id must be kept in webview state beside the transcript"
+  );
+  assert.match(
+    js,
+    /postMessage\(\{ type: "ready", restored, chatId \}\)/,
+    "and handed back on ready"
+  );
+  const idCase = sliceFrom(js, 'case "chatId":');
+  assert.doesNotMatch(
+    idCase.slice(0, idCase.indexOf("break;")),
+    /saveState/,
+    "the id must not be saved ahead of the transcript it belongs to"
+  );
+
+  assert.match(provider, /message\.chatId/, "the provider must read it");
+  const ready = sliceFrom(provider, "private async onWebviewReady");
+  const body = ready.slice(0, ready.indexOf("\n  private "));
+  assert.match(
+    body,
+    /if \(restored && pageChatId === this\.chatId\)/,
+    "leaving the session alone is only right for the chat this host holds"
+  );
+  assert.match(body, /await this\.openChat\(record\.id\)/, "a stored chat must be reopened");
+  assert.match(body, /type: "cleared"/, "and one with no record must not stay on screen");
+
+  for (const start of ["private beginFreshChat()", "private async openChat("]) {
+    const fn = sliceFrom(provider, start);
+    assert.match(
+      fn.slice(0, fn.indexOf("\n  private ")),
+      /this\.postChatId\(\)/,
+      `${start} must tell the page which chat it now shows`
     );
   }
 });

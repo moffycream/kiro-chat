@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.38.6
+
+- Fixed chats being copied into the next one after VS Code restarted or the
+  window reloaded. The panel came back showing the last conversation, but the
+  next message started a new Kiro conversation that had never seen it, and the
+  old messages were saved again at the top of the new chat. The panel now
+  reopens the chat it was showing, so Kiro picks up where it left off; if Kiro
+  can no longer load it, the chat is marked read-only instead.
+- Kiro no longer collects empty conversations. Opening the panel, starting a
+  new chat and reopening an old one each used to leave an unused session on
+  disk; a new chat now reuses one nothing was said into, reopening a chat no
+  longer creates one, and any left over are handed back to Kiro with its own
+  delete command. Sessions holding a conversation are never touched, and
+  **Restart Kiro** still genuinely restarts the agent.
+
 ## 0.38.5
 
 - Maintenance release: the automated build now runs on Node 24 and passes on

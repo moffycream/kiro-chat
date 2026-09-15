@@ -858,6 +858,54 @@ the *previous* chat's. Reopening it after that resumed the wrong conversation. T
 provider guards the same thing from its end: `chatSessionId` is pinned from the record
 before the post, and `saveCurrentChat` prefers it over the live session.
 
+**`restored` is only a panel move when the page's `chatId` is the host's.** Webview state
+survives a window reload and a VS Code restart; the extension host does not. So after
+either, the page came back showing yesterday's conversation while the provider held a
+brand-new `chatId` and no session, took the `restored` branch and left it alone — and the
+next message started a Kiro session that had never seen the transcript on screen, saved
+beside it under a new record. Every restart copied the previous chat into the next one,
+and the model answered without the context the panel showed. The page now keeps `chatId`
+in state and hands it back on `ready`; a mismatch reopens that record through `openChat`
+(so a failed load is read-only, not silently a new conversation), and no record at all
+clears the page. The `chatId` case deliberately does not save state: it arrives just ahead
+of the `cleared` / `openChat` that swaps the transcript, and saving the new id beside the
+old transcript would recreate the mismatch the id exists to detect.
+
+**`session/new` writes a conversation to disk, so it is not free.** Measured against
+kiro-cli 2.21 by driving `kiro-cli acp`: the call creates `<id>.json` and a zero-byte
+`<id>.jsonl` immediately, and a normal exit leaves both behind — only the `.lock` goes.
+The panel called it on every connection, so opening the panel, pressing `+`, and reopening
+any past chat each left an empty conversation beside the real ones; one machine had forty.
+Three things now keep them from being made, and all three depend on the same measurement:
+
+- **`connect()` and `createSession()` are separate, and a load only connects.**
+  `session/load` in a freshly started process answers with the same model block and the
+  same `_kiro.dev/commands/available` a new session does, so nothing is lost by not having
+  one. `ensureReady` goes *through* `connect()` rather than around it, or a send arriving
+  during a load starts a second Kiro and stops the client the load is using.
+- **`+` on a session nothing was said into hands the same one back.** It already is a new
+  conversation. `kiroChat.restart` passes `restart: true` to opt out, because it tells the
+  user the agent was restarted and that is the escape hatch when Kiro wedges.
+- **The rest are handed back through `kiro-cli chat --delete-session <id>`**, Kiro's own
+  command, because Kiro keeps two stores and only it knows about both. `--session-source v2`
+  names the one ACP writes; without it the delete also searches the older sqlite store and
+  takes 20-30 seconds instead of 2.
+
+**Nothing is deleted on the strength of the list.** `unusedSessions.ts` (free of `vscode`)
+keeps ids in `globalState` because the commonest empty session outlives the window that
+made it — open the panel, close VS Code — but two windows share that storage and either can
+lose the other's removal. So `isEmptySession` re-proves it against the conversation log
+itself, which Kiro appends a line to per turn: zero bytes, or no delete. Unreadable and
+missing both answer false, for the reason `isStaleLock` refuses by default. A prompt and a
+stored chat record each call `retainSession`, the second because a chat can be worth
+reopening with no prompt in it — a `/help` card is answered in the webview — and a record
+pointing at a deleted session opens read-only with nothing to explain why. Kiro refuses to
+delete a session a live process holds, which is what another window's open panel looks
+like; that answer is `busy` and is kept for next time, while anything else is dropped so an
+older Kiro without the flag is not asked once per start forever. Kiro inside WSL is never
+tidied at all: its sessions live in the WSL home directory, so the emptiness check cannot
+be made and the gate has nothing to stand on.
+
 **Three paths begin a chat and all three go through `beginFreshChat()`** — the `+` button,
 `retry` on the setup screen, and `onWebviewReady` with a blank panel. It archives the
 outgoing chat, rotates `chatId`, and clears the transcript. The last two used to do none

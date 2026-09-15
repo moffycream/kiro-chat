@@ -31,7 +31,9 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand("kiroChat.stop", () => provider.stop()),
 
     vscode.commands.registerCommand("kiroChat.restart", async () => {
-      await provider.newSession();
+      // Says the agent was restarted, so it has to be: a new chat may reuse a
+      // session nothing was said into, and that leaves the process running.
+      await provider.newSession({ restart: true });
       vscode.window.showInformationMessage("Kiro Chat: agent restarted.");
     }),
 

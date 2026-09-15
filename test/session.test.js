@@ -340,3 +340,76 @@ test("no options at all cancels rather than inventing an answer", async () => {
   const answer = await session.askPermission({ toolCall: {}, options: [] });
   assert.equal(answer.outcome.outcome, "cancelled");
 });
+
+/**
+ * The body of one method, cut at the next thing declared beside it. Slicing a
+ * fixed number of characters instead breaks the day a comment is added above
+ * the line the test cares about.
+ */
+function sliceFrom(source, marker) {
+  const start = source.indexOf(marker);
+  assert.notEqual(start, -1, `expected to find ${marker}`);
+  const rest = source.slice(start + marker.length);
+  const next = rest.search(/\n {2}(?:private|public|async|get |\/\*\*)/);
+  return next === -1 ? rest : rest.slice(0, next);
+}
+
+/*
+ * `session/new` writes a conversation to disk the moment it is called —
+ * measured against kiro-cli 2.21 — so the panel used to leave an empty one
+ * behind every time it connected: on opening, on `+`, and before every load.
+ * Loading needs no conversation of its own (a load in a freshly started
+ * process answers with the same model block and the same commands), and `+`
+ * on a session nothing was said into is already a new chat.
+ */
+test("connecting and starting a conversation are separate", () => {
+  const connect = sliceFrom(session, "private async connect()");
+  assert.doesNotMatch(connect, /session\/new/, "connecting must not start a conversation");
+
+  const load = sliceFrom(session, "async loadSession(sessionId: string)");
+  assert.match(load, /await this\.connect\(\)/, "a load connects");
+  assert.doesNotMatch(load, /ensureReady\(\)/, "and must not go the route that creates one");
+
+  const ready = sliceFrom(session, "async ensureReady()");
+  assert.match(ready, /createSession\(\)/, "sending still needs a conversation to send into");
+});
+
+/*
+ * The title bar's restart says the agent was restarted, so it has to have
+ * been. Reuse would answer it with the same process.
+ */
+test("a new chat reuses an untouched session, but a restart never does", () => {
+  const fresh = sliceFrom(session, "async newSession(");
+  assert.match(fresh, /!options\.restart/, "restart must opt out of reuse");
+  assert.match(fresh, /this\.unspoken\.has\(this\.sessionId\)/, "reuse needs an unused session");
+  assert.match(
+    fs.readFileSync(path.join(__dirname, "..", "src", "extension.ts"), "utf8"),
+    /newSession\(\{ restart: true \}\)/,
+    "the restart command must ask for a real restart"
+  );
+});
+
+/*
+ * Deleting a conversation somebody wanted is the only serious failure here, so
+ * the stored list is never the authority: the log on disk is checked every
+ * time, and a prompt or a stored chat record takes a session off the list for
+ * good.
+ */
+test("a session is only tidied away while nothing has claimed it", () => {
+  const tidy = sliceFrom(session, "private async tidyUnusedSessions()");
+  assert.match(tidy, /isEmptySession\(id\)/, "emptiness is proved, not remembered");
+  assert.match(tidy, /=== "busy"/, "a session another window holds is kept for later");
+
+  const send = sliceFrom(session, "async send(");
+  assert.match(send, /this\.retainSession\(this\.sessionId\)/, "a prompt claims the session");
+
+  const provider = fs.readFileSync(
+    path.join(__dirname, "..", "src", "chatViewProvider.ts"),
+    "utf8"
+  );
+  assert.match(
+    provider,
+    /this\.session\.retainSession\(record\.sessionId\)/,
+    "and so does writing a chat record against it"
+  );
+});

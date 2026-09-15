@@ -3,7 +3,8 @@ import * as os from "node:os";
 import * as path from "node:path";
 import * as fsSync from "node:fs";
 import * as fs from "node:fs/promises";
-import { AcpClient, acpArgs } from "./acpClient";
+import { spawn } from "node:child_process";
+import { AcpClient, acpArgs, needsShell, quote } from "./acpClient";
 import { ActiveReviewInfo, ChangeReviewer } from "./changeReviewer";
 import { isReadOnlyTool, isWriteLikeTool } from "./writeTools";
 import { changedSinceBaseline, describeChange, TurnChange } from "./turnChanges";
@@ -12,6 +13,17 @@ import { isInsideAnyRoot, isInsideRoot } from "./workspacePaths";
 import { isStaleLock, lockedPidFrom, parseSessionLock, sessionLockPath } from "./sessionLocks";
 import { lookupProcess } from "./processFacts";
 import { looksLikeSignIn } from "./startupError";
+import {
+  DeleteOutcome,
+  deleteSessionArgs,
+  forgetUnused,
+  isEmptySession,
+  isSessionId,
+  MAX_PER_SWEEP,
+  readDeleteOutcome,
+  rememberUnused,
+  UNUSED_SESSIONS_KEY,
+} from "./unusedSessions";
 import {
   parseAvailableCommands,
   parseRewindTurns,
@@ -281,8 +293,21 @@ function normaliseKind(kind: unknown): string {
 
 export class KiroSession {
   private client: AcpClient | undefined;
+  /** The client that finished `initialize`, so a half-started one is not reused. */
+  private connected: AcpClient | undefined;
   private sessionId: string | undefined;
   private starting: Promise<void> | undefined;
+  private connecting: Promise<void> | undefined;
+  /** How Kiro is reached, kept so `chat --delete-session` can be run the same way. */
+  private launch: { command: string; launchArgs: string[] } | undefined;
+  /** False for Kiro inside WSL, whose session files this side cannot read. */
+  private canTidySessions = true;
+  /**
+   * Sessions this window created that nothing has been said into. In memory,
+   * and only ever about the current window: it decides whether `+` can reuse
+   * the conversation on screen. The durable half lives in `globalState`.
+   */
+  private readonly unspoken = new Set<string>();
   private status: SessionStatus = "stopped";
   /**
    * What every finished turn in this conversation has cost, added up.
@@ -407,7 +432,13 @@ export class KiroSession {
 
   constructor(
     private readonly output: vscode.OutputChannel,
-    private readonly events: SessionEvents
+    private readonly events: SessionEvents,
+    /**
+     * Where the empty sessions are remembered between windows. Optional so a
+     * test, or any caller that does not care, can leave it out — without it
+     * nothing is tidied, which is what this did before.
+     */
+    private readonly store?: vscode.Memento
   ) {
     this.changeReviewer = new ChangeReviewer(output);
     // The chat mirrors the diff: while a review is open it can accept or
@@ -486,8 +517,11 @@ export class KiroSession {
    * swallowed until it returns.
    */
   async loadSession(sessionId: string): Promise<void> {
-    await this.ensureReady();
+    // Connect, but do not start a conversation: this one is about to be
+    // loaded, and `session/new` would write an empty one to disk for nothing.
+    await this.connect();
     if (!this.client?.isRunning) throw new Error("Kiro is not connected.");
+    const leaving = this.sessionId;
 
     this.replaying = true;
     try {
@@ -516,6 +550,10 @@ export class KiroSession {
         result = await load();
       }
       this.sessionId = sessionId;
+      // Whatever we were in is not coming back. If nothing was said into it,
+      // it stays on the list and is tidied away at the next connection — it
+      // cannot be deleted now, because this process still holds it open.
+      if (leaving) this.unspoken.delete(leaving);
       /*
        * A different conversation, so this one's meter is not ours.
        *
@@ -643,10 +681,36 @@ export class KiroSession {
   async ensureReady(): Promise<void> {
     if (this.client?.isRunning && this.sessionId) return;
     if (this.starting) return this.starting;
-    this.starting = this.startInternal().finally(() => {
-      this.starting = undefined;
-    });
+    // Through `connect`, not around it: a load already on its way to the same
+    // process shares this one. Starting Kiro again from here would stop the
+    // client that load was using, half way through it.
+    this.starting = this.connect()
+      .then(() => {
+        if (!this.sessionId) return this.createSession();
+      })
+      .finally(() => {
+        this.starting = undefined;
+      });
     return this.starting;
+  }
+
+  /**
+   * Kiro running and initialised, with no conversation started.
+   *
+   * Split out of `ensureReady` because `session/new` writes a conversation to
+   * disk the moment it is called, and a load does not need one: `session/load`
+   * in a freshly started process answers with the same model block and the
+   * same `commands/available` notification a new session does — measured
+   * against kiro-cli 2.21. Connecting and then loading used to leave an empty
+   * conversation behind every time a past chat was reopened.
+   */
+  private async connect(): Promise<void> {
+    if (this.client?.isRunning && this.connected === this.client) return;
+    if (this.connecting) return this.connecting;
+    this.connecting = this.startInternal().finally(() => {
+      this.connecting = undefined;
+    });
+    return this.connecting;
   }
 
   private async startInternal(): Promise<void> {
@@ -673,7 +737,12 @@ export class KiroSession {
       }
       command = found.command;
       launchArgs = found.extraArgs;
+      // Kiro inside WSL keeps its sessions in the WSL home directory, which
+      // this side cannot read — and the emptiness check is what makes a delete
+      // safe, so that install never gets one.
+      this.canTidySessions = found.source !== "WSL";
     }
+    this.launch = { command, launchArgs };
 
     this.client?.stop();
     this.client = new AcpClient({
@@ -685,11 +754,16 @@ export class KiroSession {
       onNotification: (method, params) => this.handleNotification(method, params),
       onRequest: (method, params) => this.handleRequest(method, params),
       onExit: () => {
+        // Only for the client still in service. A stopped one exits after its
+        // replacement has been built, and used to clear the new session's id.
+        if (this.client !== client) return;
         this.sessionId = undefined;
+        this.connected = undefined;
         this.setStatus("stopped");
       },
     });
-    this.client.start();
+    const client = this.client;
+    client.start();
 
     try {
       const init = await this.client.request("initialize", {
@@ -710,16 +784,48 @@ export class KiroSession {
       this.output.appendLine(`Images accepted in prompts: ${this.supportsImages}`);
       this.events.onCapabilities({ image: this.supportsImages });
 
+      this.connected = this.client;
+      // The empty conversations left by earlier runs, now that there is a
+      // binary to ask. Never awaited: nothing here is waiting on the answer.
+      void this.tidyUnusedSessions();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.setStatus("stopped");
+      this.output.appendLine(`Failed to start "${command}": ${message}`);
+      // Only blame the login when the error actually says so. This used to
+      // report "signin" for every failure in here — a dropped pipe, a slow
+      // spawn, a missing session id — which sent people off to log in again
+      // when they were already signed in and hid what really broke.
+      this.events.onNeedsSetup(looksLikeSignIn(message) ? "signin" : "failed", message);
+      throw err;
+    }
+  }
+
+  /**
+   * Start the conversation Kiro will answer in.
+   *
+   * Separate from connecting because this is the call that writes to disk, and
+   * because its failures are the same shape as a failed handshake: the panel
+   * needs the setup screen either way, and blaming the login only when the
+   * message says so.
+   */
+  private async createSession(): Promise<void> {
+    if (!this.client?.isRunning) throw new Error("Kiro is not connected.");
+    try {
       const session = await this.client.request("session/new", {
         cwd: this.workspaceRoot(),
         mcpServers: [],
       });
       this.sessionId = session?.sessionId ?? session?.id;
       if (!this.sessionId) throw new Error("Kiro did not return a session id.");
+      // Nothing has been said into it yet, so it is a candidate for reuse and,
+      // if the window closes first, for tidying away.
+      this.noteSessionCreated(this.sessionId);
 
       this.readModels(session);
       this.setStatus("ready");
 
+      const config = vscode.workspace.getConfiguration("kiroChat");
       const saved = config.get<string>("model", "").trim();
       if (saved && saved !== this.currentModelId) {
         void this.setModel(saved, false);
@@ -730,11 +836,7 @@ export class KiroSession {
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       this.setStatus("stopped");
-      this.output.appendLine(`Failed to start "${command}": ${message}`);
-      // Only blame the login when the error actually says so. This used to
-      // report "signin" for every failure in here — a dropped pipe, a slow
-      // spawn, a missing session id — which sent people off to log in again
-      // when they were already signed in and hid what really broke.
+      this.output.appendLine(`Could not start a conversation: ${message}`);
       this.events.onNeedsSetup(looksLikeSignIn(message) ? "signin" : "failed", message);
       throw err;
     }
@@ -757,6 +859,8 @@ export class KiroSession {
     }
     await this.ensureReady();
     if (!this.client || !this.sessionId) return;
+    // Something is being said into it, so it is a conversation now.
+    this.retainSession(this.sessionId);
 
     const usable = this.supportsImages ? blocks : blocks.filter((b) => b.type !== "image");
     if (usable.length !== blocks.length) {
@@ -931,6 +1035,103 @@ export class KiroSession {
     return snapshot;
   }
 
+  /**
+   * A conversation Kiro has just opened and nobody has used.
+   *
+   * Recorded in two places on purpose. The set answers "may `+` hand this
+   * same session back", which is only ever about this window. The stored list
+   * outlives the window, because the commonest way to make an empty session is
+   * to open the panel and then close VS Code — by the time anything could tidy
+   * it, the process that knew about it is gone.
+   */
+  private noteSessionCreated(sessionId: string): void {
+    if (!isSessionId(sessionId) || !this.canTidySessions) return;
+    this.unspoken.add(sessionId);
+    void this.store?.update(UNUSED_SESSIONS_KEY, rememberUnused(this.storedUnused(), sessionId));
+  }
+
+  /**
+   * This session is somebody's conversation now — leave it alone for good.
+   *
+   * Called when a prompt goes out, and by the panel whenever a chat record is
+   * written against it. The second one matters because a chat can hold
+   * something worth reopening without a prompt ever being sent: a `/help` card
+   * is answered in the webview, and a record pointing at a deleted session
+   * would open read-only with no way to say why.
+   */
+  retainSession(sessionId: string | undefined): void {
+    if (!sessionId || !this.unspoken.has(sessionId)) return;
+    this.unspoken.delete(sessionId);
+    void this.store?.update(UNUSED_SESSIONS_KEY, forgetUnused(this.storedUnused(), sessionId));
+  }
+
+  private storedUnused(): string[] {
+    return this.store?.get<string[]>(UNUSED_SESSIONS_KEY, []) ?? [];
+  }
+
+  /**
+   * Hand the empty ones back to Kiro.
+   *
+   * Runs once per connection, against the list as it stands, and each delete
+   * is gated on the conversation log actually being empty — the list is a
+   * hint, and two windows sharing one `globalState` can lose an entry's
+   * removal. `busy` means another window still has it open, which is not a
+   * failure and is kept for next time; everything else is dropped rather than
+   * asked again forever, because an older Kiro without the flag would answer
+   * the same way every start.
+   */
+  private async tidyUnusedSessions(): Promise<void> {
+    if (!this.canTidySessions || !this.store || !this.launch) return;
+    const candidates = this.storedUnused()
+      .filter((id) => id !== this.sessionId && !this.unspoken.has(id))
+      .slice(0, MAX_PER_SWEEP);
+    if (candidates.length === 0) return;
+
+    let list = this.storedUnused();
+    for (const id of candidates) {
+      if (!isEmptySession(id)) {
+        // Something was said into it after all, or it is already gone.
+        list = forgetUnused(list, id);
+        continue;
+      }
+      const outcome = await this.deleteSession(id);
+      if (outcome === "busy") continue;
+      list = forgetUnused(list, id);
+    }
+    await this.store.update(UNUSED_SESSIONS_KEY, list);
+  }
+
+  /** One `kiro-cli chat --delete-session`, and what it answered. */
+  private deleteSession(sessionId: string): Promise<DeleteOutcome> {
+    const launch = this.launch;
+    if (!launch) return Promise.resolve<DeleteOutcome>("failed");
+    const args = deleteSessionArgs(launch.launchArgs, sessionId);
+    return new Promise<DeleteOutcome>((resolve) => {
+      const viaShell = needsShell(launch.command);
+      const child = spawn(
+        viaShell ? [launch.command, ...args].map(quote).join(" ") : launch.command,
+        viaShell ? [] : args,
+        { shell: viaShell, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] }
+      );
+      let output = "";
+      child.stdout?.on("data", (chunk) => (output += chunk));
+      child.stderr?.on("data", (chunk) => (output += chunk));
+      child.on("error", (err) => {
+        this.output.appendLine(`Could not tidy session ${sessionId}: ${err.message}`);
+        resolve("failed");
+      });
+      child.on("exit", (code) => {
+        const outcome = readDeleteOutcome(code, output);
+        this.output.appendLine(
+          outcome === "deleted"
+            ? `Removed the empty session ${sessionId}.`
+            : `Left the empty session ${sessionId} alone (${outcome}): ${output.trim()}`
+        );
+        resolve(outcome);
+      });
+    });
+  }
+
   cancel(): void {
     this.turnCancelled = true;
     this.changeReviewer.cancelPending();
@@ -940,10 +1141,37 @@ export class KiroSession {
     }
   }
 
-  async newSession(): Promise<void> {
+  /**
+   * A new conversation.
+   *
+   * A session nothing was ever said into *is* a new conversation, so it is
+   * handed straight back rather than replaced — otherwise pressing `+` twice
+   * leaves two empty conversations on disk and restarts Kiro for nothing.
+   * `restart: true` is the title bar's command, which promises an agent that
+   * has actually been restarted; that is the escape hatch when Kiro wedges, so
+   * it must never be answered with the same process.
+   */
+  async newSession(options: { restart?: boolean } = {}): Promise<void> {
     this.turnCancelled = true;
     this.changeReviewer.cancelPending();
     this.cancelQueuedPermissions();
+
+    if (
+      !options.restart &&
+      this.client?.isRunning &&
+      this.sessionId &&
+      this.unspoken.has(this.sessionId)
+    ) {
+      this.completedCredits = 0;
+      this.currentTurnCredits = undefined;
+      this.awaitingTurnCredits = false;
+      this.usage = clearSessionUsage(this.usage);
+      this.events.onUsage({ ...this.usage });
+      this.output.appendLine(`Reusing the empty session ${this.sessionId} for the new chat.`);
+      this.setStatus("ready");
+      return;
+    }
+
     this.sessionId = undefined;
     this.client?.stop();
     this.client = undefined;

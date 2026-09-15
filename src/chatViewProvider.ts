@@ -199,28 +199,34 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       onState: (state, detail) => this.onSetupState(state, detail),
     });
 
-    this.session = new KiroSession(output, {
-      onStatus: (status, detail) => this.post({ type: "status", status, detail }),
-      onText: (text) => this.post({ type: "chunk", text }),
-      onThought: (text) => this.post({ type: "thought", text }),
-      onTool: (tool) => this.post({ type: "tool", tool }),
-      onTurnEnd: (reason) => this.post({ type: "turnEnd", reason }),
-      onError: (message) => this.post({ type: "error", text: message }),
-      onNeedsSetup: (reason) => this.onNeedsSetup(reason),
-      onModels: (models, currentModelId) =>
-        this.post({ type: "models", models, currentModelId }),
-      onCommands: (commands) => this.postCommands(commands),
-      onUsage: (usage) => this.post({ type: "usage", usage }),
-      // The cost of the turn, for the bubble it paid for. The strip above
-      // carries the running total for the chat, which answers how much has
-      // been spent and not what that answer cost.
-      onTurnCredits: (turn) =>
-        this.post({ type: "turnCredits", credits: turn.credits, model: turn.model }),
-      onCapabilities: (caps) => this.post({ type: "capabilities", caps }),
-      onPermission: (request) => this.requestPermissionInChat(request),
-      onReviewActive: (info) => this.post({ type: "reviewActive", review: info }),
-      onTurnChanges: (summary) => this.post({ type: "turnChanges", ...summary }),
-    });
+    this.session = new KiroSession(
+      output,
+      {
+        onStatus: (status, detail) => this.post({ type: "status", status, detail }),
+        onText: (text) => this.post({ type: "chunk", text }),
+        onThought: (text) => this.post({ type: "thought", text }),
+        onTool: (tool) => this.post({ type: "tool", tool }),
+        onTurnEnd: (reason) => this.post({ type: "turnEnd", reason }),
+        onError: (message) => this.post({ type: "error", text: message }),
+        onNeedsSetup: (reason) => this.onNeedsSetup(reason),
+        onModels: (models, currentModelId) =>
+          this.post({ type: "models", models, currentModelId }),
+        onCommands: (commands) => this.postCommands(commands),
+        onUsage: (usage) => this.post({ type: "usage", usage }),
+        // The cost of the turn, for the bubble it paid for. The strip above
+        // carries the running total for the chat, which answers how much has
+        // been spent and not what that answer cost.
+        onTurnCredits: (turn) =>
+          this.post({ type: "turnCredits", credits: turn.credits, model: turn.model }),
+        onCapabilities: (caps) => this.post({ type: "capabilities", caps }),
+        onPermission: (request) => this.requestPermissionInChat(request),
+        onReviewActive: (info) => this.post({ type: "reviewActive", review: info }),
+        onTurnChanges: (summary) => this.post({ type: "turnChanges", ...summary }),
+      },
+      // Empty sessions outlive the window that made them, so the list of them
+      // has to as well.
+      store
+    );
 
     // Track where the user is working, so the chip stays current.
     this.watchers.push(
@@ -259,7 +265,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       if (this.restoringCheckpoint && message.type !== "ready") return;
       switch (message?.type) {
         case "ready":
-          await this.onWebviewReady(Boolean(message.restored));
+          await this.onWebviewReady(
+            Boolean(message.restored),
+            typeof message.chatId === "string" ? message.chatId : undefined
+          );
           break;
         case "send":
           await this.send(
@@ -599,6 +608,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       truncated: this.transcriptTruncated,
     };
 
+    // Something in the history now points at this session, so it is no longer
+    // one of the empty ones that may be tidied away. A chat can be worth
+    // reopening without a prompt ever being sent — a `/help` card is answered
+    // in the webview — and a record whose session had been deleted would open
+    // read-only with nothing to explain why.
+    this.session.retainSession(record.sessionId);
+
     this.pendingChat = record;
     this.scheduleFlush();
   }
@@ -612,6 +628,18 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     this.chatSessionId = undefined;
     this.transcript = [];
     this.transcriptTruncated = false;
+    this.postChatId();
+  }
+
+  /**
+   * Tell the page which chat it is drawing, so a page rebuilt by a *new*
+   * extension host can say. Without it the page restores a transcript that
+   * this host has no record of, and the next message was saved — beside that
+   * transcript — under a fresh chat and a fresh Kiro session that had never
+   * seen any of it.
+   */
+  private postChatId(): void {
+    this.post({ type: "chatId", id: this.chatId });
   }
 
   /** Send the list the webview draws. Only this folder's chats. */
@@ -668,6 +696,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     this.transcriptTruncated = record.truncated === true;
     this.attachments = [];
     this.postAttachments();
+    this.postChatId();
     this.post({
       type: "openChat",
       history: this.transcript,
@@ -707,6 +736,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       this.chatSessionId = undefined;
       this.transcript = [];
       this.transcriptTruncated = false;
+      this.postChatId();
       this.post({ type: "cleared" });
     }
     this.postHistory();
@@ -776,8 +806,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
    * the view is dragged to another part of the window, which throws away the
    * page. If it restored a transcript we leave the session alone; if it came
    * up blank we hand the user a fresh chat, connected and ready.
+   *
+   * "Restored" only means the session can be left alone when the restored
+   * chat is the one this extension host is holding. Webview state outlives a
+   * window reload and a VS Code restart; the host does not, so after either
+   * the page comes back showing a conversation while `chatId` is brand new and
+   * no session is bound. `chatId` is what tells the two apart.
    */
-  private async onWebviewReady(restored: boolean): Promise<void> {
+  private async onWebviewReady(restored: boolean, pageChatId?: string): Promise<void> {
     this.refreshSelection(true);
     this.postAttachments();
     // A question Kiro is still waiting on outlived the panel being rebuilt,
@@ -796,7 +832,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     this.postCommands(this.session.availableCommands);
     this.postSettings();
 
-    if (restored) {
+    if (restored && pageChatId === this.chatId) {
       const usage = this.session.getUsage();
       if (Object.keys(usage).length > 0) {
         this.post({ type: "usage", usage });
@@ -805,11 +841,32 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       return;
     }
 
+    if (restored) {
+      /*
+       * The page is showing a chat this host is not holding. Reopen it the way
+       * the history list does, so Kiro loads the conversation the page shows —
+       * or, if it cannot, the chat says it is read-only rather than quietly
+       * continuing in a session that never saw it.
+       */
+      const record = pageChatId
+        ? this.allChats().find((r) => r.id === pageChatId)
+        : undefined;
+      if (record) {
+        await this.openChat(record.id);
+        return;
+      }
+      // Nothing to bind it to — a page saved before chat ids were kept, or a
+      // chat since deleted. It is still in the history list if it was stored;
+      // it must not stay on screen looking like the live conversation.
+      this.post({ type: "cleared" });
+    }
+
     // Blank panel. Make Kiro's memory match what the user is looking at —
     // and our bookkeeping too, or the new conversation is saved over the one
     // the panel was showing before it was rebuilt.
     this.attachments = [];
     this.postAttachments();
+    this.postChatId();
     try {
       if (this.everConnected) {
         this.beginFreshChat();
@@ -1536,7 +1593,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     this.session.cancel();
   }
 
-  async newSession(): Promise<void> {
+  async newSession(options: { restart?: boolean } = {}): Promise<void> {
     if (this.restoringCheckpoint) return;
     this.cancelPendingPermissions();
     // Keep what is on screen before it is thrown away. This used to lose the
@@ -1546,7 +1603,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     this.attachments = [];
     this.post({ type: "cleared" });
     this.postAttachments();
-    await this.session.newSession();
+    await this.session.newSession(options);
   }
 
   async addFilesFromCommand(uris: vscode.Uri[]): Promise<void> {

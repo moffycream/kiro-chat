@@ -128,6 +128,13 @@
   const MAX_HISTORY = 120;
   /** True once the chat is longer than we can keep, so the tail is all there is. */
   let historyTruncated = false;
+  /**
+   * The extension's id for the chat on screen. Kept in state beside the
+   * transcript, because state outlives a window reload and the extension host
+   * does not: `ready` hands it back so a new host can tell a chat it is holding
+   * from one it has never heard of.
+   */
+  let chatId = null;
 
   /**
    * `report` is false when the transcript we are holding came *from* the
@@ -142,6 +149,7 @@
       vscode.setState({
         history: history.slice(-MAX_HISTORY),
         historyTruncated,
+        chatId,
         includeSelection,
         mode: currentModeId,
       });
@@ -4535,6 +4543,13 @@
         updateSetup(message.state, message.detail);
         break;
 
+      case "chatId":
+        // Not saved here: it arrives just ahead of the `cleared` or `openChat`
+        // that swaps the transcript, and state holding the new id beside the
+        // old transcript is the mismatch this id exists to catch. Those save.
+        chatId = typeof message.id === "string" ? message.id : null;
+        break;
+
       case "cleared":
         pendingReview = null;
         pendingChanges = null;
@@ -4723,6 +4738,7 @@
   if (Array.isArray(saved.history) && saved.history.length > 0) {
     history = saved.history;
     historyTruncated = saved.historyTruncated === true;
+    chatId = typeof saved.chatId === "string" ? saved.chatId : null;
     // `includeSelection` is not restored: it is the setting's to decide, and
     // the `defaults` message that follows `ready` carries the current value.
     restoreHistory(history);
@@ -4731,5 +4747,5 @@
 
   renderChips();
   renderUsage(usage);
-  vscode.postMessage({ type: "ready", restored });
+  vscode.postMessage({ type: "ready", restored, chatId });
 })();
