@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.38.4
+
+- Prepared for the VS Code Marketplace: published under `moffycream`, with
+  repository links pointing at `github.com/moffycream/kiro-chat`. The package
+  no longer includes internal developer notes or leftover compiled files.
+- New extension icon: a purple ghost on a dark tile.
+- The extension ID is now `moffycream.kiro-chat` (was `local.kiro-chat`).
+  Settings and commands are unchanged.
+
 ## 0.38.3
 
 - Fixed horizontal overflow in narrow chat sidebars when the credits/context

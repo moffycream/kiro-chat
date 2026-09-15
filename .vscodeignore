@@ -9,3 +9,5 @@ out/**/*.map
 tsconfig.json
 install-windows.bat
 *.vsix
+CLAUDE.md
+docs/**

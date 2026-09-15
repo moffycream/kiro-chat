@@ -2,8 +2,8 @@
   "name": "kiro-chat",
   "displayName": "Kiro Chat",
   "description": "Chat with the Kiro agent inside VS Code, like Copilot Chat.",
-  "version": "0.38.3",
-  "publisher": "local",
+  "version": "0.38.4",
+  "publisher": "moffycream",
   "license": "MIT",
   "engines": {
     "vscode": "^1.85.0"
@@ -251,7 +251,7 @@
     "@types/vscode": "^1.85.0",
     "typescript": "^5.4.0"
   },
-  "icon": "media/icon.png",
+  "icon": "media/icon-kiro.png",
   "keywords": [
     "kiro",
     "chat",
@@ -277,10 +277,10 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/kelvinwongsocoe/kiro-chat.git"
+    "url": "https://github.com/moffycream/kiro-chat.git"
   },
   "bugs": {
-    "url": "https://github.com/kelvinwongsocoe/kiro-chat/issues"
+    "url": "https://github.com/moffycream/kiro-chat/issues"
   },
-  "homepage": "https://github.com/kelvinwongsocoe/kiro-chat#readme"
+  "homepage": "https://github.com/moffycream/kiro-chat#readme"
 }
