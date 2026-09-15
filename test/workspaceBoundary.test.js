@@ -38,7 +38,11 @@ function sandbox() {
   // realpath the base itself: on Windows the temp dir is often under a
   // shortened path, and comparing an unresolved root to resolved children
   // would fail for reasons that have nothing to do with what is being tested.
-  const root = fs.realpathSync(base);
+  // It has to be the native realpath, the one realPathOf uses: the JS one
+  // leaves an 8.3 name like RUNNER~1 alone where the native one expands it, so
+  // the two only agree on a machine whose temp path has no short names in it —
+  // which is why this passed locally and failed on the CI runner.
+  const root = fs.realpathSync.native(base);
   return {
     root,
     inside: path.join(root, "workspace"),
@@ -188,9 +192,15 @@ test("a new file under a link that escapes is still refused", (t) => {
 });
 
 /** Nothing on the path exists at all: there is no link to see through. */
+// On a real disk the drive root always exists, so the temp dir used to stand in
+// for "nothing" — and it resolved, expanding any short name in it. A resolver
+// that finds nothing is what this case actually describes.
 test("a path with no existing ancestor resolves to itself", () => {
   const missing = path.join(os.tmpdir(), "kiro-not-here-at-all", "a", "b", "c.ts");
-  assert.equal(realPathOf(missing), path.resolve(missing));
+  const nothingExists = () => {
+    throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
+  };
+  assert.equal(realPathOf(missing, nothingExists), path.resolve(missing));
 });
 
 test("resolution failures do not throw the boundary open", () => {
