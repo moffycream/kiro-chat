@@ -1,13 +1,19 @@
 # Changelog
 
+## 0.38.5
+
+- Renamed back to **Kiro Chat**. The extension ID stays
+  `moffycream.kiro-agent-chat`, so this arrives as an update to the existing
+  install. Settings and commands are unchanged.
+
 ## 0.38.4
 
 - Prepared for the VS Code Marketplace: published under `moffycream`, with
   repository links pointing at `github.com/moffycream/kiro-chat`. The package
   no longer includes internal developer notes or leftover compiled files.
 - New extension icon: a purple ghost on a dark tile.
-- The extension ID is now `moffycream.kiro-chat` (was `local.kiro-chat`).
-  Settings and commands are unchanged.
+- Renamed to **Kiro Agent Chat (Unofficial)**, extension ID
+  `moffycream.kiro-agent-chat`. Settings and commands are unchanged.
 
 ## 0.38.3
 

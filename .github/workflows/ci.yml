@@ -1,7 +1,9 @@
 name: Build
 
-# Compiles, tests and packages on Windows. Nothing is published anywhere.
-# Delete this file if you would rather only ever build on your own machine.
+# Compiles, tests and packages on Windows. A push to main also publishes to the
+# VS Code Marketplace, but only when package.json carries a version the
+# Marketplace does not already have: it refuses a version twice, so an
+# unbumped push builds and stops there. Publishing needs the VSCE_PAT secret.
 on:
   push:
     branches: [main]
@@ -32,3 +34,9 @@ jobs:
           name: kiro-chat-vsix
           path: kiro-chat.vsix
           if-no-files-found: error
+
+      - name: Publish to the Marketplace
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+        run: npx --yes @vscode/vsce publish --packagePath kiro-chat.vsix --skip-duplicate

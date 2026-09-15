@@ -26,7 +26,7 @@ Filter by test name across all files:
 npm run compile && node --test --test-name-pattern="credit rate" "test/*.test.js"
 ```
 
-CI (`.github/workflows/ci.yml`) runs `npm ci`, `npm test`, `npm run package` on `windows-latest` and uploads the `.vsix` as a run artifact. It publishes nothing — this extension is installed from the `.vsix`, never from the Marketplace.
+CI (`.github/workflows/ci.yml`) runs `npm ci`, `npm test`, `npm run package` on `windows-latest` and uploads the `.vsix` as a run artifact. A push to `main` then publishes it to the Marketplace as `moffycream.kiro-agent-chat`, using the `VSCE_PAT` repository secret. `--skip-duplicate` makes that a no-op unless the version was bumped — the Marketplace refuses a version it already has, so **a change only reaches users when `package.json`'s version goes up** (and, per the rule above, `CHANGELOG.md` with it).
 
 ## Architecture
 
