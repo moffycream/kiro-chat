@@ -285,6 +285,13 @@ export function bareMethod(method: string): string {
  */
 const MAX_BASELINE_BYTES = 10 * 1024 * 1024;
 
+/**
+ * How long the handshake may take. A binary that starts but never answers
+ * otherwise leaves the panel on "Starting Kiro…" for good, with the setup
+ * watcher hanging behind it; every other call that can go silent has one.
+ */
+const STARTUP_TIMEOUT_MS = 30000;
+
 function normaliseKind(kind: unknown): string {
   return String(kind ?? "")
     .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
@@ -299,7 +306,9 @@ export class KiroSession {
   private starting: Promise<void> | undefined;
   private connecting: Promise<void> | undefined;
   /** How Kiro is reached, kept so `chat --delete-session` can be run the same way. */
-  private launch: { command: string; launchArgs: string[] } | undefined;
+  private launch:
+    | { command: string; launchArgs: string[]; env: Record<string, string> }
+    | undefined;
   /** False for Kiro inside WSL, whose session files this side cannot read. */
   private canTidySessions = true;
   /**
@@ -742,7 +751,7 @@ export class KiroSession {
       // safe, so that install never gets one.
       this.canTidySessions = found.source !== "WSL";
     }
-    this.launch = { command, launchArgs };
+    this.launch = { command, launchArgs, env };
 
     this.client?.stop();
     this.client = new AcpClient({
@@ -766,14 +775,18 @@ export class KiroSession {
     client.start();
 
     try {
-      const init = await this.client.request("initialize", {
-        protocolVersion: 1,
-        clientCapabilities: {
-          fs: { readTextFile: true, writeTextFile: allowWrites },
-          terminal: false,
+      const init = await this.client.request(
+        "initialize",
+        {
+          protocolVersion: 1,
+          clientCapabilities: {
+            fs: { readTextFile: true, writeTextFile: allowWrites },
+            terminal: false,
+          },
+          clientInfo: { name: "vscode-kiro-chat", version: "0.3.0" },
         },
-        clientInfo: { name: "vscode-kiro-chat", version: "0.3.0" },
-      });
+        STARTUP_TIMEOUT_MS
+      );
       this.output.appendLine(
         `Connected to ${init?.agentInfo?.name ?? "Kiro"} ${init?.agentInfo?.version ?? ""}`
       );
@@ -812,10 +825,11 @@ export class KiroSession {
   private async createSession(): Promise<void> {
     if (!this.client?.isRunning) throw new Error("Kiro is not connected.");
     try {
-      const session = await this.client.request("session/new", {
-        cwd: this.workspaceRoot(),
-        mcpServers: [],
-      });
+      const session = await this.client.request(
+        "session/new",
+        { cwd: this.workspaceRoot(), mcpServers: [] },
+        STARTUP_TIMEOUT_MS
+      );
       this.sessionId = session?.sessionId ?? session?.id;
       if (!this.sessionId) throw new Error("Kiro did not return a session id.");
       // Nothing has been said into it yet, so it is a candidate for reuse and,
@@ -859,8 +873,6 @@ export class KiroSession {
     }
     await this.ensureReady();
     if (!this.client || !this.sessionId) return;
-    // Something is being said into it, so it is a conversation now.
-    this.retainSession(this.sessionId);
 
     const usable = this.supportsImages ? blocks : blocks.filter((b) => b.type !== "image");
     if (usable.length !== blocks.length) {
@@ -895,6 +907,10 @@ export class KiroSession {
         prompt: usable,
         content: usable,
       });
+      // Something was said into it, so it is a conversation now. After the
+      // prompt rather than before: one Kiro refused leaves the log empty, and
+      // a session marked spoken with nothing in it is never tidied.
+      this.retainSession(this.sessionId);
       await this.finishDirectFileReviews();
       this.reportTurnChanges();
       this.emitTurnCredits();
@@ -1111,7 +1127,14 @@ export class KiroSession {
       const child = spawn(
         viaShell ? [launch.command, ...args].map(quote).join(" ") : launch.command,
         viaShell ? [] : args,
-        { shell: viaShell, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] }
+        {
+          shell: viaShell,
+          windowsHide: true,
+          stdio: ["ignore", "pipe", "pipe"],
+          // The same environment the agent gets, or a Kiro that needs it to
+          // find its config answers differently here than over ACP.
+          env: { ...process.env, ...launch.env },
+        }
       );
       let output = "";
       child.stdout?.on("data", (chunk) => (output += chunk));
@@ -1664,6 +1687,10 @@ export class KiroSession {
     this.clientReviewedPaths.clear();
     this.answeredPaths.clear();
     this.turnCancelled = false;
+    // Continuing the conversation is keeping the last turn. Left in place,
+    // "Reject all" on a live review mid-turn also restored every file the
+    // previous turn had changed — files this turn may already build on.
+    this.lastTurnBaselines = [];
 
     for (const block of blocks) {
       if (block.type !== "resource_link") continue;
@@ -2207,8 +2234,8 @@ export class KiroSession {
     return this.changeReviewer.acceptActive();
   }
 
-  /** Reject the review on screen, restoring the original file. */
-  rejectActiveReview(): Promise<void> {
+  /** Reject the review on screen, restoring the original file. True if one was open. */
+  rejectActiveReview(): Promise<boolean> {
     return this.changeReviewer.rejectActive();
   }
 

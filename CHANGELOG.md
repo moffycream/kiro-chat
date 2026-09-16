@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.38.7
+
+- **"Reject all changes" on a live review no longer undoes the previous
+  turn.** The turn-level undo set was never cleared when a new turn began,
+  so rejecting one file mid-turn also restored every file the last turn had
+  changed. A new message now drops that set, and the bar's undo answers only
+  the review on screen when one is open.
+- **A read-only chat stays read-only.** Any later "ready" status — opening the
+  usage strip is enough — re-enabled the composer, and a reply then went to
+  whichever session was live, which was a different conversation.
+- **Reconnecting keeps the transcript on screen**, and a chat whose agent
+  died resumes its own session rather than answering from a blank one.
+- Opening a past chat is refused while a reply is running, instead of
+  swallowing that turn's notifications and landing its ending in the new chat.
+- The handshake has a timeout rather than hanging on "Starting Kiro…".
+- Explain Selection waits for the panel to be listening instead of a fixed
+  delay that could drop the message or start a new session over the turn.
+- A session counts as spoken into once Kiro has taken the prompt, not before,
+  so one Kiro refused is still tidied away; the tidy command runs with the
+  same environment the agent does.
+- Autopilot's hint says it approves every tool, not only edits. README
+  brought back in line with the code on live reviews, the selection chip,
+  the context panel, terminal access and slash commands.
+
 ## 0.38.6
 
 - Fixed chats being copied into the next one after VS Code restarted or the

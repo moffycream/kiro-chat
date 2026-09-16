@@ -73,8 +73,8 @@ Run **Kiro Chat: About and Check Version** any time to see which version you are
 
 **The code you highlight is sent automatically.** Select something in the editor and a chip
 appears above the message box showing the file and line numbers, like
-`src/app.ts:12-40  3 lines`. It follows your cursor as you move. Click the chip to leave the
-selection out of a message, and click again to put it back.
+`src/app.ts:12-40`. It follows your cursor as you move. The chip only reports what is going;
+clear the highlight in the editor to leave it out, or turn off `kiroChat.sendSelection`.
 
 **Attach files and folders** with the **+** button next to the message box. It offers a
 searchable list of everything in your project, a folder picker, or an image.
@@ -127,8 +127,8 @@ does not report which model it picked. A turn Kiro did
 not report a cost for shows nothing rather than `0 credits`, since those two are not
 the same thing. Available from version **0.36.0**. **Click this strip above the chat messages** to open the
 session context panel. It shows the latest context percentage, model capacity, and used
-and remaining tokens. Token counts are estimates based on the reported percentage and
-capacity; if capacity is unavailable, the panel shows percentages only.
+and Kiro's own breakdown of what is in the context, from its `context` command: the files it
+holds, tool definitions, its replies and your prompts, each with a token count.
 
 The meter turns amber at **80%** and suggests considering a new session for a new task.
 At **95%**, it recommends saving a summary and using **+** to start a fresh session.
@@ -348,9 +348,9 @@ login you already have.
   The diff opens as soon as the edit lands, and Kiro waits for your answer before starting
   the next one — so you see one file at a time while the turn is still running. Set
   `kiroChat.reviewDuringTurn` to `false` to go back to reviewing everything at the end.
-  A review opened while the turn is running leaves Kiro's version on disk until you decide,
-  because putting a file back under a running agent breaks its next edit; rejecting still
-  restores the original, at the moment you reject it.
+  The file is put back to its pre-edit state before the diff opens, during the turn as well
+  as at the end, so an accepted change is written through the editor and Ctrl+Z works on it.
+  Kiro waits for your answer before its next edit, so it never builds on the restored file.
 - **File changes open for inline review before the turn finishes.** Deleted/original lines
   are red and inserted/proposed lines are green in a source editor tab. Each changed section
   gets its own **Accept** and **Reject** actions above it; **Accept all**, **Reject all**,
@@ -364,8 +364,11 @@ login you already have.
   old file back over the top would undo work you had agreed to. Cancelling the turn is the
   other case, and that really does drop everything. This is on by default and can be
   disabled in settings.
-- **No terminal access.** The extension tells Kiro it cannot run shell commands, so Kiro
-  will not try.
+- **No terminal through the extension.** It tells Kiro it cannot run shell commands on its
+  behalf. Kiro CLI still has its own tools, including running commands and editing files in
+  its own process; the workspace boundary above governs what the extension reads and writes
+  for Kiro, and the permission card is the gate on what Kiro runs itself. Autopilot approves
+  all of it.
 - Text coming back from Kiro is escaped before it is shown, so a reply cannot inject
   anything into the panel.
 
@@ -415,8 +418,8 @@ double-click `install-windows.bat` to install it, and restart VS Code.
 `.github/workflows/ci.yml`, which does the same three steps on Windows for every push. It
 publishes nothing — the extension is installed from the `.vsix`, not from the Marketplace.
 
-## Not built yet
+## Slash commands
 
-Kiro's slash commands exist in the protocol but are not wired to the UI yet. The pieces are
-in `src/kiroSession.ts`. Images and past chats used to be listed here; both are built now
-and have their own sections above.
+Type `/` in the message box for Kiro's own commands (`/compact`, `/rewind`, `/usage`,
+`/context` and the rest), drawn from the list Kiro announces. `/help` shows the same list and
+names the few that only make sense in a terminal.

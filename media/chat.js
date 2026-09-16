@@ -2193,7 +2193,7 @@
     {
       id: "autopilot",
       label: "Autopilot",
-      hint: "Edit freely. Nothing to approve, nothing to read.",
+      hint: "Edit and run tools freely. Every permission is approved for you.",
     },
   ];
 
@@ -3819,9 +3819,10 @@
   function showConnecting() {
     if (setup) return; // the setup screen has more to say than a spinner
     setComposerEnabled(false, "Connecting to Kiro…");
-    messagesEl.innerHTML = "";
-    current = null;
-    buffer = "";
+    // Below the conversation, not instead of it. This used to empty the
+    // transcript, and nothing put it back once Kiro was up.
+    const stale = messagesEl.querySelector(".connecting");
+    if (stale) stale.remove();
 
     const wrap = document.createElement("div");
     wrap.className = "connecting";
@@ -3834,10 +3835,15 @@
     messagesEl.appendChild(wrap);
   }
 
+  /** The composer is locked for a reason "ready" does not answer. */
+  let readOnlyChat = false;
+
   function clearConnecting() {
     const node = messagesEl.querySelector(".connecting");
     if (node) node.remove();
-    if (!setup) setComposerEnabled(true);
+    // A read-only chat or the history list locked the box for reasons of
+    // their own; a busy/ready flip from a command must not undo that.
+    if (!setup && !readOnlyChat && !historyOpen) setComposerEnabled(true);
   }
 
   /**
@@ -4308,6 +4314,9 @@
         // Kiro has the turn now. Say so where the answer will appear, rather
         // than only on the status line at the top of the panel.
         startThinking();
+        // Carrying on is keeping; the last turn's undo set is dropped.
+        pendingChanges = null;
+        renderChangeBar();
         break;
 
       case "chunk": {
@@ -4551,6 +4560,7 @@
         break;
 
       case "cleared":
+        readOnlyChat = false;
         pendingReview = null;
         pendingChanges = null;
         renderChangeBar();
@@ -4588,6 +4598,7 @@
         // The transcript comes back from the extension's copy, which outlives
         // this panel. Kiro is told to reload the session separately.
         historyOpen = false;
+        readOnlyChat = false;
         setComposerEnabled(true);
         // The other chat's pending edits are not this chat's to answer.
         pendingReview = null;
@@ -4610,6 +4621,7 @@
       case "chatReadOnly":
         // Kiro could not take the conversation back, so replying would start
         // a different one without saying so. Say so instead.
+        readOnlyChat = true;
         setComposerEnabled(false, "This chat can only be read");
         addBubble("note", message.why + "\n\nStart a new chat with + to keep talking.");
         break;

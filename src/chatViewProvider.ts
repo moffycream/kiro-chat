@@ -133,6 +133,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
   private readonly watchers: vscode.Disposable[] = [];
   private attachments: Attachment[] = [];
   private everConnected = false;
+  /** Whether the webview has reported ready since it was last built. */
+  private webviewReady = false;
+  private readyWaiters: Array<() => void> = [];
   private selection: SelectionContext | undefined;
   private selectionTimer: NodeJS.Timeout | undefined;
   /**
@@ -472,7 +475,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
           await this.session.gotoNextChange();
           break;
         case "undoChanges": {
-          await this.session.rejectActiveReview();
+          // A live review answered here is the whole answer: the bar redraws
+          // from reviewActive, and the turn's own undo is a different offer.
+          if (await this.session.rejectActiveReview()) break;
           const restored = await this.session.undoLastTurn();
           this.post({ type: "changesUndone", restored });
           break;
@@ -520,6 +525,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 
     view.onDidDispose(() => {
       this.view = undefined;
+      this.webviewReady = false;
       /*
        * Pending permissions get a stay of execution, not a pardon.
        *
@@ -678,6 +684,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
    * seeing it is more useful than an error.
    */
   private async openChat(id: string): Promise<void> {
+    if (this.session.currentStatus === "busy") {
+      // A load mid-turn swallows the running turn's notifications and swaps
+      // the session id under it, so its ending lands in the opened chat.
+      vscode.window.showWarningMessage(
+        "Wait for Kiro to finish the current reply before opening another chat."
+      );
+      return;
+    }
     const record = this.allChats().find((r) => r.id === id);
     if (!record) {
       vscode.window.showWarningMessage("That chat is no longer stored.");
@@ -814,6 +828,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
    * no session is bound. `chatId` is what tells the two apart.
    */
   private async onWebviewReady(restored: boolean, pageChatId?: string): Promise<void> {
+    this.webviewReady = true;
+    for (const wake of this.readyWaiters.splice(0)) wake();
     this.refreshSelection(true);
     this.postAttachments();
     // A question Kiro is still waiting on outlived the panel being rebuilt,
@@ -1095,9 +1111,26 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
    * in silence. The wait is the same one `sendFromEditor` already takes for
    * the same reason.
    */
+  /**
+   * Wait for the panel to be listening. A fixed delay raced the webview's
+   * load: a message posted before its script ran was dropped, and a send
+   * that marked the provider connected before `ready` arrived made the
+   * blank-panel branch start a new session over the turn just sent.
+   */
+  private whenReady(timeoutMs = 5000): Promise<void> {
+    if (this.view && this.webviewReady) return Promise.resolve();
+    return new Promise((resolve) => {
+      const timer = setTimeout(resolve, timeoutMs);
+      this.readyWaiters.push(() => {
+        clearTimeout(timer);
+        resolve();
+      });
+    });
+  }
+
   async editInstructions(): Promise<void> {
     this.focus();
-    await new Promise((resolve) => setTimeout(resolve, 250));
+    await this.whenReady();
     this.post({ type: "openInstructions" });
   }
 
@@ -1496,6 +1529,30 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       return;
     }
 
+    /*
+     * The agent went away under an existing chat. Starting afresh would answer
+     * this message from a session with no memory of the conversation on
+     * screen, and stamp that session's id on the chat's record. Reopen the
+     * chat's own session first; if that fails, say so before carrying on.
+     */
+    if (this.session.currentStatus === "stopped" && this.transcript.length > 0) {
+      const previous =
+        this.chatSessionId ??
+        this.pendingChat?.sessionId ??
+        this.allChats().find((r) => r.id === this.chatId)?.sessionId;
+      if (previous) {
+        try {
+          await this.session.loadSession(previous);
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          this.post({
+            type: "error",
+            text: `Kiro could not resume this conversation (${message}). It is answering from a new session without the earlier messages.`,
+          });
+        }
+      }
+    }
+
     this.selection = readSelection();
     // The file on screen goes along too, unless the user dismissed its chip.
     // A file already attached by hand wins, so nothing is sent twice.
@@ -1581,7 +1638,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 
   async sendFromEditor(text: string): Promise<void> {
     this.focus();
-    await new Promise((resolve) => setTimeout(resolve, 250));
+    await this.whenReady();
     await this.send(text, true);
   }
 

@@ -201,9 +201,11 @@ export class ChangeReviewer implements vscode.CodeLensProvider, vscode.Disposabl
   }
 
   /** Reject the review on screen, restoring the original. */
-  async rejectActive(): Promise<void> {
+  async rejectActive(): Promise<boolean> {
     const review = this.active;
-    if (review && !review.settled) await this.rejectAll(review);
+    if (!review || review.settled) return false;
+    await this.rejectAll(review);
+    return true;
   }
 
   review(request: ChangeReviewRequest): Promise<ChangeReviewDecision> {
