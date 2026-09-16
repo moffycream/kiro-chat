@@ -413,3 +413,115 @@ test("a session is only tidied away while nothing has claimed it", () => {
     "and so does writing a chat record against it"
   );
 });
+
+// ---------------------------------------------------------------------------
+// A new chat keeps the agent that is running.
+//
+// `newSession` used to kill kiro-cli and start it again for every "+", so the
+// panel went through "Starting Kiro…" — composer locked, spinner under the
+// placeholder — for a conversation that had not begun. `session/new` on the
+// live process is all a new conversation needs.
+// ---------------------------------------------------------------------------
+
+/** A client that is up, and remembers what was asked of it. */
+function fakeClient(answers = {}) {
+  const client = {
+    isRunning: true,
+    stopped: false,
+    requests: [],
+    stop() {
+      this.stopped = true;
+      this.isRunning = false;
+    },
+    notify() {},
+    async request(method, params) {
+      this.requests.push(method);
+      if (method in answers) return answers[method];
+      return {};
+    },
+  };
+  return client;
+}
+
+/** Wire a running client into a session that believes it connected it. */
+function connected(session, client, sessionId = "spoken-into") {
+  session.client = client;
+  session.connected = client;
+  session.sessionId = sessionId;
+  session.status = "ready";
+  // As `startInternal` records it, so the reuse check has a launch to compare.
+  session.launchInputs = session.currentLaunchInputs();
+}
+
+test("a new chat on a running agent asks for a session instead of restarting", async () => {
+  const statuses = [];
+  const session = newSession({ onStatus: (status) => statuses.push(status) });
+  const client = fakeClient({ "session/new": { sessionId: "fresh" } });
+  connected(session, client);
+
+  await session.newSession();
+
+  assert.equal(client.stopped, false, "the process must not be killed for a new chat");
+  assert.ok(client.requests.includes("session/new"), "a new conversation is asked for");
+  assert.equal(session.sessionId, "fresh", "and the panel moves onto it");
+  assert.ok(
+    !statuses.includes("starting") && !statuses.includes("stopped"),
+    `nothing was restarted, so nothing should say so: ${statuses.join(", ")}`
+  );
+  assert.equal(statuses[statuses.length - 1], "ready");
+});
+
+test("the Restart command still gets a fresh process", async () => {
+  const session = newSession();
+  const client = fakeClient();
+  connected(session, client);
+  // Never let the test reach findKiro: on a machine that has kiro-cli, that
+  // starts one.
+  session.ensureReady = async () => {};
+
+  await session.newSession({ restart: true });
+
+  assert.equal(client.stopped, true, "restart means restart");
+  assert.equal(session.sessionId, undefined);
+});
+
+test("a new chat during a reply restarts, so the reply cannot land in it", async () => {
+  const session = newSession();
+  const client = fakeClient();
+  connected(session, client);
+  session.status = "busy";
+  session.ensureReady = async () => {};
+
+  await session.newSession();
+
+  assert.equal(
+    client.stopped,
+    true,
+    "notifications are not filtered by session id; a running turn goes with its process"
+  );
+});
+
+test("a new chat restarts Kiro when its launch settings changed since it started", async () => {
+  const session = newSession();
+  const client = fakeClient({ "session/new": { sessionId: "fresh" } });
+  connected(session, client);
+  // What the process was started with no longer matches what is configured.
+  session.launchInputs = { ...session.launchInputs, settings: "{\"env\":{\"OLD\":\"1\"}}" };
+  session.ensureReady = async () => {};
+
+  await session.newSession();
+
+  assert.equal(client.stopped, true, "a reused process would keep running the old setup");
+});
+
+test("a session never launched through startInternal is not reused", async () => {
+  const session = newSession();
+  const client = fakeClient();
+  connected(session, client);
+  session.launchInputs = undefined;
+  session.ensureReady = async () => {};
+
+  await session.newSession();
+
+  assert.equal(client.stopped, true, "with nothing to compare, restarting is the safe answer");
+});

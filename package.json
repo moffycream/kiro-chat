@@ -2,7 +2,7 @@
   "name": "kiro-agent-chat",
   "displayName": "Kiro Agent Chat (Unofficial)",
   "description": "Chat with the Kiro agent inside VS Code, like Copilot Chat.",
-  "version": "0.38.7",
+  "version": "0.38.8",
   "publisher": "moffycream",
   "license": "MIT",
   "engines": {
@@ -90,6 +90,7 @@
         "title": "Kiro Chat: Past Chats",
         "icon": "$(history)"
       },
+
       {
         "command": "kiroChat.openMemory",
         "title": "Kiro Chat: Edit Project Memory"

@@ -218,6 +218,61 @@ body {
  * one from becoming a narrow column of wrapped text, and it still gives way
  * to the answer, which is what the eye should return to.
  */
+/*
+ * The checkpoint row under a sent message, outside the bubble.
+ *
+ * A sibling of the bubble in the transcript's flex column, so the negative
+ * top margin takes back most of the column's gap and the row reads as
+ * belonging to the message above it. Invisible until the message or the row
+ * is hovered, or the button has keyboard focus; still laid out, so revealing
+ * it moves nothing. Absent on the newest message, where there is nothing
+ * after it to remove.
+ */
+.msg-actions {
+  align-self: flex-end;
+  display: flex;
+  justify-content: flex-end;
+  margin-top: -10px;
+  min-height: 22px;
+}
+
+.msg-actions.latest-turn {
+  display: none;
+}
+
+.msg-restore {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  color: var(--vscode-descriptionForeground);
+  background: none;
+  border: none;
+  border-radius: 3px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+.msg.user:hover + .msg-actions .msg-restore,
+.msg-actions:hover .msg-restore,
+.msg-restore:focus-visible {
+  opacity: 1;
+}
+
+.msg-restore:hover {
+  color: var(--vscode-foreground);
+  background: var(--vscode-toolbar-hoverBackground);
+}
+
+.msg-restore svg {
+  width: 14px;
+  height: 14px;
+  fill: currentColor;
+}
+
 .msg.user {
   align-self: flex-end;
   width: fit-content;
@@ -2308,6 +2363,26 @@ button:disabled {
   font-size: 0.9em;
 }
 
+/*
+ * Under the empty-chat placeholder, the spinner joins it rather than sharing
+ * the column with it.
+ *
+ * Both blocks centre themselves with auto margins, which is right for either
+ * on its own. Put together — `showConnecting` appends below whatever is in
+ * the transcript, and on a blank one that is the placeholder — the column
+ * split its free space between the two, so "Ask Kiro about your code." jumped
+ * into the upper half and the spinner sat alone in the lower. Dropping the
+ * two inner margins leaves the pair centred as one group, with the column's
+ * own gap between them.
+ */
+.empty:has(+ .connecting) {
+  margin-bottom: 0;
+}
+
+.empty + .connecting {
+  margin-top: 0;
+}
+
 .spinner {
   width: 12px;
   height: 12px;
@@ -3079,27 +3154,6 @@ button.change-summary:hover {
   color: var(--vscode-descriptionForeground);
 }
 
-
-.checkpoint-toolbar {
-  display: flex;
-  justify-content: flex-end;
-  padding: 4px 12px;
-}
-
-.checkpoint-toolbar button {
-  color: var(--vscode-textLink-foreground);
-  background: transparent;
-  border: 1px solid var(--vscode-widget-border, transparent);
-  border-radius: 4px;
-  padding: 4px 8px;
-  cursor: pointer;
-  font: inherit;
-}
-
-.checkpoint-toolbar button:disabled {
-  opacity: 0.5;
-  cursor: default;
-}
 
 .rewind-turn {
   display: flex;

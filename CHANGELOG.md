@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.38.8
+
+- **Restore a checkpoint from the message itself.** Hovering one of your
+  earlier messages shows a restore icon just below it; clicking it keeps
+  that question and answer and removes every later chat, after a confirmation
+  that says how many. The text button that sat above the transcript is gone —
+  it read as part of the conversation rather than as an action on it.
+  `/rewind` in the message box still opens the picker. Restoring while Kiro is
+  replying, or in a read-only chat, says why nothing happened instead of doing
+  nothing.
+- **A new chat no longer restarts Kiro.** Pressing "+" killed the kiro-cli
+  process and started it again, so every new chat began with "Starting Kiro…":
+  the message box was locked and a spinner sat below the empty-chat text for
+  the seconds the relaunch took. A new conversation is now opened on the agent
+  that is already running, which answers at once. The process is still
+  restarted by the Restart command, and when "+" is pressed while a reply is
+  in progress, because that reply would otherwise stream into the new chat.
+  It is also restarted when anything Kiro reads at startup has changed since
+  it started: the Command, Env, Args or Allow File Writes settings, the
+  workspace folders, an update to kiro-cli, or a file under `.kiro/settings`,
+  `.kiro/agents` or `.kiro/steering` in your home folder or the workspace. The
+  output channel says which one.
+- **The connecting spinner sits with the placeholder, not apart from it.**
+  When Kiro really is starting on a blank chat, the "Ask Kiro about your code."
+  text and the spinner centre together instead of splitting the panel between
+  them.
+
 ## 0.38.7
 
 - **"Reject all changes" on a live review no longer undoes the previous

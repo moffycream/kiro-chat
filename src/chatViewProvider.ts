@@ -507,6 +507,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         case "listRewind":
           await this.offerRewind();
           break;
+        case "restoreToMessage":
+          await this.restoreToMessage(Number(message.later));
+          break;
         case "rewindTo": {
           const logIndex = Number(message.logIndex);
           if (!Number.isFinite(logIndex)) break;
@@ -1835,6 +1838,59 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
    * it or reopening this chat later would resume the un-rewound original —
    * the same wrong-session bug `openChat` guards against from the other end.
    */
+  /**
+   * Restore from the control under a message: keep that question and remove
+   * the `later` chats after it.
+   *
+   * The message is found by counting from the newest, not from the oldest,
+   * because a stored transcript may hold only the tail of a long chat while
+   * Kiro's list holds all of it — "how many later chats go" is the same
+   * number in both, and "which chat is this from the start" is not. The
+   * chosen turn is then resolved against Kiro's live list, as the picker's
+   * route already does. A modal confirmation stands in for the picker's
+   * preview, since this control is one click on hover.
+   */
+  private async restoreToMessage(later: number): Promise<void> {
+    if (!Number.isInteger(later) || later <= 0) return;
+    if (this.restoringCheckpoint || this.session.currentStatus !== "ready") {
+      vscode.window.showWarningMessage(
+        "Wait for Kiro to finish the current reply before restoring a checkpoint."
+      );
+      return;
+    }
+    if (this.chatSessionId && this.chatSessionId !== this.session.currentSessionId) {
+      vscode.window.showWarningMessage(
+        "This chat is read-only, so it has no checkpoints to restore."
+      );
+      return;
+    }
+    let turns;
+    try {
+      turns = await this.session.rewindTurns();
+    } catch (error) {
+      vscode.window.showWarningMessage(
+        `Kiro could not list its checkpoints: ${error instanceof Error ? error.message : String(error)}`
+      );
+      return;
+    }
+    const turn = turns[later];
+    if (!turn) {
+      vscode.window.showWarningMessage(
+        "That message is no longer one of Kiro's checkpoints. Use Restore Checkpoint to pick one."
+      );
+      return;
+    }
+    const answer = await vscode.window.showWarningMessage(
+      later === 1
+        ? "Restore to this message? The chat after it is removed from this conversation and Kiro's context."
+        : `Restore to this message? The ${later} chats after it are removed from this conversation and Kiro's context.`,
+      { modal: true, detail: "File edits stay as they are." },
+      "Restore"
+    );
+    if (answer !== "Restore") return;
+    await this.rewindTo(turn.logIndex, turnsKeptByRewind(turns.length, later));
+  }
+
   private async rewindTo(logIndex: number, keptTurns: number): Promise<void> {
     if (this.restoringCheckpoint || this.session.currentStatus !== "ready") return;
     if (this.chatSessionId && this.chatSessionId !== this.session.currentSessionId) return;
@@ -1995,7 +2051,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     <div id="usage-panel" class="usage-panel" hidden></div>
   </div>
 
-  <div class="checkpoint-toolbar"><button id="restore-checkpoint" type="button" title="Keep an earlier question and answer, and remove later conversation context">Restore checkpoint</button></div>
   <div id="messages" class="messages" role="log" aria-live="polite">
     <div class="empty">
       <p>Ask Kiro about your code.</p>

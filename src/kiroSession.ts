@@ -13,6 +13,7 @@ import { isInsideAnyRoot, isInsideRoot } from "./workspacePaths";
 import { isStaleLock, lockedPidFrom, parseSessionLock, sessionLockPath } from "./sessionLocks";
 import { lookupProcess } from "./processFacts";
 import { looksLikeSignIn } from "./startupError";
+import { LaunchInputs, launchInputsChanged, snapshotLaunchInputs } from "./launchInputs";
 import {
   DeleteOutcome,
   deleteSessionArgs,
@@ -309,6 +310,11 @@ export class KiroSession {
   private launch:
     | { command: string; launchArgs: string[]; env: Record<string, string> }
     | undefined;
+  /**
+   * What the running process was started with, so "+" can reuse it only while
+   * it still matches. See `launchInputs.ts`.
+   */
+  private launchInputs: LaunchInputs | undefined;
   /** False for Kiro inside WSL, whose session files this side cannot read. */
   private canTidySessions = true;
   /**
@@ -647,6 +653,37 @@ export class KiroSession {
     }
   }
 
+  private currentLaunchInputs(): LaunchInputs {
+    const config = vscode.workspace.getConfiguration("kiroChat");
+    return snapshotLaunchInputs({
+      // Exactly what `startInternal` reads. A key missing here is a change
+      // "+" would never notice.
+      settings: {
+        command: config.get<string>("command", "").trim(),
+        env: config.get<Record<string, string>>("env", {}),
+        args: config.get<string[]>("args", []),
+        allowFileWrites: config.get<boolean>("allowFileWrites", true),
+      },
+      roots: this.workspaceRoots(),
+      command: this.launch?.command,
+      home: os.homedir(),
+    });
+  }
+
+  /**
+   * Whether the running agent was started from what is configured now.
+   *
+   * No snapshot means nothing to compare against, which is answered as stale:
+   * restarting is the behaviour this replaced, so it is the safe default.
+   */
+  private launchIsCurrent(): boolean {
+    if (!this.launchInputs) return false;
+    const reasons = launchInputsChanged(this.launchInputs, this.currentLaunchInputs());
+    if (reasons.length === 0) return true;
+    this.output.appendLine(`Restarting Kiro for the new chat: ${reasons.join("; ")}.`);
+    return false;
+  }
+
   private setStatus(status: SessionStatus, detail?: string): void {
     this.status = status;
     this.events.onStatus(status, detail);
@@ -752,6 +789,9 @@ export class KiroSession {
       this.canTidySessions = found.source !== "WSL";
     }
     this.launch = { command, launchArgs, env };
+    // Before the spawn, not after: a file edited while Kiro is still starting
+    // then reads as a change, and costs a restart rather than being missed.
+    this.launchInputs = this.currentLaunchInputs();
 
     this.client?.stop();
     this.client = new AcpClient({
@@ -1179,25 +1219,34 @@ export class KiroSession {
     this.changeReviewer.cancelPending();
     this.cancelQueuedPermissions();
 
-    if (
+    /*
+     * The agent already running is kept whenever it can be.
+     *
+     * A new conversation only needs a new session id, and `session/new` on
+     * the live process answers in well under a second. Killing kiro-cli and
+     * starting it again — which is what this did from the first version — put
+     * the panel through "Starting Kiro…" for every "+": the composer locked
+     * and a spinner sat under the empty-chat placeholder for the several
+     * seconds the relaunch took, for a conversation that had not begun.
+     *
+     * Two cases still restart. `restart: true` is the `kiroChat.restart`
+     * command, whose whole point is a fresh process when Kiro has wedged. And
+     * a turn still running has to go with its process: notifications are not
+     * filtered by session id, so a prompt left running on the old session
+     * would stream its reply into the new chat.
+     *
+     * And the one the reuse itself creates: a fresh process reread its setup,
+     * and a reused one does not. `launchIsCurrent` is checked last, because
+     * it reads the config folders, and restarts when anything Kiro took in at
+     * startup has changed since. See `launchInputs.ts`.
+     */
+    const live =
       !options.restart &&
-      this.client?.isRunning &&
-      this.sessionId &&
-      this.unspoken.has(this.sessionId)
-    ) {
-      this.completedCredits = 0;
-      this.currentTurnCredits = undefined;
-      this.awaitingTurnCredits = false;
-      this.usage = clearSessionUsage(this.usage);
-      this.events.onUsage({ ...this.usage });
-      this.output.appendLine(`Reusing the empty session ${this.sessionId} for the new chat.`);
-      this.setStatus("ready");
-      return;
-    }
+      this.client?.isRunning === true &&
+      this.connected === this.client &&
+      this.status !== "busy" &&
+      this.launchIsCurrent();
 
-    this.sessionId = undefined;
-    this.client?.stop();
-    this.client = undefined;
     // Only what belonged to the conversation that just ended. The plan
     // figures describe the account and are still true; wiping them made the
     // credits you had just fetched vanish for pressing "+".
@@ -1206,6 +1255,28 @@ export class KiroSession {
     this.awaitingTurnCredits = false;
     this.usage = clearSessionUsage(this.usage);
     this.events.onUsage({ ...this.usage });
+
+    if (live && this.sessionId && this.unspoken.has(this.sessionId)) {
+      this.output.appendLine(`Reusing the empty session ${this.sessionId} for the new chat.`);
+      this.setStatus("ready");
+      return;
+    }
+
+    if (live) {
+      // Through `ensureReady`, not `createSession` directly: a message sent
+      // while the id is still on its way joins this same promise instead of
+      // starting a second conversation. `connect` returns at once for a
+      // client that is already up, so no "starting" is announced. The old
+      // session stays open in the process, exactly as a load leaves the one
+      // it came from.
+      this.sessionId = undefined;
+      await this.ensureReady();
+      return;
+    }
+
+    this.sessionId = undefined;
+    this.client?.stop();
+    this.client = undefined;
     this.setStatus("stopped");
     await this.ensureReady();
   }

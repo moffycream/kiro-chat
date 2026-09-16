@@ -10,11 +10,6 @@
   const inputEl = el("input");
   const sendBtn = el("send");
   const stopBtn = el("stop");
-  const restoreCheckpointBtn = el("restore-checkpoint");
-  restoreCheckpointBtn.addEventListener("click", () => {
-    if (busy || inputEl.disabled) return;
-    vscode.postMessage({ type: "listRewind" });
-  });
   const chipsEl = el("chips");
   const attachBtn = el("attach");
   const attachMenu = el("attach-menu");
@@ -740,6 +735,46 @@
     }
 
     messagesEl.appendChild(node);
+
+    /*
+     * A checkpoint under the message it belongs to — outside the bubble.
+     *
+     * Inside, it read as part of what the user wrote. It is a sibling row
+     * instead, right-aligned under the bubble and shown only while the
+     * message or the row itself is hovered or focused. It is hidden on the
+     * newest message, where there is nothing after it to remove, and how
+     * many later chats go is counted off the transcript at click time — the
+     * bubbles on screen are the one list that cannot drift from what the
+     * user is looking at.
+     */
+    const actions = document.createElement("div");
+    actions.className = "msg-actions";
+    const restore = document.createElement("button");
+    restore.type = "button";
+    restore.className = "msg-restore";
+    // An icon, like the copy control on a code block. Static markup of ours,
+    // so building it by hand is safe; the words live in the tooltip and the
+    // accessible name.
+    restore.innerHTML =
+      '<svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">' +
+      '<path d="M5.3 2.3 1.6 6l3.7 3.7.7-.7L3.5 6.5H9a3.5 3.5 0 0 1 0 7H6v1h3a4.5 4.5 0 0 0 0-9H3.5L6 3z"/>' +
+      "</svg>";
+    restore.title = "Restore to here: keep this question and its answer, and remove every later chat";
+    restore.setAttribute("aria-label", "Restore to here");
+    restore.addEventListener("click", () => {
+      if (busy || inputEl.disabled) return;
+      const users = [...messagesEl.querySelectorAll(".msg.user")];
+      const later = users.length - 1 - users.indexOf(node);
+      if (later <= 0) return;
+      vscode.postMessage({ type: "restoreToMessage", later });
+    });
+    actions.appendChild(restore);
+    for (const previous of messagesEl.querySelectorAll(".msg-actions.latest-turn")) {
+      previous.classList.remove("latest-turn");
+    }
+    actions.classList.add("latest-turn");
+    messagesEl.appendChild(actions);
+
     scroll(was);
   }
 
@@ -3210,7 +3245,6 @@
 
   function setBusy(status) {
     busy = status === "busy" || status === "starting";
-    restoreCheckpointBtn.disabled = busy;
     // Setup outranks this: a "ready" status arriving mid-setup must not hand
     // the user a live Send button pointing at a Kiro that is not there.
     sendBtn.disabled = busy || setup !== null;

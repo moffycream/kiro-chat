@@ -3823,3 +3823,15 @@ test("the reasoning is one block, and an older chat's pieces are not lost", () =
   );
   assert.match(restore, /\.join\("\\n\\n"\)/, "as paragraphs, which is how they were written");
 });
+
+/*
+ * The placeholder and the connecting spinner both centre themselves with auto
+ * margins, and shown together they split the column between them — the title
+ * jumped into the upper half and the spinner sat in the lower. The pair of
+ * rules below is what makes them centre as one group; losing either half
+ * brings the jump back.
+ */
+test("the connecting spinner joins the empty-chat placeholder", () => {
+  assert.match(css, /\.empty:has\(\+ \.connecting\)\s*\{\s*margin-bottom:\s*0;\s*\}/);
+  assert.match(css, /\.empty \+ \.connecting\s*\{\s*margin-top:\s*0;\s*\}/);
+});

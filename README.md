@@ -2,11 +2,12 @@
 
 A chat sidebar in VS Code that talks to Kiro, the way Copilot Chat does.
 
-To return to an earlier point in a conversation, click **Restore checkpoint** above
-the messages and choose the last chat to keep. For example, choosing **Chat 8**
-keeps its question and answer and removes chats 9 and 10 from the displayed history
-and Kiro's active context. Continue chatting from there. File edits are unchanged.
-The restored conversation is also used when you reopen the chat from history.
+To return to an earlier point in a conversation, hover over one of your earlier messages
+and click the restore icon (↶) that appears below it: that question and its answer are kept, and every
+later chat is removed from the displayed history and Kiro's active context. Typing
+`/rewind` in the message box opens a picker for the same thing. Continue chatting from
+there. File edits are unchanged. The restored conversation is also used when you reopen
+the chat from history.
 
 ## Setup on Windows
 
