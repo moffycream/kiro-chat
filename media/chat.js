@@ -27,6 +27,7 @@
   const usageBar = el("usage-bar");
   const usageFill = el("usage-fill");
   const usageText = el("usage-text");
+  const usageCredits = el("usage-credits");
   const usagePanel = el("usage-panel");
   const dropzone = el("dropzone");
 
@@ -1935,10 +1936,17 @@
      * chosen" in a menu where the group above means "only this one".
      */
     if (options.on && !toggle) row.classList.add("selected");
+    if (options.title) row.title = options.title;
 
     const name = document.createElement("div");
     name.className = "mode-name";
     name.textContent = options.label;
+    if (options.tag) {
+      const tag = document.createElement("span");
+      tag.className = "mode-tag";
+      tag.textContent = options.tag;
+      name.appendChild(tag);
+    }
 
     if (toggle) {
       /*
@@ -1958,15 +1966,48 @@
       return row;
     }
 
-    row.appendChild(name);
+    /*
+     * The highlight alone did not say "pick one": it looks the same as the
+     * hover tint one row away. A radio dot is the shape that means only one
+     * of these, and it sits beside the highlight rather than replacing it.
+     */
+    const text = document.createElement("div");
+    text.className = "mode-text";
+    text.appendChild(name);
     if (options.description) {
       const desc = document.createElement("div");
       desc.className = "mode-desc";
       desc.textContent = options.description;
-      row.appendChild(desc);
+      text.appendChild(desc);
+    }
+    if (options.radio) {
+      row.classList.add("radio");
+      const dot = document.createElement("span");
+      dot.className = "menu-radio";
+      dot.setAttribute("aria-hidden", "true");
+      row.appendChild(dot);
+    }
+    row.appendChild(text);
+    if (options.chevron) {
+      row.classList.add("drill");
+      const chevron = document.createElement("span");
+      chevron.className = "menu-chevron";
+      chevron.setAttribute("aria-hidden", "true");
+      chevron.textContent = "›";
+      row.appendChild(chevron);
     }
     return row;
   }
+
+  /*
+   * Which page of the mode menu is showing.
+   *
+   * Memory and instructions are something you look at now and then; the
+   * workflow, supervision and toggles are set per conversation. Sharing one
+   * page made the menu taller than a sidebar and buried the choices you make
+   * often under rows you open rarely, so the rare half is one row deep.
+   */
+  let modeMenuView = "main";
 
   /*
    * One menu for how the conversation runs.
@@ -1975,8 +2016,7 @@
    * "how closely am I watching Kiro" somewhere quite different from "how is
    * Kiro approaching this task" — two halves of the same question, two
    * controls, and one of them looking like configuration rather than a
-   * working choice. They are three groups of one menu now, and the gear is
-   * gone.
+   * working choice. They are groups of one menu now, and the gear is gone.
    *
    * They stay separate groups rather than one flat list because they are
    * genuinely independent: Spec with Autopilot and Spec with Manual are both
@@ -1984,50 +2024,127 @@
    */
   function renderModeMenu() {
     modeMenu.innerHTML = "";
+    if (modeMenuView === "context") {
+      renderContextView();
+      return;
+    }
 
-    menuHeading("Workflow");
+    menuHeading("How Kiro approaches the task");
     for (const mode of CHAT_MODES) {
+      const on = mode.id === currentModeId;
+      // Only the chosen workflow spells itself out. Five descriptions at once
+      // made every row the same grey block; the rest keep theirs on hover.
       const row = menuRow({
         label: mode.label,
-        description: mode.description,
-        on: mode.id === currentModeId,
+        description: on ? mode.description : "",
+        title: mode.description,
+        tag: mode.id === "plan" ? "read-only" : "",
+        radio: true,
+        on,
       });
       row.dataset.modeId = mode.id;
       modeMenu.appendChild(row);
     }
 
-    // Plan is read-only, so nothing below applies while it is selected.
-    // Better to say that than to leave a group that quietly does nothing.
-    menuHeading(
-      "When Kiro edits a file",
-      currentModeId === "plan" ? "Plan makes no changes, so this does not apply to it." : ""
-    );
-    for (const mode of EDIT_MODES) {
-      const row = menuRow({
-        label: mode.label,
-        description: mode.hint,
-        on: editMode === mode.id,
-      });
-      row.dataset.editMode = mode.id;
-      modeMenu.appendChild(row);
-    }
-    if (editMode === "custom") {
-      const note = document.createElement("div");
-      note.className = "menu-note";
-      note.textContent = "Your settings match none of these. Pick one to replace them.";
-      modeMenu.appendChild(note);
+    menuHeading("When Kiro edits files");
+    modeMenu.appendChild(editModeSegments());
+    const current = EDIT_MODES.find((mode) => mode.id === editMode);
+    // Plan is read-only, so the group does not apply while it is selected.
+    // Better to say that than to leave a control that quietly does nothing.
+    const note =
+      currentModeId === "plan"
+        ? "Plan makes no changes, so this does not apply to it."
+        : editMode === "custom"
+          ? "Your settings match none of these. Pick one to replace them."
+          : current
+            ? current.hint
+            : "";
+    if (note) {
+      const line = document.createElement("div");
+      line.className = "menu-note segment-note";
+      line.textContent = note;
+      modeMenu.appendChild(line);
     }
 
-    menuHeading("Sent with each message");
+    menuHeading("Include with each message");
     for (const item of MESSAGE_TOGGLES) {
       const row = menuRow({
         role: "switch",
         label: item.label,
+        title: item.title,
         on: settings[item.key] === true,
       });
       row.dataset.setting = item.key;
       modeMenu.appendChild(row);
     }
+
+    menuHeading("Context");
+    const row = menuRow({
+      label: "Memory and instructions",
+      description: contextSummary(),
+      chevron: true,
+    });
+    row.dataset.view = "context";
+    modeMenu.appendChild(row);
+  }
+
+  /*
+   * Supervision as one control with three positions.
+   *
+   * Three tall rows read as three more things to choose between, beside the
+   * five workflows above them; a segmented control reads as one setting that
+   * is in one of three states, which is what it is. Each segment is still a
+   * `.mode-row` carrying `data-edit-mode`, so the click handler and the
+   * ask-and-wait rule are unchanged.
+   */
+  function editModeSegments() {
+    const group = document.createElement("div");
+    group.className = "menu-segments";
+    group.setAttribute("role", "group");
+    group.setAttribute("aria-label", "When Kiro edits files");
+    for (const mode of EDIT_MODES) {
+      const on = editMode === mode.id;
+      const segment = document.createElement("button");
+      segment.type = "button";
+      segment.className = "mode-row segment";
+      segment.textContent = mode.label;
+      segment.title = mode.hint;
+      if (on) {
+        segment.classList.add("selected");
+        segment.setAttribute("aria-current", "true");
+      }
+      segment.dataset.editMode = mode.id;
+      group.appendChild(segment);
+    }
+    return group;
+  }
+
+  /** What the drill-in row says is behind it, so it need not be opened to find out. */
+  function contextSummary() {
+    const count = memory.files.length;
+    const files = count === 1 ? "1 memory file" : `${count} memory files`;
+    return `${files} · ${instructions.trim() ? "instructions set" : "no instructions"}`;
+  }
+
+  /*
+   * The second page: what Kiro knows before you say anything, and how you
+   * always want it to work.
+   */
+  function renderContextView() {
+    const back = document.createElement("button");
+    back.type = "button";
+    back.className = "mode-row menu-back";
+    back.dataset.view = "main";
+    back.setAttribute("aria-label", "Back to workflow and supervision");
+    const arrow = document.createElement("span");
+    arrow.className = "menu-chevron";
+    arrow.setAttribute("aria-hidden", "true");
+    arrow.textContent = "‹";
+    const label = document.createElement("span");
+    label.className = "mode-name";
+    label.textContent = "Memory and instructions";
+    back.append(arrow, label);
+    modeMenu.appendChild(back);
 
     /*
      * What Kiro knows before you say anything.
@@ -2059,7 +2176,19 @@
     }
 
     renderInstructionsRow();
+  }
 
+  /** Switch pages without closing, and keep the keyboard somewhere sensible. */
+  function showModeMenuView(view) {
+    modeMenuView = view;
+    renderModeMenu();
+    modeMenu.scrollTop = 0;
+    // The clicked row was just replaced, so focus would fall to the page.
+    const target =
+      view === "main"
+        ? modeMenu.querySelector('[data-view="context"]')
+        : modeMenu.querySelector(".menu-back");
+    if (target) target.focus();
   }
 
   /*
@@ -2159,15 +2288,17 @@
   }
 
   /**
-   * What the button says.
+   * What the button says: both halves, always.
    *
-   * Review is the default and needs no announcing. Manual and Autopilot
-   * change what happens to your files without any other sign on screen, so
-   * they ride on the button where they cannot be missed.
+   * Review used to be left off as the default, which meant the button read
+   * "Default" whether edits were being reviewed or the settings had drifted —
+   * and nobody reading it could tell the default from an omission. Plan is
+   * the exception, because it makes no edits for supervision to describe, and
+   * a combination matching no mode has no name to show.
    */
   function modeButtonLabel() {
     const mode = CHAT_MODES.find((m) => m.id === currentModeId) || CHAT_MODES[0];
-    if (currentModeId === "plan" || editMode === "review" || editMode === "custom") {
+    if (currentModeId === "plan" || editMode === "custom") {
       return mode.label;
     }
     const supervision = EDIT_MODES.find((m) => m.id === editMode);
@@ -2234,8 +2365,8 @@
 
   /** What rides along with a message, independent of everything above. */
   const MESSAGE_TOGGLES = [
-    { key: "attachActiveFile", label: "The file I am looking at" },
-    { key: "sendSelection", label: "The code I have highlighted" },
+    { key: "attachActiveFile", label: "Current file", title: "The file open in the editor" },
+    { key: "sendSelection", label: "Highlighted code", title: "The lines selected in the editor" },
   ];
 
   function setMenu(menu, button, open) {
@@ -2316,6 +2447,8 @@
     // and quietly let the other go stale. This is the moment it is read.
     if (open) {
       vscode.postMessage({ type: "requestMemory" });
+      // Always opens on the page you use most, not wherever it was left.
+      modeMenuView = "main";
       renderModeMenu();
     }
     setMenu(modeMenu, modeBtn, open);
@@ -2343,6 +2476,13 @@
 
     const row = event.target.closest(".mode-row");
     if (!row) return;
+
+    // Changing page is not a choice, so the menu stays open for it.
+    if (row.dataset.view) {
+      pageChangeClick = event;
+      showModeMenuView(row.dataset.view);
+      return;
+    }
 
     if (row.dataset.modeId) {
       setMode(row.dataset.modeId);
@@ -2735,42 +2875,64 @@
 
   function renderUsage(next) {
     usage = next || {};
-    const parts = [];
 
-    if (typeof usage.sessionCredits === "number") {
-      parts.push(`${credits(usage.sessionCredits)} credits this chat`);
-    }
-    if (typeof usage.accountCreditsUsed === "number") {
-      const total =
-        typeof usage.accountCreditsLimit === "number"
-          ? `/${credits(usage.accountCreditsLimit)}`
-          : "";
-      parts.push(
-        `${credits(usage.accountCreditsUsed)}${total} credits on ${usage.planName || "your plan"}`
-      );
-    }
+    /*
+     * The row says two short things: how full the context is, and what this
+     * chat has cost. The account's figures used to ride here too, which made
+     * the strip a sentence that wrapped in a sidebar; they are in the panel,
+     * and in the tooltip, so nothing is lost by leaving them off the row.
+     */
+    let context;
+    let full = false;
     if (contextState().percent !== undefined) {
-      parts.push(`context ${usage.contextPercent.toFixed(0)}% full`);
+      const whole = usage.contextPercent.toFixed(0);
+      full = usage.contextPercent >= 80;
+      // The chip's own meter says what the number is, so the word "Context"
+      // is left to the tooltip and the accessible name. "full" only once it
+      // is worth the word; "7% full" reads as alarm.
+      context = full ? `${whole}% full` : `${whole}%`;
       usageFill.style.width = `${Math.min(100, Math.max(0, usage.contextPercent))}%`;
-      usageFill.classList.toggle("warn", usage.contextPercent >= 80);
+      usageFill.classList.toggle("warn", full);
     } else {
       // Emptied, not left where the last chat put it. The fill was only ever
       // assigned, so a new conversation's bar flashed the old one's fullness
       // before its first meter arrived.
       usageFill.style.width = "0%";
       usageFill.classList.remove("warn");
-      parts.push("Context not reported");
+      context = "Context not reported";
     }
+    // A dash beside an empty meter, not a zero: nothing was reported, and the
+    // full sentence does not fit a chip in a sidebar. The tooltip and the
+    // accessible name still say it in words.
+    usageText.textContent = contextState().percent === undefined ? "—" : context;
+    usageText.classList.toggle("warn", full);
+
+    const spend =
+      typeof usage.sessionCredits === "number" ? `${credits(usage.sessionCredits)} credits` : "";
+    // "cr" on the chip, where the width is; the word in full everywhere else.
+    usageCredits.textContent = spend ? `${credits(usage.sessionCredits)} cr` : "";
+    usageCredits.hidden = !spend;
 
     // Credits arrive throughout a turn. Only redraw the list underneath when
     // it is actually on screen; otherwise opening it refreshes it.
     if (!modelMenu.hidden) renderModelMenu();
 
-    usageBar.hidden = parts.length === 0;
-    usageText.textContent = parts.join("  \u00b7  ");
-    usageBar.title = usage.accountResetsOn
-      ? `Plan credits renew ${usage.accountResetsOn}`
-      : "View session context and account usage";
+    const details = [context.startsWith("Context") ? context : `Context ${context}`];
+    if (spend) details.push(`${spend} this chat`);
+    if (typeof usage.accountCreditsUsed === "number") {
+      const total =
+        typeof usage.accountCreditsLimit === "number"
+          ? `/${credits(usage.accountCreditsLimit)}`
+          : "";
+      details.push(
+        `${credits(usage.accountCreditsUsed)}${total} credits on ${usage.planName || "your plan"}`
+      );
+    }
+    if (usage.accountResetsOn) details.push(`renews ${usage.accountResetsOn}`);
+    usageBar.hidden = false;
+    usageBar.title = `${details.join(" \u00b7 ")}. Click for details.`;
+    // "7% \u00b7 0.02 cr" is not a name a screen reader can make sense of.
+    usageBar.setAttribute("aria-label", `${details.join(", ")}. Show details`);
     if (!usagePanel.hidden) renderUsagePanel();
   }
 
@@ -3054,7 +3216,24 @@
     vscode.postMessage({ type: btn.dataset.act });
   });
 
+  /*
+   * The click that last changed the mode menu's page.
+   *
+   * Moving between pages replaces the row that was clicked, so by the time the
+   * event reaches the document its target is detached and `contains` answers
+   * false — which closed the menu on every page change. Skipping *every*
+   * detached target was the first fix, and it was too broad: a copy button in a
+   * streaming reply, a /help row or a history row are also replaced on click,
+   * and those are outside every menu, so an open one stayed open. Only the
+   * page change itself is exempt.
+   */
+  let pageChangeClick = null;
+
   document.addEventListener("click", (event) => {
+    if (event === pageChangeClick) {
+      pageChangeClick = null;
+      return;
+    }
     if (!attachBtn.contains(event.target) && !attachMenu.contains(event.target)) {
       setMenu(attachMenu, attachBtn, false);
     }
@@ -3836,6 +4015,13 @@
   }
 
   function showSetup(reason, detail) {
+    // The setup screen replaces the history list as well as the transcript.
+    // Left marked open, the composer stayed hidden after setup finished, and
+    // leaveSetup handed back a panel with no message box.
+    if (historyOpen) {
+      historyOpen = false;
+      formEl.hidden = false;
+    }
     setup = {
       reason,
       state: reason === "missing" ? "looking" : "needs-signin",
@@ -4082,6 +4268,10 @@
     historyOpen = true;
     historyQuery = "";
     setComposerEnabled(false, "Pick a chat, or go back");
+    // The list is a page of its own, not something to reply to: a greyed-out
+    // box under it only suggests there is. Hidden rather than disabled, and
+    // only the composer — a permission or change bar still needs answering.
+    formEl.hidden = true;
     renderHistory();
     // Draw whatever we already have, then ask for the current list rather
     // than showing a stale one.
@@ -4091,6 +4281,7 @@
   /** Put the conversation back exactly as it was. */
   function closeHistory() {
     historyOpen = false;
+    formEl.hidden = false;
     setComposerEnabled(true);
     messagesEl.innerHTML = "";
     if (history.length > 0) restoreHistory(history);
@@ -4204,7 +4395,8 @@
     stopped: "Not connected",
     starting: "Starting Kiro\u2026",
     ready: "Ready",
-    busy: "Kiro is working\u2026",
+    // Short, because the context reading now shares this row.
+    busy: "Working\u2026",
   };
 
   window.addEventListener("message", (event) => {
@@ -4320,6 +4512,9 @@
         // The mode menu carries all of this now, and the button label shows
         // supervision when it is not the default.
         modeLabel.textContent = modeButtonLabel();
+        // The label now carries supervision, so the name read out for the
+        // button has to follow it, or it keeps announcing the old mode.
+        modeBtn.setAttribute("aria-label", `Workflow: ${modeLabel.textContent}`);
         renderModeMenu();
         renderChips();
         break;
@@ -4594,6 +4789,12 @@
         break;
 
       case "cleared":
+        // `+` pressed from the list lands here, and the list is gone after it.
+        if (historyOpen) {
+          historyOpen = false;
+          formEl.hidden = false;
+          if (!setup) setComposerEnabled(true);
+        }
         readOnlyChat = false;
         pendingReview = null;
         pendingChanges = null;
@@ -4632,6 +4833,7 @@
         // The transcript comes back from the extension's copy, which outlives
         // this panel. Kiro is told to reload the session separately.
         historyOpen = false;
+        formEl.hidden = false;
         readOnlyChat = false;
         setComposerEnabled(true);
         // The other chat's pending edits are not this chat's to answer.

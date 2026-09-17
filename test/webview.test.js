@@ -1640,9 +1640,9 @@ test("the mode picker carries the workflow, the supervision and what is sent", (
 
   const render = js.slice(js.indexOf("function renderModeMenu()"));
   const body = render.slice(0, render.indexOf("\n  /**"));
-  assert.match(body, /menuHeading\("Workflow"\)/);
-  assert.match(body, /menuHeading\(\s*\n?\s*"When Kiro edits a file"/);
-  assert.match(body, /menuHeading\("Sent with each message"\)/);
+  assert.match(body, /menuHeading\("How Kiro approaches the task"\)/);
+  assert.match(body, /menuHeading\("When Kiro edits files"\)/);
+  assert.match(body, /menuHeading\("Include with each message"\)/);
   assert.match(css, /^\.menu-head \{/m, "the groups need to be told apart");
 
   // The four write gates are one choice, not four booleans: named modes say
@@ -1679,7 +1679,7 @@ test("the session's numbers end with the session; the account's do not", () => {
   const session = fs.readFileSync(path.join(root, "src", "kiroSession.ts"), "utf8");
   for (const method of [
     "async newSession(options: { restart?: boolean } = {})",
-    "async loadSession(sessionId: string)",
+    "async loadSession(sessionId: string, priorCredits?: number)",
   ]) {
     const at = session.indexOf(method);
     assert.ok(at > -1, `${method} should exist`);
@@ -1706,6 +1706,38 @@ test("every credit figure goes through one formatter", () => {
   // Mirrored in usage.ts, which is where the extension side reads them.
   const usage = fs.readFileSync(path.join(root, "src", "usage.ts"), "utf8");
   assert.match(usage, /export function formatCredits\(/);
+});
+
+/*
+ * Status and context share one row, and the reading is a chip carrying its
+ * own short meter. They were two full-width rows with a border each; the
+ * account's figures made the second a sentence that wrapped in a sidebar.
+ */
+test("the status and the context reading are one row, the reading a chip", () => {
+  const top = provider.slice(provider.indexOf('<div class="topbar">'));
+  const row = top.slice(0, top.indexOf('<div id="messages"'));
+  for (const id of ["status", "usage-bar", "usage-panel"]) {
+    assert.match(row, new RegExp(`id="${id}"`), `#${id} belongs to the top row`);
+  }
+  const chip = row.slice(row.indexOf('id="usage-bar"'), row.indexOf("</button>"));
+  assert.match(chip, /id="usage-fill"/, "the meter lives inside the chip");
+  assert.doesNotMatch(provider, /class="usage-wrap"/, "no second row");
+  assert.match(css, /^\.topbar \{[^}]*border-bottom:/m, "one divider, under the row");
+  assert.doesNotMatch(
+    css.match(/^\.status \{[^}]*\}/m)[0],
+    /border-bottom/,
+    "and the status draws no divider of its own"
+  );
+  // Its visible text is a bare number, so the name has to say what it is.
+  assert.match(sliceFrom(js, "function renderUsage(next)"), /usageBar\.setAttribute\("aria-label"/);
+
+  const render = sliceFrom(js, "function renderUsage(next)");
+  assert.doesNotMatch(
+    render.slice(0, render.indexOf("usageBar.title")),
+    /usageText\.textContent = [^;]*accountCreditsUsed/,
+    "the account's figures stay off the row"
+  );
+  assert.match(css, /@container topbar \(max-width: \d+px\) \{\s*\.usage-credits \{\s*display: none;/);
 });
 
 /*
@@ -1765,6 +1797,112 @@ test("the message toggles are drawn switches", () => {
 });
 
 /*
+ * The mode menu has two pages. Memory and instructions sit one row deep, so
+ * the choices made per conversation fit in a sidebar without scrolling past
+ * files you open now and then.
+ */
+test("memory and instructions live on a second page of the mode menu", () => {
+  const main = sliceFrom(js, "function renderModeMenu()");
+  assert.match(main, /if \(modeMenuView === "context"\) \{\s*renderContextView\(\);/);
+  assert.match(main, /row\.dataset\.view = "context";/, "the main page drills in");
+  assert.doesNotMatch(main, /memoryFileRow|renderInstructionsRow\(\)/, "and does not draw those rows");
+
+  const context = sliceFrom(js, "function renderContextView()");
+  assert.match(context, /back\.dataset\.view = "main";/, "the second page has a way back");
+  assert.match(context, /memoryFileRow\(file\)/);
+  assert.match(context, /renderInstructionsRow\(\);/);
+
+  // Changing page is not a choice: the menu stays open for it, and it opens
+  // on the main page whatever page it was closed on.
+  const handler = js.slice(js.indexOf('modeMenu.addEventListener("click"'));
+  const view = handler.slice(handler.indexOf("if (row.dataset.view)"));
+  const branch = view.slice(0, view.indexOf("return;"));
+  assert.match(branch, /showModeMenuView\(row\.dataset\.view\)/);
+  assert.doesNotMatch(branch, /setMenu\(modeMenu, modeBtn, false\)/);
+  const open = js.slice(js.indexOf("modeBtn.addEventListener"));
+  assert.match(open.slice(0, open.indexOf("\n  });")), /modeMenuView = "main";/);
+});
+
+/*
+ * Changing page replaces the row that was clicked, so when the click reaches
+ * the document its target is detached and `modeMenu.contains` answers false.
+ * The outside-click handler took that as a click outside and closed the menu
+ * the moment the second page opened. Reproduced in a browser against the real
+ * panel before this guard, and fixed by it. The first guard skipped every
+ * detached target, which also kept menus open over clicks on things outside
+ * them that redraw themselves, so only the page-change click is exempt.
+ */
+test("a click that redraws the menu is not a click outside it", () => {
+  const handler = js.slice(js.indexOf('document.addEventListener("click", (event) => {'));
+  const body = handler.slice(0, handler.indexOf("\n  });"));
+  const guard = body.indexOf("if (event === pageChangeClick)");
+  assert.ok(guard > -1, "the page change is recognised");
+  assert.ok(guard < body.indexOf("setMenu(modeMenu, modeBtn, false)"), "before anything is closed");
+  // Every other click on something that redraws itself (a copy button in a
+  // streaming reply, a /help row) is outside the menus and must close them.
+  assert.doesNotMatch(body, /isConnected/, "detached targets in general are not exempt");
+  const menuClick = js.slice(js.indexOf('modeMenu.addEventListener("click"'));
+  const viewBranch = menuClick.slice(menuClick.indexOf("if (row.dataset.view)"));
+  assert.ok(
+    viewBranch.indexOf("pageChangeClick = event") < viewBranch.indexOf("showModeMenuView("),
+    "the click is marked before the rows it came from are replaced"
+  );
+});
+
+/*
+ * A line on a dropdown surface takes the menu's colours. `panel.border` is a
+ * sidebar colour and Dark Modern makes it darker than `dropdown.background`
+ * (#2B2B2B on #313131), so every separator and segment edge in the menus drew
+ * as a dark groove — invisible in a preview with invented theme values, and
+ * the first thing anyone noticed in VS Code.
+ */
+test("lines inside the menus do not use the sidebar's border colour", () => {
+  assert.match(css, /--menu-border: var\(--vscode-dropdown-border/);
+  assert.match(css, /--menu-separator: var\(--vscode-menu-separatorBackground/);
+  for (const selector of [
+    ".popup",
+    ".mode-menu,\r\n.model-menu",
+    ".menu-head:not(:first-child)",
+    ".menu-segments",
+    ".mode-row.segment + .mode-row.segment",
+    ".model-foot",
+    ".instructions-panel",
+    ".usage-panel",
+    ".context-details",
+  ]) {
+    const at = css.indexOf(`\n${selector} {`);
+    assert.ok(at > -1, `${selector} should be findable`);
+    const rule = css.slice(at, css.indexOf("}", at));
+    assert.doesNotMatch(rule, /--vscode-panel-border/, `${selector} sits on a dropdown surface`);
+  }
+});
+
+/*
+ * Supervision is one segmented control, and each segment is still a
+ * `.mode-row` carrying `data-edit-mode`, so the click handler and the
+ * ask-and-wait rule reach it unchanged.
+ */
+test("supervision is a segmented control that still asks and waits", () => {
+  const fn = sliceFrom(js, "function editModeSegments()");
+  assert.match(fn, /segment\.className = "mode-row segment";/);
+  assert.match(fn, /segment\.dataset\.editMode = mode\.id;/);
+  assert.match(fn, /setAttribute\("aria-current", "true"\)/, "the current one says so");
+  // Not preceded by a dot: `segment.dataset.editMode = mode.id` is the row's
+  // data, not the state.
+  assert.doesNotMatch(fn, /(?<![.\w])editMode = /, "and nothing here decides the mode");
+  assert.match(css, /^\.menu-segments \{/m);
+});
+
+/*
+ * Workflow rows carry a radio dot beside the highlight, drawn from
+ * `.selected` so the mark and the highlight cannot disagree.
+ */
+test("workflow rows are marked as pick-one", () => {
+  assert.match(sliceFrom(js, "function renderModeMenu()"), /radio: true,/);
+  assert.match(css, /^\.mode-row\.selected \.menu-radio \{/m);
+});
+
+/*
  * Picking a workflow is the errand, so the menu closes. Supervision and the
  * message toggles are things you might set two of, and staying open is what
  * shows the change landing — they are also the rows that wait to be told
@@ -1786,15 +1924,17 @@ test("only picking a workflow closes the mode menu", () => {
 });
 
 /*
- * Review is the default and needs no announcing. Manual and Autopilot change
- * what happens to your files with nothing else on screen to say so, so they
- * ride on the button where they cannot be missed.
+ * Both halves ride on the button, Review included. Leaving the default off
+ * made "Default" mean either Review or an omission, and nobody could tell
+ * which from the button. Plan makes no edits and a custom combination has no
+ * name, so those two show the workflow alone.
  */
-test("the button says so when supervision is not the default", () => {
+test("the button always names the supervision, except where there is none", () => {
   const label = js.slice(js.indexOf("function modeButtonLabel()"));
   const body = label.slice(0, label.indexOf("\n  }"));
-  assert.match(body, /editMode === "review"/, "the default is not announced");
-  assert.match(body, /currentModeId === "plan"/, "and Plan changes nothing anyway");
+  assert.doesNotMatch(body, /editMode === "review"/, "the default is announced like the others");
+  assert.match(body, /currentModeId === "plan"/, "Plan changes nothing");
+  assert.match(body, /editMode === "custom"/, "and custom has no name to show");
   assert.match(body, /\$\{mode\.label\} · \$\{supervision\.label\}/);
   assert.match(js, /modeLabel\.textContent = modeButtonLabel\(\);/);
 });
@@ -3306,8 +3446,8 @@ test("a rewind repoints the chat at the session Kiro forked", () => {
   assert.match(rewind, /saveCurrentChat/, "and be written down");
 
   const session = fs.readFileSync(path.join(root, "src", "kiroSession.ts"), "utf8");
-  const method = sliceFrom(session, "async rewindTo(logIndex: number)");
-  assert.match(method, /loadSession\(forked\)/, "the forked session must be loaded");
+  const method = sliceFrom(session, "async rewindTo(logIndex: number, keptCredits?: number)");
+  assert.match(method, /loadSession\(forked, keptCredits\)/, "the forked session must be loaded");
 });
 
 /**
@@ -3825,13 +3965,12 @@ test("the reasoning is one block, and an older chat's pieces are not lost", () =
 });
 
 /*
- * The placeholder and the connecting spinner both centre themselves with auto
- * margins, and shown together they split the column between them — the title
- * jumped into the upper half and the spinner sat in the lower. The pair of
- * rules below is what makes them centre as one group; losing either half
- * brings the jump back.
+ * On a blank chat, connecting shows the spinner alone. It used to be appended
+ * under "Ask Kiro about your code.", inviting a message into a locked box.
+ * Only the placeholder gives way — a real transcript stays on screen.
  */
-test("the connecting spinner joins the empty-chat placeholder", () => {
-  assert.match(css, /\.empty:has\(\+ \.connecting\)\s*\{\s*margin-bottom:\s*0;\s*\}/);
-  assert.match(css, /\.empty \+ \.connecting\s*\{\s*margin-top:\s*0;\s*\}/);
+test("the connecting spinner stands in for the empty-chat placeholder", () => {
+  assert.match(css, /\.empty:has\(~ \.connecting\)\s*\{\s*display:\s*none;\s*\}/);
+  const show = sliceFrom(js, "function showConnecting(");
+  assert.doesNotMatch(show, /innerHTML = ""/, "the conversation is not emptied");
 });

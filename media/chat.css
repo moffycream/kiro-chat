@@ -13,6 +13,18 @@
   --dock-h: 96px;
   /* How far above the dock the transcript starts dissolving. */
   --dock-fade: 22px;
+  /*
+   * Lines drawn on a dropdown surface — the menus, the instructions box, the
+   * usage panel — take the menu's own colours, never `panel.border`.
+   *
+   * `panel.border` is meant for the sidebar, and a theme is free to make it
+   * darker than `dropdown.background`: Dark Modern does (#2B2B2B on #313131),
+   * so every separator and segment edge in the menus drew as a dark groove.
+   * These are the keys VS Code's own menus and dropdowns use, lighter than the
+   * surface in every built-in theme.
+   */
+  --menu-border: var(--vscode-dropdown-border, var(--vscode-panel-border));
+  --menu-separator: var(--vscode-menu-separatorBackground, var(--menu-border));
 }
 
 * {
@@ -49,12 +61,38 @@ body {
 
 /* --- status line ------------------------------------------------ */
 
-.status {
+/*
+ * The status and the context reading share one row.
+ *
+ * They were two full-width rows with a border each, and the second spent the
+ * whole width of the panel on a bar to show one small number. The reading is
+ * now a chip at the end of the status row, with a meter short enough to sit
+ * beside its own figure.
+ *
+ * Positioned so the details panel anchors here, and a container so the
+ * credits can give way to the width of the row, not of the window.
+ */
+.topbar {
+  position: relative;
   flex: 0 0 auto;
-  padding: 5px var(--gap);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 var(--gap);
+  border-bottom: 1px solid var(--vscode-panel-border);
+  container-type: inline-size;
+  container-name: topbar;
+}
+
+/* The status never gives way to the chip: "Worki…" says nothing at all. */
+.status {
+  flex: 1 0 auto;
+  padding: 5px 0;
   font-size: 0.8em;
   color: var(--vscode-descriptionForeground);
-  border-bottom: 1px solid var(--vscode-panel-border);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .status::before {
@@ -1447,31 +1485,48 @@ button:disabled {
  * whole width of it in the primary colour.
  */
 .usage-bar {
-  width: 100%;
+  flex: 0 1 auto;
+  min-width: 0;
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 5px 12px;
-  border: none;
-  border-radius: 0;
-  border-bottom: 1px solid var(--vscode-panel-border);
+  gap: 6px;
+  margin: 3px 0;
+  padding: 1px 6px;
+  border-radius: 4px;
   background: none;
-  color: inherit;
+  color: var(--vscode-descriptionForeground);
   font: inherit;
   text-align: left;
+  white-space: nowrap;
   cursor: pointer;
 }
 
 .usage-bar:hover {
   background: var(--vscode-toolbar-hoverBackground, rgba(127, 127, 127, 0.12));
+  color: var(--vscode-foreground);
 }
 
+.usage-bar:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: -1px;
+}
+
+/*
+ * A short meter inside the chip. Always drawn, empty when nothing is
+ * reported, so the chip keeps its shape between chats. `display: block` on
+ * the fill because it is a span now, and a span ignores a height.
+ */
 .usage-track {
-  flex: 1 1 auto;
+  flex: 0 0 auto;
+  width: 36px;
   height: 4px;
   border-radius: 2px;
   overflow: hidden;
   background: var(--vscode-panel-border);
+}
+
+.usage-track > .usage-fill {
+  display: block;
 }
 
 .usage-fill {
@@ -1487,16 +1542,38 @@ button:disabled {
 }
 
 .usage-text {
-  /* Let the credits/context label fit narrow sidebars without page overflow. */
+  /* The reading shortens with an ellipsis before it wraps the row. */
   flex: 0 1 auto;
   min-width: 0;
-  overflow-wrap: anywhere;
+  overflow: hidden;
+  text-overflow: ellipsis;
   font-size: 0.8em;
-  color: var(--vscode-descriptionForeground);
 }
 
-.usage-bar > .caret {
+/* Said in words as well as colour: past 80% the figure turns orange and says "full". */
+.usage-text.warn {
+  color: var(--vscode-editorWarning-foreground, var(--vscode-charts-orange, #d18616));
+}
+
+.usage-credits {
   flex: 0 0 auto;
+  font-size: 0.8em;
+}
+
+.usage-credits::before {
+  content: "\00b7";
+  margin-right: 6px;
+}
+
+/*
+ * Credits are the half that gives way. In a narrow sidebar the row keeps the
+ * status and the context reading; the spend is still in the tooltip and one
+ * click away in the panel.
+ */
+@container topbar (max-width: 250px) {
+  .usage-credits {
+    display: none;
+  }
 }
 
 .msg.note {
@@ -1713,7 +1790,7 @@ button:disabled {
   min-width: 190px;
   padding: 4px;
   border-radius: var(--radius);
-  border: 1px solid var(--vscode-panel-border);
+  border: 1px solid var(--menu-border);
   background: var(--vscode-dropdown-background);
   box-shadow: 0 3px 12px rgba(0, 0, 0, 0.35);
 }
@@ -1750,7 +1827,7 @@ button:disabled {
 
 .menu-head:not(:first-child) {
   margin-top: 4px;
-  border-top: 1px solid var(--vscode-panel-border);
+  border-top: 1px solid var(--menu-separator);
   padding-top: 9px;
 }
 
@@ -1927,12 +2004,6 @@ button:disabled {
   white-space: nowrap;
 }
 
-.caret {
-  flex: 0 0 auto;
-  opacity: 0.6;
-  font-size: 0.8em;
-}
-
 /*
  * Narrow enough that a label is no longer a label.
  *
@@ -1998,7 +2069,7 @@ button:disabled {
   overflow-y: auto;
   padding: 4px;
   border-radius: var(--radius);
-  border: 1px solid var(--vscode-panel-border);
+  border: 1px solid var(--menu-border);
   background: var(--vscode-dropdown-background);
   box-shadow: 0 3px 12px rgba(0, 0, 0, 0.35);
 }
@@ -2023,6 +2094,93 @@ button:disabled {
 }
 
 /*
+ * A one-of row: a radio dot beside the text.
+ *
+ * The highlight alone looked like the hover tint on the next row, so nothing
+ * said "only one of these". The dot says it, drawn from `.selected` so the
+ * mark and the highlight cannot disagree.
+ */
+.mode-row.radio,
+.mode-row.drill {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.mode-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.menu-radio {
+  flex: 0 0 auto;
+  box-sizing: border-box;
+  width: 12px;
+  height: 12px;
+  margin-top: 2px;
+  border-radius: 50%;
+  border: 1px solid var(--vscode-descriptionForeground);
+}
+
+.mode-row.selected .menu-radio {
+  border: 4px solid currentColor;
+}
+
+.mode-tag {
+  margin-left: 6px;
+  font-weight: normal;
+  font-size: 0.9em;
+  opacity: 0.75;
+}
+
+/*
+ * Supervision: one control in one of three positions, not three more rows
+ * to choose between. Each segment is still a `.mode-row`, so it keeps the
+ * row's hover and selection colours rather than inventing its own.
+ */
+.menu-segments {
+  display: flex;
+  margin: 2px 10px 4px;
+  border: 1px solid var(--menu-border);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.mode-row.segment {
+  flex: 1 1 0;
+  min-width: 0;
+  padding: 5px 4px;
+  border-radius: 0;
+  text-align: center;
+  font-size: 0.88em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mode-row.segment + .mode-row.segment {
+  border-left: 1px solid var(--menu-separator);
+}
+
+.segment-note {
+  padding-top: 2px;
+}
+
+.menu-chevron {
+  flex: 0 0 auto;
+  align-self: center;
+  color: var(--vscode-descriptionForeground);
+  font-size: 1.2em;
+  line-height: 1;
+}
+
+.mode-row.menu-back {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/*
  * The standing-instructions box.
  *
  * A popup anchored in .mode-wrap, like the menus, so a narrow sidebar cannot
@@ -2043,8 +2201,8 @@ button:disabled {
   right: 0;
   z-index: 30;
   padding: 10px 12px;
-  border-top: 1px solid var(--vscode-panel-border);
-  border-bottom: 1px solid var(--vscode-panel-border);
+  border-top: 1px solid var(--menu-border);
+  border-bottom: 1px solid var(--menu-border);
   background: var(--vscode-dropdown-background, var(--vscode-editor-background));
   box-shadow: 0 -4px 12px rgba(0, 0, 0, 0.35);
 }
@@ -2262,7 +2420,7 @@ button:disabled {
 .model-foot {
   margin: 4px 0 0;
   padding: 7px 9px;
-  border-top: 1px solid var(--vscode-panel-border);
+  border-top: 1px solid var(--menu-separator);
   font-size: 0.8em;
   line-height: 1.5;
   color: var(--vscode-descriptionForeground);
@@ -2364,23 +2522,19 @@ button:disabled {
 }
 
 /*
- * Under the empty-chat placeholder, the spinner joins it rather than sharing
- * the column with it.
+ * On a blank chat the spinner stands in for the placeholder; it is not added
+ * under it.
  *
- * Both blocks centre themselves with auto margins, which is right for either
- * on its own. Put together — `showConnecting` appends below whatever is in
- * the transcript, and on a blank one that is the placeholder — the column
- * split its free space between the two, so "Ask Kiro about your code." jumped
- * into the upper half and the spinner sat alone in the lower. Dropping the
- * two inner margins leaves the pair centred as one group, with the column's
- * own gap between them.
+ * `showConnecting` appends below whatever is in the transcript, and on a blank
+ * one that is "Ask Kiro about your code." — an invitation to type into a box
+ * that is locked until Kiro is up. Joining the two into one centred group was
+ * tried first and still read as a loading line bolted under the text. Hidden
+ * with CSS rather than removed, so `clearConnecting` taking the spinner away
+ * is all it takes to bring the placeholder back. A real conversation is never
+ * hidden: emptying the transcript here was an earlier bug.
  */
-.empty:has(+ .connecting) {
-  margin-bottom: 0;
-}
-
-.empty + .connecting {
-  margin-top: 0;
+.empty:has(~ .connecting) {
+  display: none;
 }
 
 .spinner {
@@ -2773,12 +2927,6 @@ button:disabled {
 
 /* --- account usage panel -------------------------------------------- */
 
-/* Anchors the dropdown to the strip rather than to the page. */
-.usage-wrap {
-  position: relative;
-  flex: 0 0 auto;
-}
-
 .usage-panel {
   max-height: 65vh;
   overflow-y: auto;
@@ -2788,7 +2936,7 @@ button:disabled {
   right: 0;
   z-index: 25;
   padding: 10px 12px;
-  border-bottom: 1px solid var(--vscode-panel-border);
+  border-bottom: 1px solid var(--menu-border);
   background: var(--vscode-dropdown-background, var(--vscode-editor-background));
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
 }
@@ -2796,7 +2944,7 @@ button:disabled {
 .context-details {
   margin-bottom: 12px;
   padding-bottom: 8px;
-  border-bottom: 1px solid var(--vscode-panel-border);
+  border-bottom: 1px solid var(--menu-separator);
 }
 
 .context-row {

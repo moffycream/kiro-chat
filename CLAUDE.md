@@ -204,7 +204,13 @@ Autopilot and Spec with Manual are both sensible. Four details that are easy to 
 - **Picking a workflow closes the menu; the other two rows leave it open.** A workflow is
   the whole errand. Supervision and the toggles are things you might set two of, and
   staying put is what shows the change landing.
-- **One-of rows are marked by the selection highlight, toggles by a drawn switch.** Both
+- **One-of rows are marked by the selection highlight plus a radio dot, toggles by a drawn
+  switch.** The highlight alone looked like the hover tint one row away, so nothing said
+  "pick one"; `.menu-radio` is drawn from `.selected`, so the two cannot disagree. Only the
+  selected workflow shows its description — five at once made every row the same grey
+  block — and the rest carry it in `title`. Supervision is `editModeSegments()`, one
+  segmented control whose segments are still `.mode-row`s with `data-edit-mode`, so the
+  click handler reaches them unchanged; the hint for the current mode sits under it. Both
   wearing the highlight merged two switched-on toggles into a single blue slab, and a
   highlight on several rows at once reads as "these were all chosen" directly under a group
   that means "only this one". The switch was briefly a `✓` / `○` character, which is a glyph
@@ -217,9 +223,15 @@ Autopilot and Spec with Manual are both sensible. Four details that are easy to 
   the settings are not in — the permission card's rule again. `setSetting` also checks an
   untrusted key against `PANEL_SETTINGS` before writing, and `gatesForMode` refuses
   anything that is not a named mode.
-- **`modeButtonLabel()` puts supervision on the button, but only when it is not Review.**
-  Manual and Autopilot change what happens to your files with nothing else on screen to say
-  so. Review is the default and Plan changes nothing, so neither is announced.
+- **`modeButtonLabel()` always puts supervision on the button — Review included.** It used
+  to leave Review off as the default, which made "Default" mean either Review or an
+  omission. Plan makes no edits and `custom` has no name, so those two show the workflow
+  alone.
+- **Memory and instructions are a second page, not a group.** `modeMenuView` is `"main"`
+  or `"context"`; a `data-view` row switches it through `showModeMenuView` without closing
+  the menu, and moves focus because the clicked row was just replaced. Opening the menu
+  always resets to `"main"`. They are looked at now and then, and sharing one page made the
+  menu taller than a sidebar and buried the per-conversation choices under them.
 
 This also replaced the old `defaults` message — keeping it would have given `sendSelection`
 two writers in `chat.js`.
@@ -885,7 +897,13 @@ Three things now keep them from being made, and all three depend on the same mea
   during a load starts a second Kiro and stops the client the load is using.
 - **`+` on a session nothing was said into hands the same one back.** It already is a new
   conversation. `kiroChat.restart` passes `restart: true` to opt out, because it tells the
-  user the agent was restarted and that is the escape hatch when Kiro wedges.
+  user the agent was restarted and that is the escape hatch when Kiro wedges. **Its context
+  reading stays with it.** Kiro sends `_kiro.dev/metadata` right after `session/new` naming
+  the empty session's usage (about 6% on 2.21.4, for the system prompt and context files), so
+  `newSession` used to wipe a figure that described the very session it was about to hand
+  back, and the chip sat on a dash until the first turn — Restart followed by `+` every time.
+  Only the credit side is reset on reuse, and `onUsage` still fires because the panel has
+  already emptied its chip on `cleared`.
 - **The rest are handed back through `kiro-cli chat --delete-session <id>`**, Kiro's own
   command, because Kiro keeps two stores and only it knows about both. `--session-source v2`
   names the one ACP writes; without it the delete also searches the older sqlite store and
@@ -1023,9 +1041,48 @@ chats. They share one flat object because that is what the panel draws from, so
 `SESSION_USAGE_KEYS` and `clearSessionUsage` are what let a reset tell them apart. Not
 having that cost twice: `newSession` did `usage = {}` and wiped the plan figures you had
 just fetched, and `loadSession` reset nothing, so "2.47 credits this chat" stayed on the
-strip while you read a different conversation. Both call `clearSessionUsage` now. A past
-chat's own credits are not stored anywhere, so nothing is put back in their place — no
-number is honest where a wrong one is not.
+strip while you read a different conversation. Both call `clearSessionUsage` now.
+
+**A reopened chat's credits are carried back from its own turns, not reset to zero.** This
+file used to say a past chat's credits are not stored anywhere; they are — every agent
+entry in the transcript carries `credits` since the meter was fixed. Resetting to zero made
+the strip read "0.2 cr" under a transcript showing 0.39 and 0.2. `creditsSpentIn`
+(`history.ts`) sums them for `loadSession(id, priorCredits)`, from all three places a
+session is loaded: `openChat`, the resume after Kiro stopped, and `rewindTo` (which sums
+the *kept* turns, so it trims before the rewind, not after). **The sum is only a total when
+nothing is missing from it**: a transcript trimmed to its tail, or any agent turn stored
+without a figure, returns `undefined`. `creditsUnknown` then keeps `readUsage` from
+writing `sessionCredits` at all for the rest of that conversation — otherwise the turns
+since reopening would be shown as though they were the whole chat, which is this bug again
+in a quieter form. Each turn's own line still shows its cost.
+
+**A reopened chat's context figure is the one Kiro saved, not the one Kiro sends on load.**
+Measured against kiro-cli 2.21.4, first by driving `kiro-cli acp` and then by running the
+built `KiroSession` with a real `AcpClient` against it: reopening a chat, Kiro sends
+`_kiro.dev/metadata` with a `contextUsagePercentage` just after `session/load` answers, and
+that figure is an **estimate from the conversation's text**. A session whose five turns had
+ended at 7.14 → 9.06% read 4.88% on every load — in a fresh process, and again in one that
+had just loaded it — and a small chat at 2.78% read about 1%. `/context` returns the same
+estimate, so it is not a second opinion. The committed 0.38.8 settled on the estimate too.
+The real figure is `last_context_usage.percentage` in `~/.kiro/sessions/cli/<id>.json`,
+which matched the last turn's `final_context_usage_percentage` in every session checked.
+
+This file once said the opposite — that the load's reading was right and the saved number
+was "not a substitute" — because a fix was verified by checking the figure *arrived*, not
+that it was *correct*, with the 9.06/4.88 disagreement written down instead of explained.
+Four things now carry it:
+
+- **`savedContext.ts` reads the save and answers `undefined` for anything odd** — it is
+  Kiro's internal file, not a protocol. With nothing saved (a chat that never made a
+  request, Kiro inside WSL) the load's estimate is still taken, as it always was.
+- **`contextFromSave` stops `readUsage` replacing the saved figure** until `send` starts a
+  turn, whose readings are real. `newSession` clears it.
+- **`refreshContext` and a typed `/context` do not fold their percentage in** while
+  `showsSavedContext` holds; any other command reporting one (`/compact`) has changed the
+  conversation and calls `endSavedContext()`.
+- **`loadSession` still resets before the request**, and `loadingSessionId` drops a
+  reading naming the chat being left. `test/loadUsage.test.js` drives the real class in the
+  measured order; `test/savedContext.test.js` covers the reader.
 
 **`meteringUsage` is an array, and reading it as anything else cost the whole
 feature.** kiro-cli 2.20.2 sends
@@ -1176,6 +1233,7 @@ out of it, because then it is all there is.
 - `[hidden] { display: none !important }` must sit **above** the component rules in `chat.css`. Author `display` rules outrank the browser's own `[hidden]`, so without the override the attach menu, drop overlay, usage strip and chip row are painted permanently. Four elements are toggled this way: `#chips`, `#usage-bar`, `#dropzone`, `#attach-menu`.
 - `.dropzone`, `.chips`, `.usage-bar`, `.popup`, `.usage-panel` each get exactly one rule block.
 - `.usage-bar` is a `<button>` (it toggles the account panel) and must keep opting out of the global `button` styling, or the whole strip paints in the primary colour.
+- **The status and the context reading are one `.topbar` row, and the reading is a chip.** They were two full-width rows with a border each. `#usage-bar` holds a 36px `.usage-track`, the percentage and this chat's credits; the one divider is `.topbar`'s `border-bottom`, and `.topbar` is positioned so `#usage-panel` anchors to it. A meter as the row's bottom edge was built first and swapped for the chip on review. Three details: the account figures stay off the row (on it they made a sentence that wrapped) and live in the tooltip and the panel; the chip's visible text is a bare number, so `renderUsage` sets an `aria-label` that says "Context"; and with no reading the chip shows a dash beside an empty meter, never `0%`. Under narrow widths `.usage-credits` gives way first through `@container topbar`, and `.status` is `flex-shrink: 0` because "Worki…" says nothing.
 - **`.composer-row` sets `--control-h` and every control in it takes that height.** They used to be sized three different ways and none of them lined up. Anything added to that row takes `--control-h` too. `.icon` also joined the `[hidden]` list above when Stop became an icon button: it is toggled with the `hidden` attribute and carries `display: inline-flex`, so it must stay below the `[hidden]` override.
 - **A plain-looking button must cancel `button:hover`, not just `button`.** `background: none` on a class beats `button`, but `button:hover` is a type plus a pseudo-class — specificity (0,1,1) — and outranks any single class, so the element sits transparent at rest and then paints solid primary blue under the pointer. This shipped four times (`.usage-bar`, `button.change-summary`, `.history-open`, which covered the row's own hover tint with a blue slab, and `.chip-muted`). One test walks every rule declaring both `background: none` and `border: none` and requires a matching `:hover`.
 
@@ -1188,6 +1246,7 @@ requires that, if any of its classes restyles the background, one of them carrie
 `:hover`. Per element, not per class: `.chip chip-muted` is covered by `.chip-muted:hover`.
 A hover rule need not be bare `.name:hover` either — `.permission-option:hover:not(:disabled)`
 counts, and a descendant rule deliberately does not.
+- **A line on a dropdown surface uses `--menu-border` / `--menu-separator`, never `--vscode-panel-border`.** Those map to `dropdown.border` and `menu.separatorBackground`. `panel.border` is a sidebar colour, and Dark Modern makes it darker than `dropdown.background` (#2B2B2B on #313131), so every separator in the menus drew as a dark groove. A browser preview with invented theme values hid it; **check colours against a real theme file** (`resources/app/extensions/theme-defaults/themes/` in the VS Code install), not guessed values.
 - Menus are anchored inside positioned parents (`.attach-wrap`, `.input-shell`, `.composer`) so they can't spill out of a narrow sidebar.
 
 **CSP is nonce-based** (`script-src 'nonce-...'`), so there are no inline handlers in the HTML — everything is wired up in `chat.js`. Text from Kiro goes through `escapeHtml` before the small hand-rolled markdown renderer runs, so a reply cannot inject markup.

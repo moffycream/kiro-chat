@@ -122,9 +122,11 @@ test("an open wait for a cost is closed by anything that moves on", () => {
   assert.ok(clears.length >= 2, "a new session and a loaded one both clear");
   for (const match of clears) {
     const before = session.slice(Math.max(0, match.index - 260), match.index);
+    // A loaded chat carries on from what its stored turns cost rather than
+    // from zero; either way the previous conversation's total is replaced.
     assert.match(
       before,
-      /completedCredits = 0/,
+      /completedCredits = (0|priorCredits \?\? 0);/,
       "each of them has to drop the conversation total too"
     );
     assert.match(before, /awaitingTurnCredits = false/, "and close an open wait");
@@ -366,7 +368,7 @@ test("connecting and starting a conversation are separate", () => {
   const connect = sliceFrom(session, "private async connect()");
   assert.doesNotMatch(connect, /session\/new/, "connecting must not start a conversation");
 
-  const load = sliceFrom(session, "async loadSession(sessionId: string)");
+  const load = sliceFrom(session, "async loadSession(sessionId: string, priorCredits?: number)");
   assert.match(load, /await this\.connect\(\)/, "a load connects");
   assert.doesNotMatch(load, /ensureReady\(\)/, "and must not go the route that creates one");
 
@@ -469,6 +471,46 @@ test("a new chat on a running agent asks for a session instead of restarting", a
     `nothing was restarted, so nothing should say so: ${statuses.join(", ")}`
   );
   assert.equal(statuses[statuses.length - 1], "ready");
+});
+
+/*
+ * The reading Kiro sends right after `session/new` names the empty session
+ * (about 6% for the system prompt, measured against kiro-cli 2.21.4). "+" on a
+ * session nothing was said into hands that same session back, so the reading
+ * still describes the conversation on screen — clearing it left the chip on a
+ * dash until the first turn, and Restart followed by "+" hit it every time.
+ */
+test("reusing an empty session keeps its context reading", async () => {
+  const posted = [];
+  const session = newSession({ onUsage: (usage) => posted.push(usage) });
+  const client = fakeClient({ "session/new": { sessionId: "fresh" } });
+  connected(session, client, "empty");
+  session.unspoken.add("empty");
+  session.usage = { contextPercent: 6.5, planName: "Pro" };
+
+  await session.newSession();
+
+  assert.equal(session.sessionId, "empty", "the empty session is handed back");
+  assert.ok(!client.requests.includes("session/new"), "and no second one is made");
+  assert.ok(posted.length > 0, "the reading is posted: the panel emptied its chip on cleared");
+  const last = posted[posted.length - 1];
+  assert.equal(last.contextPercent, 6.5, "its reading is Kiro's figure for this very session");
+  assert.equal(last.planName, "Pro", "and the account figures survive");
+});
+
+test("a new session after a spoken-into one starts with no reading", async () => {
+  const posted = [];
+  const session = newSession({ onUsage: (usage) => posted.push(usage) });
+  const client = fakeClient({ "session/new": { sessionId: "fresh" } });
+  connected(session, client, "spoken-into");
+  session.usage = { contextPercent: 40, sessionCredits: 1.2, planName: "Pro" };
+
+  await session.newSession();
+
+  const last = posted[posted.length - 1];
+  assert.equal(last.contextPercent, undefined, "the old chat's context is not this one's");
+  assert.equal(last.sessionCredits, undefined, "nor its spend");
+  assert.equal(last.planName, "Pro", "the account figures survive");
 });
 
 test("the Restart command still gets a fresh process", async () => {

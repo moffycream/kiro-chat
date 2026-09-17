@@ -11,6 +11,7 @@ import { changedSinceBaseline, describeChange, TurnChange } from "./turnChanges"
 import { findKiro } from "./findKiro";
 import { isInsideAnyRoot, isInsideRoot } from "./workspacePaths";
 import { isStaleLock, lockedPidFrom, parseSessionLock, sessionLockPath } from "./sessionLocks";
+import { savedContextPercent } from "./savedContext";
 import { lookupProcess } from "./processFacts";
 import { looksLikeSignIn } from "./startupError";
 import { LaunchInputs, launchInputsChanged, snapshotLaunchInputs } from "./launchInputs";
@@ -362,6 +363,21 @@ export class KiroSession {
   private commands: SlashCommand[] = [];
   /** True while session/load runs, so a replay does not double-paint. */
   private replaying = false;
+  /**
+   * True when the conversation's earlier cost could not be recovered, so no
+   * running total is shown — only per-turn figures, which are still exact.
+   */
+  private creditsUnknown = false;
+  /**
+   * True while a reopened chat's context figure is the one Kiro saved after
+   * its last real request (`savedContext.ts`), until this panel's next turn.
+   */
+  private contextFromSave = false;
+  /** Swappable so the tests can supply a saved figure without a home directory. */
+  readSavedContext: (sessionId: string) => number | undefined = (sessionId) =>
+    this.canTidySessions ? savedContextPercent(sessionId) : undefined;
+  /** The session a load in flight is bringing in; `sessionId` moves only once it answers. */
+  private loadingSessionId: string | undefined;
   private textSpy: ((text: string) => void) | undefined;
   private readonly changeReviewer: ChangeReviewer;
   /** Baselines are captured before Kiro's built-in tools can touch disk. */
@@ -510,14 +526,15 @@ export class KiroSession {
    * the rewind, not an optional follow-up, and until it succeeds the panel is
    * still talking to the old conversation.
    */
-  async rewindTo(logIndex: number): Promise<string> {
+  async rewindTo(logIndex: number, keptCredits?: number): Promise<string> {
     const result = await this.runCommand("rewind", { value: String(logIndex) });
     const forked = String(result.data?.sessionId ?? "").trim();
     if (!result.ok || !forked) {
       throw new Error(result.text || "Kiro did not rewind the conversation.");
     }
     this.output.appendLine(`Rewound into session ${forked}.`);
-    await this.loadSession(forked);
+    // What the kept turns cost — the removed ones' spend is not this fork's.
+    await this.loadSession(forked, keptCredits);
     return forked;
   }
 
@@ -531,13 +548,55 @@ export class KiroSession {
    * is in flight, which would paint every message a second time, so those are
    * swallowed until it returns.
    */
-  async loadSession(sessionId: string): Promise<void> {
+  /**
+   * `priorCredits` is what the conversation had already cost, from the turns
+   * stored with it (`creditsSpentIn`). A number is the total to carry on from;
+   * `undefined` means it cannot be known, and then no conversation total is
+   * shown at all — counting on from zero would show only the turns since
+   * reopening, as though they were the whole chat.
+   */
+  async loadSession(sessionId: string, priorCredits?: number): Promise<void> {
     // Connect, but do not start a conversation: this one is about to be
     // loaded, and `session/new` would write an empty one to disk for nothing.
     await this.connect();
     if (!this.client?.isRunning) throw new Error("Kiro is not connected.");
     const leaving = this.sessionId;
 
+    /*
+     * A different conversation, so this one's meter is not ours — and the
+     * reset has to happen *before* the load, not after it.
+     *
+     * Nothing reset it at first, and the strip went on saying "2.47 credits
+     * this chat" about the chat you had just left. Resetting to zero was the
+     * next mistake: the opened chat's turns are stored with their costs, so
+     * the strip then read "0.2 cr" under a transcript showing 0.39 and 0.2.
+     * The total is carried in from `priorCredits` instead.
+     *
+     * Its context figure comes from Kiro's own save, not from the load. Kiro
+     * does send `_kiro.dev/metadata` with a percentage around the load, but
+     * that is an estimate from the conversation's text — measured against
+     * kiro-cli 2.21.4 it read 4.88% for a chat whose last turn had used 9.06%,
+     * and about 1% for one at 2.78%. `savedContext.ts` has the detail. When
+     * the save cannot be read (Kiro inside WSL, a chat that never made a
+     * request, a file format that has moved), the estimate is still taken:
+     * it is what the panel always showed, and nothing better exists.
+     * `loadingSessionId` keeps a late reading from the chat being left out.
+     */
+    const saved = this.readSavedContext(sessionId);
+    this.contextFromSave = saved !== undefined;
+    this.completedCredits = priorCredits ?? 0;
+    this.creditsUnknown = priorCredits === undefined;
+    this.currentTurnCredits = undefined;
+    this.awaitingTurnCredits = false;
+    this.usage = clearSessionUsage(this.usage);
+    if (saved !== undefined) this.usage = { ...this.usage, contextPercent: saved };
+    // A chat with no reported turns has spent nothing worth a figure yet.
+    if (priorCredits !== undefined && priorCredits > 0) {
+      this.usage = { ...this.usage, sessionCredits: priorCredits };
+    }
+    this.events.onUsage({ ...this.usage });
+
+    this.loadingSessionId = sessionId;
     this.replaying = true;
     try {
       const load = () =>
@@ -569,19 +628,6 @@ export class KiroSession {
       // it stays on the list and is tidied away at the next connection — it
       // cannot be deleted now, because this process still holds it open.
       if (leaving) this.unspoken.delete(leaving);
-      /*
-       * A different conversation, so this one's meter is not ours.
-       *
-       * Nothing reset it here, and the strip goes on saying "2.47 credits
-       * this chat" — a claim about the chat in front of you, made about the
-       * one you just left. A past chat's own credits are not stored anywhere,
-       * so there is no number to put back; showing none is the honest answer.
-       */
-      this.completedCredits = 0;
-      this.currentTurnCredits = undefined;
-      this.awaitingTurnCredits = false;
-      this.usage = clearSessionUsage(this.usage);
-      this.events.onUsage({ ...this.usage });
       // Loading answers with the same model block a new session does — which
       // means it carries no credit rate either. Rebuilding the list from it
       // would drop the rates the picker shows, so ask for them again.
@@ -590,8 +636,24 @@ export class KiroSession {
         void this.enrichModels();
       }
       this.setStatus("ready");
+    } catch (err) {
+      /*
+       * The figures above were set for a conversation Kiro is not serving.
+       * The credits still describe the chat on screen — its stored turns —
+       * so they stay. The saved context does not: it would stand over every
+       * reading from whatever session answers next (the resume path carries
+       * on in a fresh one), since only a turn starting would end it.
+       */
+      if (this.contextFromSave) {
+        this.contextFromSave = false;
+        this.usage = { ...this.usage };
+        delete this.usage.contextPercent;
+        this.events.onUsage({ ...this.usage });
+      }
+      throw err;
     } finally {
       this.replaying = false;
+      this.loadingSessionId = undefined;
     }
   }
 
@@ -928,6 +990,9 @@ export class KiroSession {
      */
     this.currentTurnCredits = undefined;
     this.awaitingTurnCredits = false;
+    // A real request is about to be made, so the next context reading is a
+    // real one, not the load-time estimate the saved figure was standing in for.
+    this.contextFromSave = false;
     this.currentTurnModel = this.modelLabel(this.currentModelId);
     this.beginTurnFileCapture(usable);
     this.setStatus("busy");
@@ -1084,6 +1149,20 @@ export class KiroSession {
   }
 
   /** Fold the numbers read out of a /usage report into the live usage. */
+  /**
+   * Whether the strip is showing the figure Kiro saved for a reopened chat.
+   * `/context` answers with the same text-based estimate the load does, so
+   * while this is true its percentage must not replace the saved one.
+   */
+  get showsSavedContext(): boolean {
+    return this.contextFromSave;
+  }
+
+  /** A command changed the conversation, so the save no longer describes it. */
+  endSavedContext(): void {
+    this.contextFromSave = false;
+  }
+
   mergeUsage(extra: Partial<UsageInfo>): UsageInfo {
     this.usage = { ...this.usage, ...extra };
     const snapshot = { ...this.usage };
@@ -1247,6 +1326,21 @@ export class KiroSession {
       this.status !== "busy" &&
       this.launchIsCurrent();
 
+    /*
+     * A session nothing was said into is already the new conversation, and
+     * its context reading is Kiro's own figure for it: the metadata that
+     * follows `session/new` names the empty session's usage — about 6% for
+     * the system prompt and context files, measured against kiro-cli 2.21.4.
+     * Clearing it here blanked the chip until the first turn ended, for a
+     * chat whose reading Kiro had just sent; Restart followed by "+" hit it
+     * every time. Nothing was spent in it, so the credit side is reset
+     * regardless. A saved figure is never kept: that belongs to a loaded
+     * chat, which is never unspoken, but a load still in flight when "+" is
+     * pressed could leave it set.
+     */
+    const reuse = live && this.sessionId !== undefined && this.unspoken.has(this.sessionId);
+    const context = reuse && !this.contextFromSave ? this.usage.contextPercent : undefined;
+
     // Only what belonged to the conversation that just ended. The plan
     // figures describe the account and are still true; wiping them made the
     // credits you had just fetched vanish for pressing "+".
@@ -1254,9 +1348,15 @@ export class KiroSession {
     this.currentTurnCredits = undefined;
     this.awaitingTurnCredits = false;
     this.usage = clearSessionUsage(this.usage);
+    if (context !== undefined) this.usage = { ...this.usage, contextPercent: context };
+    // A new conversation starts from a known zero, and its readings are live.
+    this.creditsUnknown = false;
+    this.contextFromSave = false;
+    // Posted in the reuse case too: the panel emptied its chip on `cleared`,
+    // and only this refills it.
     this.events.onUsage({ ...this.usage });
 
-    if (live && this.sessionId && this.unspoken.has(this.sessionId)) {
+    if (reuse) {
       this.output.appendLine(`Reusing the empty session ${this.sessionId} for the new chat.`);
       this.setStatus("ready");
       return;
@@ -1396,6 +1496,13 @@ export class KiroSession {
 
   private handleNotification(method: string, params: any): void {
     if (method === "_kiro.dev/metadata" || method === "kiro.dev/metadata") {
+      /*
+       * Only the conversation on screen. During a load that is the one being
+       * loaded, not `sessionId`, which still names the chat being left until
+       * the load answers. A reading that names no session is taken, as before.
+       */
+      const expected = this.loadingSessionId ?? this.sessionId;
+      if (params?.sessionId && expected && params.sessionId !== expected) return;
       this.readUsage(params);
       return;
     }
@@ -1482,7 +1589,10 @@ export class KiroSession {
   /** Fold whatever a notification carried into the running totals. */
   private readUsage(params: any): void {
     const reading = readMeter(params);
-    if (reading.contextPercent !== undefined) {
+    // While a reopened chat shows the figure Kiro saved, the reading Kiro
+    // sends on load is only a text-based estimate — about half the real
+    // figure — so it does not replace it. The first turn ends that.
+    if (reading.contextPercent !== undefined && !this.contextFromSave) {
       this.usage = { ...this.usage, contextPercent: reading.contextPercent };
     }
     /*
@@ -1498,10 +1608,14 @@ export class KiroSession {
      */
     if (reading.turnCredits !== undefined) {
       this.currentTurnCredits = reading.turnCredits;
-      this.usage = {
-        ...this.usage,
-        sessionCredits: this.completedCredits + reading.turnCredits,
-      };
+      // With the earlier cost unknown, a total would be only the turns since
+      // reopening, dressed as the whole chat. The turn's own line still shows.
+      if (!this.creditsUnknown) {
+        this.usage = {
+          ...this.usage,
+          sessionCredits: this.completedCredits + reading.turnCredits,
+        };
+      }
     }
     this.events.onUsage({ ...this.usage });
     // A reading that came in after its turn had already ended. The panel

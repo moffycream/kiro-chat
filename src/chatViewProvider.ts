@@ -51,6 +51,7 @@ import { findKiro } from "./findKiro";
 import { SetupWatcher } from "./setupWatcher";
 import {
   ChatRecord,
+  creditsSpentIn,
   forWorkspace,
   groupByDay,
   HistoryItem,
@@ -727,7 +728,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     }
 
     try {
-      await this.session.loadSession(record.sessionId);
+      // What it already cost, from the turns stored with it, so the strip
+      // carries on from there rather than counting from zero.
+      await this.session.loadSession(
+        record.sessionId,
+        creditsSpentIn(record.history ?? [], record.truncated === true)
+      );
       this.everConnected = true;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -1545,7 +1551,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         this.allChats().find((r) => r.id === this.chatId)?.sessionId;
       if (previous) {
         try {
-          await this.session.loadSession(previous);
+          await this.session.loadSession(
+            previous,
+            creditsSpentIn(this.transcript, this.transcriptTruncated)
+          );
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
           this.post({
@@ -1789,7 +1798,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
        * every time the menu was used.
        */
       const percent = readMeter(result.data).contextPercent;
-      if (percent !== undefined) {
+      // `/context` typed by hand is the same estimate the panel skips over a
+      // saved figure. Anything else that reports a percentage (`/compact`) has
+      // changed the conversation, so its figure is newer than the save.
+      const estimateOverSave = name === "context" && this.session.showsSavedContext;
+      if (percent !== undefined && name !== "context") this.session.endSavedContext();
+      if (percent !== undefined && !estimateOverSave) {
         this.post({
           type: "usage",
           usage: this.session.mergeUsage({ contextPercent: percent }),
@@ -1902,9 +1916,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       const index = turns.findIndex((turn) => turn.logIndex === logIndex);
       if (index < 0) throw new Error("This checkpoint is no longer available. Open Restore checkpoint again.");
       keptTurns = turnsKeptByRewind(turns.length, index);
-      const forked = await this.session.rewindTo(logIndex);
+      // Trimmed first, so the fork carries on from what its kept turns cost.
+      const kept = removeLatestTurns(this.transcript, index);
+      const forked = await this.session.rewindTo(
+        logIndex,
+        creditsSpentIn(kept, this.transcriptTruncated)
+      );
       this.chatSessionId = forked;
-      this.transcript = removeLatestTurns(this.transcript, index);
+      this.transcript = kept;
       this.saveCurrentChat(true);
       this.flushChats();
       this.post({ type: "rewound", keptTurns, history: this.transcript });
@@ -1997,7 +2016,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       // The percentage off a command result is the one figure worth folding
       // into the strip. A command's own cost is not the conversation's spend,
       // so no credit figure is ever taken from here.
-      if (breakdown.percent !== undefined) {
+      // Not over a reopened chat's saved figure: on a chat that has not made a
+      // request in this panel, `/context` is the same text-based estimate the
+      // load sends — 4.88% against a real 9.06% — and folding it in would drop
+      // the strip every time the panel was opened.
+      if (breakdown.percent !== undefined && !this.session.showsSavedContext) {
         this.post({ type: "usage", usage: this.session.mergeUsage({ contextPercent: breakdown.percent }) });
       }
       this.post({ type: "contextBreakdown", ok: true, breakdown });
@@ -2039,14 +2062,19 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 <title>Kiro Chat</title>
 </head>
 <body>
-  <div id="status" class="status" data-state="stopped">Not connected</div>
-
-  <div class="usage-wrap">
+  <!--
+    One row, not two. The connection state sits on the left and the context
+    reading is a chip on the right, carrying its own short meter: it was a
+    full-width row with its own border, spending the whole panel on a bar to
+    show one small number. A chip also looks like the button it is.
+  -->
+  <div class="topbar">
+    <div id="status" class="status" data-state="stopped">Not connected</div>
     <button type="button" id="usage-bar" class="usage-bar" hidden aria-expanded="false"
-      title="Credits and context. Click for your account usage.">
-      <div class="usage-track"><div id="usage-fill" class="usage-fill"></div></div>
+      title="Context and credits. Click for details.">
+      <span class="usage-track" aria-hidden="true"><span id="usage-fill" class="usage-fill"></span></span>
       <span id="usage-text" class="usage-text"></span>
-      <span class="caret">&#9662;</span>
+      <span id="usage-credits" class="usage-credits" hidden></span>
     </button>
     <div id="usage-panel" class="usage-panel" hidden></div>
   </div>

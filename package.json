@@ -2,7 +2,7 @@
   "name": "kiro-agent-chat",
   "displayName": "Kiro Agent Chat (Unofficial)",
   "description": "Chat with the Kiro agent inside VS Code, like Copilot Chat.",
-  "version": "0.38.8",
+  "version": "0.38.9",
   "publisher": "moffycream",
   "license": "MIT",
   "engines": {

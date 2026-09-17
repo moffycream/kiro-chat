@@ -35,9 +35,10 @@ export interface UsageInfo {
 export const SESSION_USAGE_KEYS = ["contextPercent", "sessionCredits"] as const;
 
 /**
- * Everything a conversation ending does not invalidate. There is no attempt
- * to restore a past chat's own credits: they are not stored anywhere, and no
- * number is honest where a wrong one is not.
+ * Everything a conversation ending does not invalidate. Restoring a past
+ * chat's own figures is not this function's job: `loadSession` carries its
+ * credits back from the turns stored with it (`creditsSpentIn`), and Kiro
+ * sends its context reading during the load.
  */
 export function clearSessionUsage(usage: UsageInfo): UsageInfo {
   const out: UsageInfo = { ...usage };

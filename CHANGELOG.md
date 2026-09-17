@@ -1,5 +1,60 @@
 # Changelog
 
+## 0.38.9
+
+- **Past chats get the whole panel.** Opening the history list used to leave
+  a greyed-out message box underneath it, which suggested there was something
+  to reply to. The box is now hidden while the list is open and comes back
+  when you pick a chat, go back, press Escape or start a new chat. A pending
+  permission question or keep-or-undo bar stays visible, because Kiro is
+  waiting on it.
+- **The workflow menu is easier to read.** Workflows have a radio dot and only
+  the selected one shows its description; Plan is tagged read-only. "When Kiro
+  edits files" is one Manual / Review / Autopilot switch with a line saying
+  what the current choice does. The message toggles are now "Current file" and
+  "Highlighted code". Memory files and instructions moved behind a single
+  "Memory and instructions" row that opens a second page with a back button,
+  so the menu fits in a sidebar.
+- **The workflow button always shows how edits are handled**, e.g.
+  "Default · Review", instead of leaving Review unsaid.
+- **The top of the panel is one row instead of two.** The connection status
+  sits on the left, and the context reading is a small chip on the right with
+  its own short meter, the percentage and this chat's credits ("7% · 0.02
+  cr"). Past 80% the chip turns orange and says "full"; before anything is
+  reported it shows a dash rather than a zero. Account credits and the
+  renewal date moved off the row into the chip's tooltip and the details
+  panel, which still opens on click. In a narrow sidebar the credits drop out
+  first, and the status is never cut short. "Kiro is working…" is now
+  "Working…".
+- **Lines inside the menus no longer draw as dark grooves.** The separators
+  and borders in the workflow and model menus, the instructions box and the
+  usage panel used the sidebar's border colour, which themes such as Dark
+  Modern make darker than the menu itself. They now use the colours VS Code's
+  own menus use.
+- **Opening a past chat shows that chat's real context usage and credits.**
+  When a chat is reopened, Kiro reports a rough estimate of its context that
+  can be half the real figure or less (4.88% for a chat that had reached
+  9.06%, about 1% for one at 2.78%). The top bar now shows the figure Kiro
+  saved after that chat's last reply, and neither the estimate nor opening the
+  details panel replaces it until your next message brings a fresh reading.
+  A figure from the chat you left no longer shows on the one you opened.
+  Credits no longer restart from zero either: the top bar
+  adds up the cost stored with each earlier reply, so a chat whose replies
+  cost 0.39 and 0.2 shows 0.59. When an earlier reply has no recorded cost, or
+  the saved chat has been trimmed, the total is left off rather than shown
+  too low.
+- **Starting a new chat from the history list unlocks the message box.** It
+  could stay disabled for the new conversation until the panel was reopened.
+
+- **A new chat on a fresh agent keeps its context reading.** Pressing "+"
+  straight after Restart, or straight after opening the panel, reuses the empty
+  session Kiro already made, and used to blank the chip's percentage until the
+  first reply arrived. The figure Kiro reported for that session now stays.
+- **The context chip has no border and no dropdown arrow.** The status row
+  keeps its one divider and the chip sits on it unboxed; it still tints on
+  hover, still opens the details panel, and past 80% the figure turns orange
+  and says "full".
+
 ## 0.38.8
 
 - **Restore a checkpoint from the message itself.** Hovering one of your

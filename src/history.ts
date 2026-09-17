@@ -16,6 +16,31 @@ export interface HistoryItem {
   attachments?: { kind: string; label: string }[];
   selection?: string;
   tools?: { title: string; status: string }[];
+  /** What an agent turn cost, when Kiro reported it. */
+  credits?: number;
+}
+
+/**
+ * What a stored conversation has already cost, or `undefined` when that
+ * cannot be known.
+ *
+ * Every turn's cost is stored beside it, so reopening a chat can pick the
+ * total back up rather than counting from zero — which made the strip say
+ * "0.2 cr" under a transcript showing 0.39 and 0.2. But a sum is only the
+ * total when nothing is missing from it: a transcript trimmed to its tail has
+ * lost turns, and a turn stored without a figure (a chat from before the
+ * meter was read, or a reading that never came) cost something unknown.
+ * Either way a sum would be too low and look exact, so the answer is none.
+ */
+export function creditsSpentIn(items: HistoryItem[], truncated = false): number | undefined {
+  if (truncated) return undefined;
+  let total = 0;
+  for (const item of items ?? []) {
+    if (item?.role !== "agent") continue;
+    if (typeof item.credits !== "number" || !Number.isFinite(item.credits)) return undefined;
+    total += item.credits;
+  }
+  return total;
 }
 
 export interface ChatRecord {

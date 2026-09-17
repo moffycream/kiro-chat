@@ -289,3 +289,21 @@ test("a new chat joins the others without disturbing them", () => {
   const records = upsertRecord([{ id: "a", updatedAt: 1 }], { id: "b", updatedAt: 2 });
   assert.deepEqual(records.map((r) => r.id).sort(), ["a", "b"]);
 });
+
+/*
+ * A stored conversation's cost is the sum of its turns — but only when no
+ * turn is missing, because a sum with a hole in it is too low and looks exact.
+ */
+test("a chat's stored cost is summed only when nothing is missing", () => {
+  const { creditsSpentIn } = require("../out/history");
+  const turn = (credits) => ({ role: "agent", text: "reply", credits });
+  const asked = { role: "user", text: "q" };
+
+  const total = creditsSpentIn([asked, turn(0.39), asked, turn(0.2), { role: "command", text: "/help" }]);
+  assert.ok(Math.abs(total - 0.59) < 1e-9, "turns add up; a command card is not a turn");
+  assert.equal(creditsSpentIn([]), 0, "an empty chat has spent nothing");
+  assert.equal(creditsSpentIn([asked, turn(0.39), asked, { role: "agent", text: "old" }]), undefined,
+    "a turn stored without a figure makes the total unknown");
+  assert.equal(creditsSpentIn([asked, turn(0.39)], true), undefined,
+    "and so does a transcript trimmed to its tail");
+});
