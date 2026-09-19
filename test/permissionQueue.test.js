@@ -84,8 +84,13 @@ function events() {
   };
 }
 
-const READ = (id) => ({
-  toolCall: { title: `read ${id}`, kind: "read", toolCallId: id },
+/*
+ * A tool that genuinely prompts — `execute` is not read-only, so it is not
+ * waved through the way a read now is (see issue #1). These tests are about
+ * queue ordering, which only the prompting path exercises.
+ */
+const ASK = (id) => ({
+  toolCall: { title: `run ${id}`, kind: "execute", toolCallId: id },
   options: [
     { optionId: "allow-once", name: "Allow", kind: "allow_once" },
     { optionId: "reject", name: "Reject", kind: "reject_once" },
@@ -113,19 +118,19 @@ const settle = () => new Promise((resolve) => setImmediate(resolve));
 test("two questions arriving together are asked one at a time", async () => {
   const { session, shown } = held();
 
-  const first = session.askPermission(READ("a"));
-  const second = session.askPermission(READ("b"));
+  const first = session.askPermission(ASK("a"));
+  const second = session.askPermission(ASK("b"));
   await settle();
 
   assert.equal(shown.length, 1, "the second question waits rather than stacking a card");
-  assert.equal(shown[0].request.title, "read a");
+  assert.equal(shown[0].request.title, "run a");
 
   shown[0].answer("allow-once");
   assert.deepEqual(await first, { outcome: { outcome: "selected", optionId: "allow-once" } });
   await settle();
 
   assert.equal(shown.length, 2, "and is asked once the first has been answered");
-  assert.equal(shown[1].request.title, "read b", "in the order they arrived");
+  assert.equal(shown[1].request.title, "run b", "in the order they arrived");
 
   shown[1].answer("reject");
   assert.deepEqual(await second, { outcome: { outcome: "selected", optionId: "reject" } });
@@ -134,9 +139,9 @@ test("two questions arriving together are asked one at a time", async () => {
 test("a card says how many questions are behind it", async () => {
   const { session, shown } = held();
 
-  const first = session.askPermission(READ("a"));
-  const second = session.askPermission(READ("b"));
-  const third = session.askPermission(READ("c"));
+  const first = session.askPermission(ASK("a"));
+  const second = session.askPermission(ASK("b"));
+  const third = session.askPermission(ASK("c"));
   await settle();
 
   assert.equal(shown[0].request.waiting, 2, "two more are queued behind the first");
@@ -164,8 +169,8 @@ test("a card says how many questions are behind it", async () => {
 test("stopping the turn drops a question that was never shown", async () => {
   const { session, shown, logged } = held();
 
-  const first = session.askPermission(READ("a"));
-  const second = session.askPermission(READ("b"));
+  const first = session.askPermission(ASK("a"));
+  const second = session.askPermission(ASK("b"));
   await settle();
   assert.equal(shown.length, 1);
 
@@ -190,8 +195,8 @@ test("stopping the turn drops a question that was never shown", async () => {
 test("disposing drops queued questions too", async () => {
   const { session, shown } = held();
 
-  const first = session.askPermission(READ("a"));
-  const second = session.askPermission(READ("b"));
+  const first = session.askPermission(ASK("a"));
+  const second = session.askPermission(ASK("b"));
   await settle();
 
   session.dispose();
@@ -237,7 +242,7 @@ test("an auto-approved permission does not wait behind a card", async () => {
 test("the one-gate edit skip does not wait behind a card either", async () => {
   const { session, shown } = held();
 
-  const first = session.askPermission(READ("a"));
+  const first = session.askPermission(ASK("a"));
   await settle();
   assert.equal(shown.length, 1, "the read is on screen and unanswered");
 
@@ -255,4 +260,82 @@ test("the one-gate edit skip does not wait behind a card either", async () => {
 
   shown[0].answer("allow-once");
   await first;
+});
+
+
+/*
+ * Issue #1: a read-only tool is never a question.
+ *
+ * In review and manual mode `autoApproveTools` is off, so before this fix
+ * every read, grep, search, glob and list raised a permission card the user
+ * cleared for no benefit — none of them can change a file. They are now waved
+ * through the same way an about-to-be-reviewed edit is, with nothing on
+ * screen.
+ */
+test("a read-only tool is allowed without a prompt", async () => {
+  for (const kind of ["read", "grep", "search", "glob", "list", "fetch"]) {
+    const { session, shown, logged } = held();
+    const outcome = await session.askPermission({
+      toolCall: { title: `${kind} something`, kind },
+      options: [
+        { optionId: "allow-once", name: "Allow", kind: "allow_once" },
+        { optionId: "reject", name: "Reject", kind: "reject_once" },
+      ],
+    });
+    assert.deepEqual(
+      outcome,
+      { outcome: { outcome: "selected", optionId: "allow-once" } },
+      `${kind} should be allowed`
+    );
+    assert.equal(shown.length, 0, `${kind} put nothing on screen`);
+    assert.ok(
+      logged.some((line) => /read-only tool through without a prompt/.test(line)),
+      `${kind} says so in the log`
+    );
+  }
+});
+
+/*
+ * An unknown tool still asks. The default answer for a shape we do not
+ * recognise is "might write", so it must not be swept up by the read-only
+ * skip — that is what keeps a new tool reviewable rather than silent.
+ */
+test("an unrecognised tool still raises a prompt", async () => {
+  const { session, shown } = held();
+  session.askPermission({
+    toolCall: { title: "do a novel thing", kind: "something_new" },
+    options: [{ optionId: "yes", name: "Yes", kind: "allow_once" }],
+  });
+  await settle();
+  assert.equal(shown.length, 1, "the unknown tool is still a question");
+});
+
+/*
+ * Issue #4: a prompting tool waits for an open review.
+ *
+ * Kiro finishes an edit and asks to run a lint in the same breath. The edit's
+ * review is a promise on `reviewQueue`; the lint prompt must wait for it
+ * rather than appear beside "keep these changes?". Here a pending review is
+ * simulated by holding `reviewQueue` open, and the prompt must not show until
+ * it resolves.
+ */
+test("a prompting tool waits for an open review to be answered", async () => {
+  const { session, shown } = held();
+
+  // Stand in for a review that has opened and is blocking on the user.
+  let releaseReview;
+  session.reviewQueue = new Promise((resolve) => {
+    releaseReview = resolve;
+  });
+
+  session.askPermission({
+    toolCall: { title: "run lint", kind: "execute" },
+    options: [{ optionId: "yes", name: "Yes", kind: "allow_once" }],
+  });
+  await settle();
+  assert.equal(shown.length, 0, "the lint prompt waits while the review is open");
+
+  releaseReview();
+  await settle();
+  assert.equal(shown.length, 1, "and appears once the review has been answered");
 });

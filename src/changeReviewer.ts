@@ -170,6 +170,15 @@ export class ChangeReviewer implements vscode.CodeLensProvider, vscode.Disposabl
 
   constructor(private readonly output: vscode.OutputChannel) {}
 
+  /**
+   * Called when the user rejects a whole file's changes deliberately — from
+   * the chat bar's undo or the editor's "Reject all" — as opposed to walking
+   * hunks or closing the tab. The session uses it to interrupt a still-running
+   * turn, so Kiro does not carry on building on, or linting, an edit the user
+   * just threw away. Not fired for hunk decisions, tab-close, or turn-cancel.
+   */
+  onWholeFileRejected: (() => void) | undefined;
+
   get onDidChangeCodeLenses(): vscode.Event<void> | undefined {
     return this.codeLensEmitter?.event;
   }
@@ -205,6 +214,27 @@ export class ChangeReviewer implements vscode.CodeLensProvider, vscode.Disposabl
     const review = this.active;
     if (!review || review.settled) return false;
     await this.rejectAll(review);
+    this.onWholeFileRejected?.();
+    return true;
+  }
+
+  /**
+   * Close a review for a file that has since been removed, without touching
+   * disk.
+   *
+   * Used when a turn created a scratch file, opened its review as it landed,
+   * and then deleted the file itself. Rejecting through `rejectAll` would try
+   * to restore an "original" that never existed; accepting would rewrite a
+   * file nobody wants back. The right answer is neither — the diff simply no
+   * longer describes anything on disk, so its tab is closed and its promise
+   * resolved as declined, leaving the filesystem exactly as the turn left it.
+   * A no-op when the active review is for some other path.
+   */
+  async abandonReview(sourcePath: string): Promise<boolean> {
+    const review = this.active;
+    if (!review || review.settled) return false;
+    if (review.request.sourcePath !== sourcePath) return false;
+    this.finish(review, { accepted: false });
     return true;
   }
 
@@ -342,7 +372,8 @@ export class ChangeReviewer implements vscode.CodeLensProvider, vscode.Disposabl
       ),
       vscode.commands.registerCommand(REJECT_ALL, (reviewId: string) => {
         const review = this.match(reviewId);
-        if (review) return this.rejectAll(review);
+        if (!review) return;
+        return this.rejectAll(review).then(() => this.onWholeFileRejected?.());
       }),
       vscode.commands.registerCommand(ACCEPT_HUNK, (reviewId: string, hunkId: number) =>
         this.decideHunk(reviewId, hunkId, true)

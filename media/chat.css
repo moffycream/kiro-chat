@@ -3170,6 +3170,35 @@ button.change-summary:hover {
   margin-bottom: 2px;
 }
 
+/*
+ * A changed file's name is a link to it. Styled as inline text, not a button:
+ * the row is a list of files, and a chip or a filled button would compete with
+ * the Keep/Undo actions below. Underline-on-hover is the same affordance the
+ * review summary uses, so the two read as the same kind of thing.
+ */
+.change-file-link,
+.change-summary-link {
+  padding: 0;
+  border: none;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.change-file-link:hover,
+.change-summary-link:hover {
+  text-decoration: underline;
+  color: var(--vscode-textLink-foreground);
+}
+
+.change-file-link:focus-visible,
+.change-summary-link:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: 2px;
+}
+
 /* What happened to each file, without a legend to look up. */
 .change-files li[data-kind="created"]::marker {
   content: "+ ";
@@ -3295,6 +3324,14 @@ button.change-summary:hover {
 
 .command-waiting {
   opacity: 0.7;
+}
+
+/* A running /compact: the turning ring sits beside its "Compacting…" line. */
+.command-progress {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--vscode-descriptionForeground);
 }
 
 .command-note {

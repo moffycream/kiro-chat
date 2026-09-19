@@ -13,6 +13,8 @@ const path = require("node:path");
 
 const {
   describeCommandResult,
+  isCompacting,
+  compactionLanded,
   isRunnable,
   NOT_IN_PANEL,
   offerable,
@@ -115,6 +117,58 @@ test("a command that answers only with data still says something", () => {
   );
   assert.equal(describeCommandResult("goal", { ok: true, text: "" }), "/goal finished.");
   assert.equal(describeCommandResult("goal", { ok: false, text: "" }), "/goal did not run.");
+});
+
+/*
+ * `/compact` returns "Compacting conversation..." the moment it starts and
+ * does the work afterwards — the compacted context arrives later as a metadata
+ * notification the strip already reads. Measured against kiro-cli 2.20.2 by
+ * driving `kiro-cli acp` directly. Passing that status straight through showed
+ * a card that read like a non-answer, so it is turned into a sentence that
+ * says what happened and where the result will show.
+ */
+test("compact says it started and points at the strip, not a bare status", () => {
+  assert.ok(isCompacting("Compacting conversation..."));
+  assert.ok(isCompacting("  compacting the conversation  "), "leading-word match, any tail");
+  assert.equal(isCompacting("Conversation too short to compact."), false);
+  assert.equal(isCompacting(""), false);
+
+  const started = describeCommandResult("compact", {
+    ok: true,
+    text: "Compacting conversation...",
+  });
+  assert.match(started, /finishes/, "tells the user where the result lands");
+  assert.notEqual(started, "Compacting conversation...", "not the bare status");
+
+  // A compact that cannot run still speaks for itself.
+  assert.equal(
+    describeCommandResult("compact", { ok: false, text: "Conversation too short to compact." }),
+    "Conversation too short to compact."
+  );
+  // The special-casing is scoped to /compact; other commands are untouched.
+  assert.equal(
+    describeCommandResult("model", { ok: true, text: "Compacting conversation..." }),
+    "Compacting conversation..."
+  );
+});
+
+/*
+ * Compaction reports finishing only as a later context reading, so the panel
+ * arms the wait with the figure it started from and treats the next reading
+ * that differs as the landing. Without this the completion was a silent number
+ * change on the strip and the user never knew /compact had finished.
+ */
+test("compaction is judged landed by the reading that follows it", () => {
+  // A reading that differs from the start is the finish, either direction.
+  assert.equal(compactionLanded(9, 4), true, "context fell");
+  assert.equal(compactionLanded(2.45, 6.43), true, "context rose as it rebuilt");
+  // The same reading is not yet the finish — nothing has changed.
+  assert.equal(compactionLanded(2.45, 2.45), false);
+  // No reading at all is never the finish.
+  assert.equal(compactionLanded(9, undefined), false);
+  assert.equal(compactionLanded(undefined, undefined), false);
+  // With no starting figure, the first real reading is taken as the landing.
+  assert.equal(compactionLanded(undefined, 5), true);
 });
 
 test("rewind turns are read as Kiro reports them", () => {

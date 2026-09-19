@@ -117,3 +117,45 @@ test("the file boundary checks every open root in a multi-root workspace", () =>
   assert.match(session, /isInsideAnyRoot\(this\.workspaceRoots\(\)/);
   assert.match(session, /outside the open folders/);
 });
+
+/*
+ * Issue #2: a review for a file that has since been removed is abandoned, not
+ * rejected. Rejecting would restore an "original" that never existed;
+ * `abandonReview` just closes the diff and resolves it as declined, leaving
+ * disk untouched.
+ */
+test("abandonReview closes a stale review without touching disk", () => {
+  const from = reviewer.indexOf("async abandonReview(");
+  assert.ok(from > -1, "abandonReview exists");
+  const body = reviewer.slice(from, reviewer.indexOf("\n  }", from));
+  assert.match(body, /request\.sourcePath !== sourcePath/, "only for the matching path");
+  assert.match(body, /this\.finish\(review, \{ accepted: false \}\)/, "closes without applying");
+  // It must not restore or write — that is the whole point.
+  assert.doesNotMatch(body, /rejectAll|applyDecision|writeFile/);
+});
+
+/*
+ * Issue #3: a deliberate whole-file reject tells the session, so a running
+ * turn can be interrupted. Fired from the chat bar's reject and the editor's
+ * "Reject all" — but never from a hunk decision, a tab-close, or a turn that
+ * is already being cancelled.
+ */
+test("a whole-file reject notifies through onWholeFileRejected", () => {
+  assert.match(reviewer, /onWholeFileRejected: \(\(\) => void\) \| undefined/, "the hook exists");
+
+  // The chat-bar reject fires it.
+  const rejectActive = reviewer.slice(reviewer.indexOf("async rejectActive("));
+  const activeBody = rejectActive.slice(0, rejectActive.indexOf("\n  }"));
+  assert.match(activeBody, /this\.onWholeFileRejected\?\.\(\)/, "chat-bar reject notifies");
+
+  // The editor "Reject all" command fires it after the reject completes.
+  const cmd = reviewer.slice(reviewer.indexOf("registerCommand(REJECT_ALL"));
+  const cmdBody = cmd.slice(0, cmd.indexOf("}),"));
+  assert.match(cmdBody, /onWholeFileRejected\?\.\(\)/, "editor reject-all notifies");
+
+  // The session interrupts a running turn on that signal.
+  const wire = session.slice(session.indexOf("this.changeReviewer.onWholeFileRejected"));
+  const wireBody = wire.slice(0, wire.indexOf("\n    };") + 6);
+  assert.match(wireBody, /this\.status === "busy"/, "only mid-turn");
+  assert.match(wireBody, /this\.cancel\(\)/, "and it cancels the turn");
+});

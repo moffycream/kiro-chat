@@ -567,3 +567,43 @@ test("a session never launched through startInternal is not reused", async () =>
 
   assert.equal(client.stopped, true, "with nothing to compare, restarting is the safe answer");
 });
+
+/*
+ * Issue #2: a scratch file Kiro made and removed is not reviewed.
+ *
+ * `settlePath` compares the pre-turn snapshot to what is on disk now. When a
+ * file did not exist before the turn and does not exist after, the turn's net
+ * effect on it is nothing, so it must be dropped rather than offered as a diff
+ * of a file that is already gone — and any live review that opened while it
+ * briefly existed has to be retired through the reviewer.
+ */
+test("a file created and removed in one turn is skipped, not reviewed", () => {
+  const settle = session.slice(session.indexOf("private async settlePath("));
+  const body = settle.slice(0, settle.indexOf("private async rememberReviewBaseline"));
+  assert.match(
+    body,
+    /if \(!tracked\.before\.exists && !current\.exists\)/,
+    "the created-then-removed case is detected"
+  );
+  assert.match(body, /this\.directFileChanges\.delete\(key\)/, "its write tracking is dropped");
+  assert.match(
+    body,
+    /this\.changeReviewer\.abandonReview\(tracked\.before\.full\)/,
+    "and any open review is retired"
+  );
+});
+
+/*
+ * Issue #3: rejecting a whole file mid-turn interrupts the turn.
+ *
+ * The reviewer fires `onWholeFileRejected` for a deliberate whole-file reject
+ * (chat undo or editor "Reject all"), and the session cancels the turn when
+ * one arrives while it is still running — so Kiro does not lint or build on an
+ * edit that was just thrown away.
+ */
+test("a whole-file rejection cancels a running turn", () => {
+  const wire = session.slice(session.indexOf("this.changeReviewer.onWholeFileRejected"));
+  const body = wire.slice(0, wire.indexOf("\n    };") + 6);
+  assert.match(body, /this\.status === "busy"/, "only while a turn is running");
+  assert.match(body, /this\.cancel\(\)/, "and it interrupts the turn");
+});

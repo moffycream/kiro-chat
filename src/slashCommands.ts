@@ -113,6 +113,46 @@ export function offerable(commands: SlashCommand[]): SlashCommand[] {
 }
 
 /**
+ * `/compact` starts the work and returns before it is done.
+ *
+ * Measured by driving `kiro-cli acp` directly against 2.20.2: the command
+ * answers `{ success: true, message: "Compacting conversation..." }`
+ * immediately, and the compacted context arrives *after* that, as a
+ * `_kiro.dev/metadata` notification several seconds later — which the panel
+ * already folds into the usage strip. The present-participle "Compacting…"
+ * therefore reads as a non-answer: nothing on the card changes, and the real
+ * outcome is on the strip, not here. So the one status Kiro sends is turned
+ * into a sentence that says what happened and where to look, and a `/compact`
+ * that could not run ("Conversation too short to compact.") is left to speak
+ * for itself. The match is on the leading word rather than the exact string,
+ * because the trailing ellipsis is Kiro's to change.
+ */
+export function isCompacting(message: string): boolean {
+  return /^compacting\b/i.test(String(message ?? "").trim());
+}
+
+/**
+ * Has an armed `/compact` landed, given the reading that just arrived?
+ *
+ * Compaction reports finishing only as a later context reading (measured
+ * against kiro-cli 2.20.2), so `runSlashCommand` remembers the figure it
+ * started from and asks this of every reading after. A reading is the landing
+ * when it is a real number and differs from the start — Kiro rebuilds the
+ * context around the summary, moving the percentage either way. A reading
+ * equal to the start, or no reading at all, is not yet the finish. When the
+ * start was never known, the first real reading is taken as the landing,
+ * because there is nothing to compare it against.
+ */
+export function compactionLanded(
+  before: number | undefined,
+  reading: number | undefined
+): boolean {
+  if (reading === undefined) return false;
+  if (before === undefined) return true;
+  return reading !== before;
+}
+
+/**
  * What to show for a command that answered.
  *
  * Several commands report through `data` and leave `message` empty — `rewind`,
@@ -125,6 +165,9 @@ export function describeCommandResult(
   result: { ok: boolean; data?: any; text?: string }
 ): string {
   const text = String(result?.text ?? "").trim();
+  if (name === "compact" && isCompacting(text)) {
+    return "Compacting the conversation. The context reading above updates when it finishes.";
+  }
   if (text) return text;
 
   const data = result?.data;

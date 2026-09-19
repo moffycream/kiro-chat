@@ -2773,6 +2773,40 @@ test("keep or undo is pinned above the composer, outside the transcript", () => 
   assert.match(renderer, /changeBar\./, "it belongs to the pinned bar");
 });
 
+/*
+ * The changed files in the end-of-turn card are links to the files.
+ *
+ * After an autopilot turn the card names what changed; clicking a name should
+ * open that file, reusing the same `openFile` message the attachment chips
+ * use. A deleted file has nothing to open, so it stays plain text rather than
+ * a link that would only ever fail.
+ */
+test("a changed file in the summary opens the file when clicked", () => {
+  const renderer = sliceFrom(js, "function renderChangeBar()");
+
+  // The multi-file list builds a link per file that posts openFile.
+  assert.match(renderer, /change-file-link/, "each file is a link");
+  assert.match(
+    renderer,
+    /type: "openFile", path: file\.path/,
+    "and clicking it opens that file"
+  );
+
+  // The single-file summary is itself the link.
+  assert.match(renderer, /change-summary-link/, "a lone changed file is a link too");
+  assert.match(
+    renderer,
+    /type: "openFile", path: only\.path/,
+    "and its summary opens it"
+  );
+
+  // A deleted file is not linked — there is nothing to open.
+  assert.match(renderer, /file\.kind !== "deleted"/, "a deleted file stays plain text");
+
+  // Reuses the existing openFile route the provider already handles.
+  assert.match(provider, /case "openFile"/, "the provider already opens files");
+});
+
 /** It shows while the diff is open, not only after the turn has finished. */
 test("the bar appears as soon as the review opens", () => {
   assert.match(provider, /onReviewActive/, "the provider must hear about an open review");
@@ -3221,8 +3255,7 @@ test("the bar drives the open review when there is one", () => {
 
 /** Clicking either twice would act on decisions already consumed. */
 test("the bar's buttons cannot be fired twice", () => {
-  const render = js.slice(js.indexOf("function renderChangeBar"));
-  const body = render.slice(0, 2600);
+  const body = sliceFrom(js, "function renderChangeBar()");
   assert.match(body, /keep\.disabled = true/);
   assert.match(body, /undo\.disabled = true/);
 });
@@ -3272,7 +3305,7 @@ test("the nonce carries enough entropy to be worth having", () => {
  * feature needs an end at each side.
  */
 test("every slash command message is both posted and handled", () => {
-  for (const type of ["commands", "commandRunning", "commandResult", "rewindTurns", "rewound"]) {
+  for (const type of ["commands", "commandRunning", "commandResult", "commandProgress", "commandDone", "rewindTurns", "rewound"]) {
     assert.match(provider, new RegExp(`type: "${type}"`), `the provider must post ${type}`);
     assert.match(js, new RegExp(`case "${type}"`), `the webview must handle ${type}`);
   }
@@ -3625,6 +3658,73 @@ test("overlapping commands leave no card spinning forever", () => {
     /if \(runningCommand\) runningCommand\.remove\(\)/,
     "a new running card must retire the previous one"
   );
+});
+
+/**
+ * `/compact` runs seconds after it returns, so the user needs to see it is in
+ * progress and see it finish. The card spins (`commandProgress` → a card with
+ * the same `.spinning` ring a running tool uses) and its finish resolves that
+ * same card in place (`commandDone`), so one card goes from "Compacting…" to
+ * the result rather than a static line that looks frozen. This was the whole
+ * complaint: running /compact and never knowing whether it was still going.
+ */
+test("compact shows a live spinner and resolves it in place", () => {
+  // The provider must post a distinct progress message when compaction starts.
+  const provider = fs.readFileSync(path.join(root, "src", "chatViewProvider.ts"), "utf8");
+  assert.match(provider, /type: "commandProgress"/, "provider posts progress");
+  assert.match(provider, /commandProgress|commandDone/, "and a finish");
+
+  // The progress card carries a turning ring.
+  const builder = sliceFrom(js, "function addCompactingCard(label, text)");
+  assert.match(builder, /tool-icon spinning/, "the progress card spins");
+
+  // The finish turns that same card into its result rather than stacking one.
+  const done = sliceFrom(js, 'case "commandDone"');
+  assert.match(done, /resolveCompactingCard\(compactingCard/, "resolved in place");
+  assert.match(done, /addCommandCard\(message\.label/, "or a fresh card if it is gone");
+
+  // Progress retires any leftover "Running…" card, like commandRunning does.
+  const progress = sliceFrom(js, 'case "commandProgress"');
+  assert.match(progress, /runningCommand = null/);
+  assert.match(progress, /if \(card\) card\.remove\(\)/);
+  assert.match(progress, /compactingCard = addCompactingCard/);
+});
+
+/**
+ * A prompt sent DURING compaction must not stamp a wrong figure on the card.
+ *
+ * Compaction returns at once and runs for seconds after, and the composer is
+ * free in that window — so the user can send a prompt while it works. Every
+ * turn reports its own context reading, and the completion wait cannot tell a
+ * prompt's reading from compaction's. If a turn started while waiting, the
+ * card resolves without a percentage ("See the context reading above.")
+ * rather than claiming the interleaved turn's number as the compacted one.
+ */
+test("a prompt during compaction does not put a wrong figure on the card", () => {
+  // A new turn (status "busy") marks the pending wait as interrupted.
+  const onStatus = sliceFrom(provider, "onStatus: (status, detail) =>");
+  assert.match(onStatus, /noteCompactionInterrupted\(status\)/, "status feeds the guard");
+
+  const mark = sliceFrom(provider, "private noteCompactionInterrupted(");
+  assert.match(mark, /if \(status !== "busy"\) return/, "only a turn start counts");
+  assert.match(mark, /this\.pendingCompact\.interrupted = true/, "and it marks the wait");
+
+  // Resolution drops the percentage when the wait was interrupted.
+  const note = sliceFrom(provider, "private notePossibleCompaction(");
+  assert.match(
+    note,
+    /pending\.interrupted \? undefined : percent/,
+    "an interrupted wait resolves without a figure"
+  );
+
+  // The figure-free resolution still settles the card with a real reading.
+  const resolve = sliceFrom(provider, "private resolveCompact(");
+  assert.match(
+    resolve,
+    /percent \?\? this\.session\.usageSnapshot\.contextPercent/,
+    "an interrupted or timed-out wait falls back to the current reading"
+  );
+  assert.match(resolve, /Context is now \$\{Math\.round\(shown\)\}%/, "and shows it as a percentage");
 });
 
 /**

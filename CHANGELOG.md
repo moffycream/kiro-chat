@@ -1,5 +1,44 @@
 # Changelog
 
+## 0.38.12
+
+- **The files in the "keep or undo" card are now links.** After a turn, the
+  card that lists what Kiro changed used to name the files as plain text.
+  Clicking a file now opens it, so you can go straight from "Kiro changed these
+  three files" to reading any of them. Works whether one file changed or
+  several. A deleted file stays plain text, since there is nothing to open.
+
+## 0.38.11
+
+- **The edit workflow is quieter and more sequential.** Four changes to how
+  Kiro's tools are supervised in Review and Manual mode:
+  - **Read-only tools no longer ask.** Reading a file, grepping, searching,
+    listing — none of them can change anything, so they are waved through
+    instead of raising a permission card you clear one by one. Only tools that
+    might write still ask; an unrecognised tool still asks, to stay safe.
+  - **A scratch file Kiro makes and deletes is not reviewed.** When a turn
+    writes a throwaway — a script to grep with, a file to test something — and
+    removes it before finishing, there is nothing left on disk to keep or undo,
+    so it no longer opens a diff of a file that is already gone.
+  - **Rejecting a whole file mid-turn now stops the turn.** Kiro used to carry
+    on — linting or building on an edit you had just thrown away. Rejecting from
+    the chat bar or the editor's "Reject all" interrupts the turn instead, so it
+    is not working against a file that was put back. Per-hunk decisions and
+    closing the tab are unaffected.
+  - **One question at a time.** A follow-up tool — "may I run lint?" — now
+    waits for the edit's review to be answered rather than appearing beside
+    "keep these changes?". Review the edit, then decide what runs next.
+
+## 0.38.10
+
+- **`/compact` now shows it is working and tells you when it is done.**
+  Compaction starts the moment you run it but finishes a few seconds later,
+  and Kiro answers straight away with "Compacting conversation…" — a card that
+  then sat motionless and looked frozen. The card now spins while compaction
+  runs, the same turning ring a running tool shows, and resolves in place to
+  "Compacted. Context is now N%." when it finishes, so you can see whether it
+  is still going. A conversation too short to compact still says so.
+
 ## 0.38.9
 
 - **Past chats get the whole panel.** Opening the history list used to leave

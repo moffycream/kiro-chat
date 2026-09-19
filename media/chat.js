@@ -1185,6 +1185,15 @@
   let runningCommand = null;
 
   /**
+   * The live `/compact` card, held so its finish resolves it in place.
+   *
+   * Compaction reports done seconds after it starts, so this card spins in the
+   * meantime rather than printing one static line and looking frozen. The
+   * completion (`commandDone`) turns the same card's spinner into the result.
+   */
+  let compactingCard = null;
+
+  /**
    * A command's answer is terminal output, not markdown.
    *
    * `/help` returns 51 lines whose two columns are held apart by runs of
@@ -1230,6 +1239,49 @@
     messagesEl.appendChild(card);
     if (was) messagesEl.scrollTop = messagesEl.scrollHeight;
     return card;
+  }
+
+  /**
+   * A `/compact` card that spins while the work runs.
+   *
+   * Compaction returns at once but finishes seconds later, so this shows a
+   * turning ring beside "Compacting…" — the same ring a running tool uses — so
+   * the card plainly reads as in progress rather than as a finished non-answer.
+   * `resolveCompactingCard` replaces the ring with the result when it lands.
+   */
+  function addCompactingCard(label, text) {
+    const was = atBottom();
+    const card = document.createElement("section");
+    card.className = "command-card";
+
+    const head = document.createElement("div");
+    head.className = "command-label";
+    head.textContent = label;
+    card.appendChild(head);
+
+    const body = document.createElement("div");
+    body.className = "command-body command-progress";
+    const ring = document.createElement("span");
+    ring.className = "tool-icon spinning";
+    ring.setAttribute("aria-hidden", "true");
+    const note = document.createElement("span");
+    note.textContent = String(text || "Working…");
+    body.appendChild(ring);
+    body.appendChild(note);
+    card.appendChild(body);
+
+    messagesEl.appendChild(card);
+    if (was) messagesEl.scrollTop = messagesEl.scrollHeight;
+    return card;
+  }
+
+  /** Turn a spinning `/compact` card into its finished result, in place. */
+  function resolveCompactingCard(card, text) {
+    if (!card) return;
+    const body = card.querySelector(".command-body");
+    if (!body) return;
+    body.classList.remove("command-progress");
+    body.innerHTML = renderCommandOutput(String(text || ""));
   }
 
   /**
@@ -4339,6 +4391,27 @@
       });
     } else {
       summary.textContent = changes.text || "Kiro changed some files.";
+      /*
+       * A single changed file names itself in the summary, so the summary is
+       * the link to it — click "Kiro changed src/app.ts." and the file opens.
+       * The multi-file list below carries its own links. A lone deleted file
+       * has nothing to open, so it stays a plain sentence.
+       */
+      const only = changes.files.length === 1 ? changes.files[0] : null;
+      if (only && only.path && only.kind !== "deleted") {
+        summary.classList.add("change-summary-link");
+        summary.title = `Open ${only.label || only.path}`;
+        summary.setAttribute("role", "button");
+        summary.setAttribute("tabindex", "0");
+        const open = () => vscode.postMessage({ type: "openFile", path: only.path });
+        summary.addEventListener("click", open);
+        summary.addEventListener("keydown", (event) => {
+          if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            open();
+          }
+        });
+      }
     }
     changeBar.appendChild(summary);
 
@@ -4349,7 +4422,27 @@
       for (const file of changes.files) {
         const item = document.createElement("li");
         item.dataset.kind = file.kind;
-        item.textContent = file.label || file.path;
+        const name = file.label || file.path;
+        /*
+         * A changed file that still exists is a link to it. Clicking a path in
+         * the summary and having nothing happen is the small friction this
+         * removes — the file Kiro just changed is the one you want to look at.
+         * A deleted file has nothing to open, so it stays plain text rather
+         * than a link that would only ever fail.
+         */
+        if (file.path && file.kind !== "deleted") {
+          const link = document.createElement("button");
+          link.type = "button";
+          link.className = "change-file-link";
+          link.textContent = name;
+          link.title = `Open ${name}`;
+          link.addEventListener("click", () => {
+            vscode.postMessage({ type: "openFile", path: file.path });
+          });
+          item.appendChild(link);
+        } else {
+          item.textContent = name;
+        }
         list.appendChild(item);
       }
       changeBar.appendChild(list);
@@ -4726,6 +4819,39 @@
         if (card) card.remove();
         addCommandCard(message.label, message.text, message.ok);
         recordCommand(message.label, message.text, message.ok);
+        break;
+      }
+
+      /*
+       * `/compact` started and its work is still running. It gets a card that
+       * spins rather than a static line, so "is it running?" is answered at a
+       * glance. The card is held in `compactingCard` so its finish can resolve
+       * it in place. Any earlier "Running…" card is cleared first.
+       */
+      case "commandProgress": {
+        const card = runningCommand;
+        runningCommand = null;
+        if (card) card.remove();
+        if (compactingCard) compactingCard.remove();
+        compactingCard = addCompactingCard(message.label, message.text);
+        break;
+      }
+
+      /*
+       * A `/compact` that started earlier has now landed. If its spinning card
+       * is still here, the spinner is swapped for the result in place, so the
+       * one card goes from "Compacting…" to "Compacted." Otherwise (it scrolled
+       * off or was cleared) a fresh card carries the result. Either way the
+       * transcript records the finish the bare "Compacting…" never gave.
+       */
+      case "commandDone": {
+        if (compactingCard) {
+          resolveCompactingCard(compactingCard, message.text);
+          compactingCard = null;
+        } else {
+          addCommandCard(message.label, message.text, true);
+        }
+        recordCommand(message.label, message.text, true);
         break;
       }
 

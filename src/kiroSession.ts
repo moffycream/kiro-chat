@@ -477,6 +477,25 @@ export class KiroSession {
     this.changeReviewer.onDidChangeActiveReview.event((info) =>
       this.events.onReviewActive?.(info)
     );
+
+    /*
+     * Rejecting a whole file mid-turn interrupts the turn.
+     *
+     * Kiro edits a file, then keeps going — running a lint on it, building the
+     * next edit on top of it. If the user rejects that file, the work Kiro is
+     * doing is now founded on a change that no longer exists, so letting it
+     * run on wastes credits and produces edits against a file that was put
+     * back. Cancelling here stops the tool that produced the rejected edit and
+     * everything queued behind it. Only while a turn is actually running: a
+     * rejection after the turn has ended is just an undo, with nothing to
+     * interrupt.
+     */
+    this.changeReviewer.onWholeFileRejected = () => {
+      if (this.status === "busy") {
+        this.output.appendLine("Rejected a file mid-turn; interrupting the turn.");
+        this.cancel();
+      }
+    };
   }
 
   get currentStatus(): SessionStatus {
@@ -1161,6 +1180,17 @@ export class KiroSession {
   /** A command changed the conversation, so the save no longer describes it. */
   endSavedContext(): void {
     this.contextFromSave = false;
+  }
+
+  /**
+   * The context reading as it stands, for callers that need to notice it move.
+   *
+   * `runSlashCommand` arms a `/compact` with the figure it started from and
+   * watches for the next reading to differ — that later reading is compaction
+   * landing. A copy is handed back so a caller cannot edit the live usage.
+   */
+  get usageSnapshot(): UsageInfo {
+    return { ...this.usage };
   }
 
   mergeUsage(extra: Partial<UsageInfo>): UsageInfo {
@@ -2230,12 +2260,33 @@ export class KiroSession {
       return;
     }
 
+    const relative = this.displayPath(tracked.before.full);
+
+    /*
+     * A file Kiro made and then removed is not a change to review.
+     *
+     * A turn often writes a throwaway — a script to grep with, a scratch file
+     * to test something — and deletes it before it finishes. It did not exist
+     * before the turn and does not exist now, so there is nothing on disk to
+     * keep or undo: the net effect is nothing. Reviewing it offered a diff of
+     * a file that was already gone, which is the noise the user was clearing.
+     * Its tracking is dropped so the end-of-turn sweep does not raise it
+     * again, and any live review that opened while the file briefly existed is
+     * retired here rather than left pointing at a path that no longer exists.
+     */
+    if (!tracked.before.exists && !current.exists) {
+      this.output.appendLine(`Kiro created and removed ${relative}; nothing to review.`);
+      this.directFileChanges.delete(key);
+      this.reviewBaselines.delete(key);
+      this.answeredPaths.add(key);
+      await this.changeReviewer.abandonReview(tracked.before.full);
+      return;
+    }
+
     const config = vscode.workspace.getConfiguration("kiroChat");
     const writesEnabled = config.get<boolean>("allowFileWrites", true);
     const allowWrites = writesEnabled && !this.turnReadOnly;
     const reviewWrites = config.get<boolean>("reviewFileWrites", true);
-
-    const relative = this.displayPath(tracked.before.full);
 
     /*
      * `expected` is a simulation of what Kiro's tool input should produce,
@@ -2555,6 +2606,29 @@ export class KiroSession {
       return { outcome: { outcome: "selected", optionId: allow.optionId ?? allow.id } };
     }
 
+    /*
+     * A tool that cannot change a file is let through without a prompt.
+     *
+     * Reading, searching, grepping, listing, fetching — in review and manual
+     * mode `autoApproveTools` is off, so every one of these used to raise a
+     * card, which is the thing the user was approving one by one for no
+     * benefit: none of them can write, so there is nothing to guard. Only the
+     * kinds `isReadOnlyTool` positively recognises opt out; an unknown tool
+     * still asks, because the default answer there is "might write".
+     *
+     * `askBeforeEdits` (manual mode) is deliberately not consulted: it is
+     * about seeing an *edit* coming, and a read is not an edit. Autopilot
+     * already returned above through the `autoApprove` branch.
+     */
+    if (isReadOnlyTool(params?.toolCall ?? params)) {
+      const allow = allowOption();
+      this.output.appendLine(
+        `Letting a read-only tool through without a prompt: ` +
+          `${String(params?.toolCall?.title ?? params?.toolCall?.kind ?? "a read-only tool")}`
+      );
+      return { outcome: { outcome: "selected", optionId: allow.optionId ?? allow.id } };
+    }
+
     const title = String(params?.toolCall?.title ?? params?.toolCall?.kind ?? "run a tool");
     const choices = options.map((option) => ({
       id: String(option.optionId ?? option.id),
@@ -2566,6 +2640,21 @@ export class KiroSession {
         `${params?.toolCall?.toolCallId ? ` (${String(params.toolCall.toolCallId)})` : ""}` +
         `${this.permissionsWaiting ? `; ${this.permissionsWaiting} already waiting` : ""}`
     );
+
+    /*
+     * A follow-up tool waits for any open review to be answered first.
+     *
+     * Kiro often finishes an edit and, in the same breath, asks to run a lint
+     * or a test on it. The edit's review opens as a diff and blocks on the
+     * user — but this prompt is a separate question that used to appear right
+     * beside it, so the user faced "keep these changes?" and "may I run lint?"
+     * at once, out of order, about work they had not decided on yet. Draining
+     * the review queue here holds the second question until the first is
+     * settled, so the flow is one thing at a time: review the edit, then be
+     * asked what to do next. The write-like branch above already waits the
+     * same way; this makes every other tool match it.
+     */
+    await this.reviewQueue;
 
     const pickedId = await this.queuePermission(title, choices);
     if (!pickedId) return { outcome: { outcome: "cancelled" } };
