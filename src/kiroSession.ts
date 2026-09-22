@@ -417,6 +417,18 @@ export class KiroSession {
   private reviewQueue: Promise<void> = Promise.resolve();
   /** Which files each tool call touched, so its completion can review them. */
   private readonly toolCallPaths = new Map<string, Set<string>>();
+  /**
+   * What each tool call was, kept by its id so a later permission request can
+   * be classified even when it carries only the id.
+   *
+   * The ACP `session/request_permission` payload is a `ToolCallUpdate`, in
+   * which every field but `toolCallId` is optional — and kiro-cli's read tool
+   * sends exactly that: an id and nothing else. The `kind`/`title` that say it
+   * is a read arrived earlier on the `tool_call` notification. Without this
+   * memory `isReadOnlyTool` sees no kind, assumes the tool might write, and
+   * raises a card for a read that cannot change a file.
+   */
+  private readonly toolCallInfo = new Map<string, { kind?: string; title?: string; rawInput?: unknown }>();
   /** Tool calls whose terminal status has already been acted on. */
   private readonly settledToolCalls = new Set<string>();
   /** A write routed through the ACP fs callback must not be reviewed twice. */
@@ -2046,6 +2058,55 @@ export class KiroSession {
      */
     const reviewable = !isReadOnlyTool(update);
     const announcedBy = String(update?.toolCallId ?? update?.id ?? "");
+    /*
+     * Remember what this call is, keyed by its id.
+     *
+     * A later `session/request_permission` for the same call may carry only
+     * the id (see `toolCallInfo`), so its kind and title are recorded here
+     * while they are still present. The three notifications for one step share
+     * an id; the merge keeps the richest values rather than letting a sparse
+     * `tool_call_update` blank out a kind an earlier `tool_call` supplied.
+     */
+    if (announcedBy) {
+      const kind = String(update?.kind ?? update?.toolCall?.kind ?? "").trim();
+      const title = String(update?.title ?? update?.toolCall?.title ?? "").trim();
+      const rawInput = update?.rawInput ?? update?.input ?? update?.toolCall?.rawInput;
+      const prior = this.toolCallInfo.get(announcedBy) ?? {};
+      this.toolCallInfo.set(announcedBy, {
+        kind: kind || prior.kind,
+        title: title || prior.title,
+        rawInput: rawInput ?? prior.rawInput,
+      });
+    }
+    /*
+     * A create's pre-turn state is "not there", even when it is already on disk.
+     *
+     * Kiro CLI 2.21 writes the file itself, so a `create` notification reaches
+     * us after the file exists. The snapshot below is taken lazily on first
+     * mention, and for a create that first mention is this very tool call —
+     * which would capture the just-created file as the pre-turn baseline
+     * (`exists: true`). A throwaway Kiro deletes before the turn ends would
+     * then be "restored" from that baseline: an empty file resurrected for one
+     * the user never had. Seeding a non-existent baseline first records the
+     * truth, so the created-and-removed guard in `settlePath` finds nothing to
+     * put back. Guarded on there being no baseline yet, so an edit to a file
+     * that really was there — or a create of a path already snapshotted when
+     * it did exist — keeps its real content.
+     */
+    const writeCommand = String(
+      (update?.rawInput ?? update?.input ?? update?.toolCall?.rawInput)?.command ??
+        (update?.rawInput ?? update?.input ?? update?.toolCall?.rawInput)?.mode ??
+        ""
+    )
+      .replace(/[-\s]/g, "_")
+      .toLowerCase();
+    if (writeCommand === "create") {
+      for (const full of this.pathsMentionedBy(update)) {
+        if (!this.turnBaselines.has(this.pathKey(full))) {
+          this.turnBaselines.set(this.pathKey(full), { full, exists: false, content: "" });
+        }
+      }
+    }
     for (const full of this.pathsMentionedBy(update)) {
       if (!this.captureBaseline(full)) continue;
       if (!reviewable) continue;
@@ -2514,6 +2575,27 @@ export class KiroSession {
   }
 
   private async askPermission(params: any): Promise<any> {
+    /*
+     * Recover what the tool is when the request only names it.
+     *
+     * `session/request_permission` carries a `ToolCallUpdate`, and kiro-cli's
+     * read tool sends only its `toolCallId` — the `kind`/`title` that mark it
+     * read-only arrived on the earlier `tool_call` notification. Merging that
+     * remembered info back in, without letting it overwrite anything the
+     * request did carry, is what lets `isReadOnlyTool` below recognise a read
+     * and wave it through instead of raising a card the user gains nothing by
+     * clearing.
+     */
+    const toolCallId = String(params?.toolCall?.toolCallId ?? params?.toolCall?.id ?? "").trim();
+    const remembered = toolCallId ? this.toolCallInfo.get(toolCallId) : undefined;
+    if (remembered && params?.toolCall && typeof params.toolCall === "object") {
+      if (!params.toolCall.kind && remembered.kind) params.toolCall.kind = remembered.kind;
+      if (!params.toolCall.title && remembered.title) params.toolCall.title = remembered.title;
+      if (params.toolCall.rawInput === undefined && remembered.rawInput !== undefined) {
+        params.toolCall.rawInput = remembered.rawInput;
+      }
+    }
+
     const options: any[] = Array.isArray(params?.options) ? params.options : [];
     const config = vscode.workspace.getConfiguration("kiroChat");
     const autoApprove = config.get<boolean>("autoApproveTools", false);

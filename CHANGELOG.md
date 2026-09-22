@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.38.13
+
+- **Reading a file no longer asks for permission.** In Review and Manual mode,
+  Kiro's own read tool kept raising a permission card you had to clear, even
+  though reading cannot change anything. The card appeared because the
+  permission request often names only the tool call and not what kind of tool
+  it is — the "this is a read" detail arrived earlier and was not carried
+  through. Kiro Chat now remembers what each tool call is and recognises the
+  read, so it is waved through the same way grep, search and list already are.
+  Tools that might write still ask, and an unrecognised tool still asks.
+- **A temp file Kiro deletes no longer comes back empty.** When a turn made a
+  throwaway file, used it, then deleted it, the file could reappear afterwards
+  with nothing in it. Because Kiro writes files itself, Kiro Chat learned about
+  the new file only after it already existed, and mistook it for something that
+  had been there all along — so when Kiro removed it, the review put an empty
+  copy back. A newly created file is now recognised as new, so one Kiro deletes
+  stays deleted, while a new file Kiro keeps is still reviewed as a creation.
+
 ## 0.38.12
 
 - **The files in the "keep or undo" card are now links.** After a turn, the

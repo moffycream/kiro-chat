@@ -442,6 +442,96 @@ test("Plan mode restores a direct Kiro write without opening a review", async ()
   assert.equal(await exercise("reject", true), "const value = 'old';\n");
 });
 
+/*
+ * A temp file Kiro creates and then deletes must not be resurrected.
+ *
+ * Kiro CLI 2.21 performs its own writes, so the `tool_call` notification for a
+ * create arrives *after* the file is already on disk. Capturing the pre-turn
+ * baseline lazily on that notification therefore snapshots the created file —
+ * `exists: true` with whatever it holds, often empty — as though it had been
+ * there before the turn. When Kiro deletes the throwaway before finishing, the
+ * end-of-turn sweep sees "was there, now gone" and restores it: an empty file
+ * comes back for one the user never had. A create means the file did not exist
+ * before, so its baseline must record that, and the created-and-removed guard
+ * then leaves nothing on disk.
+ */
+test("a temp file Kiro creates then deletes is not brought back", async () => {
+  const folder = fs.mkdtempSync(path.join(os.tmpdir(), "kiro-temp-"));
+  const file = path.join(folder, "scratch.txt");
+
+  try {
+    const vscode = fakeVscode(folder, "reject");
+    const KiroSession = loadSession(vscode);
+    const session = new KiroSession({ appendLine() {} }, events());
+    session.beginTurnFileCapture([]);
+
+    // Kiro's built-in write lands on disk before it tells us about it.
+    fs.writeFileSync(file, "");
+    session.observeToolPaths({
+      sessionUpdate: "tool_call",
+      toolCallId: "make-1",
+      title: "Writing scratch.txt",
+      kind: "write",
+      rawInput: { command: "create", path: file, content: "" },
+    });
+
+    // Kiro uses the scratch file, then removes it before the turn ends.
+    fs.unlinkSync(file);
+
+    await session.finishDirectFileReviews();
+
+    assert.equal(
+      fs.existsSync(file),
+      false,
+      "the scratch file Kiro deleted must stay deleted, not be restored empty"
+    );
+  } finally {
+    if (fs.existsSync(file)) fs.unlinkSync(file);
+    fs.rmdirSync(folder);
+  }
+});
+
+/*
+ * The other half: a file Kiro creates and keeps is still a real creation.
+ *
+ * Seeding a non-existent baseline for a create must not make a genuine new
+ * file invisible. It did not exist before the turn and does now, so rejecting
+ * its review removes it — the file is gone, not left behind empty.
+ */
+test("a file Kiro creates and keeps is reviewed as a creation", async () => {
+  const folder = fs.mkdtempSync(path.join(os.tmpdir(), "kiro-create-"));
+  const file = path.join(folder, "created.txt");
+
+  try {
+    const vscode = fakeVscode(folder, "reject");
+    const KiroSession = loadSession(vscode);
+    const session = new KiroSession({ appendLine() {} }, events());
+    session.beginTurnFileCapture([]);
+
+    fs.writeFileSync(file, "generated content\n");
+    session.observeToolPaths({
+      sessionUpdate: "tool_call",
+      toolCallId: "make-2",
+      title: "Writing created.txt",
+      kind: "write",
+      rawInput: { command: "create", path: file, content: "generated content\n" },
+    });
+
+    await session.finishDirectFileReviews();
+
+    // Rejecting a creation removes the new file; it must not survive as a
+    // phantom, and it must not have been silently kept either.
+    assert.equal(
+      fs.existsSync(file),
+      false,
+      "rejecting the creation removes the file Kiro made"
+    );
+  } finally {
+    if (fs.existsSync(file)) fs.unlinkSync(file);
+    fs.rmdirSync(folder);
+  }
+});
+
 test("every root in a multi-root workspace is inside the review boundary", () => {
   const parent = fs.mkdtempSync(path.join(os.tmpdir(), "kiro-multiroot-"));
   const backend = path.join(parent, "backend");

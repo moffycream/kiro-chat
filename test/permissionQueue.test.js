@@ -296,6 +296,92 @@ test("a read-only tool is allowed without a prompt", async () => {
 });
 
 /*
+ * Issue #1, the shape it actually arrives in.
+ *
+ * Measured against the ACP spec and kiro-cli: `session/request_permission`
+ * carries a `toolCall` that is a *ToolCallUpdate*, where every field but
+ * `toolCallId` is optional — and in the wild the read tool's permission
+ * request carries only that id. The `kind: "read"` was reported earlier, on
+ * the `tool_call` notification keyed by the same id. So classifying the
+ * permission payload alone finds no kind, treats the read as "might write",
+ * and raises the very card issue #1 was meant to remove. `askPermission` must
+ * recover the kind from the remembered `tool_call` before deciding.
+ */
+test("a read tool whose permission request carries only an id is still waved through", async () => {
+  const { session, shown, logged } = held();
+
+  // The earlier notification that named the tool and its kind.
+  session.observeToolPaths({
+    sessionUpdate: "tool_call",
+    toolCallId: "call_read_1",
+    name: "fs_read",
+    title: "Reading package.json:1",
+    kind: "read",
+    status: "pending",
+  });
+
+  // The permission request, as the spec shows it: id and options, no kind.
+  const outcome = await session.askPermission({
+    toolCall: { toolCallId: "call_read_1" },
+    options: [
+      { optionId: "allow-once", name: "Allow", kind: "allow_once" },
+      { optionId: "reject", name: "Reject", kind: "reject_once" },
+    ],
+  });
+
+  assert.deepEqual(
+    outcome,
+    { outcome: { outcome: "selected", optionId: "allow-once" } },
+    "the read is allowed"
+  );
+  assert.equal(shown.length, 0, "and nothing is put on screen");
+  assert.ok(
+    logged.some((line) => /read-only tool through without a prompt/.test(line)),
+    "and it is said out loud"
+  );
+});
+
+/*
+ * The same recovery must not wave through a write. A remembered edit whose
+ * permission request carries only an id must still reach its gate — the review
+ * diff when one will open, a prompt when it will not.
+ */
+test("an edit whose permission request carries only an id is not mistaken for a read", async () => {
+  const { session, shown, logged } = held();
+
+  session.observeToolPaths({
+    sessionUpdate: "tool_call",
+    toolCallId: "call_edit_1",
+    name: "fs_write",
+    title: "Editing src/app.ts",
+    kind: "edit",
+    status: "pending",
+  });
+
+  // The permission request carries only the id. Recovering the remembered
+  // kind must classify it as an edit, not a read: with review on (the default
+  // here), the edit is let through so the diff can be the gate — and the log
+  // must say it went through the edit path, never the read-only one.
+  const outcome = await session.askPermission({
+    toolCall: { toolCallId: "call_edit_1" },
+    options: [
+      { optionId: "allow-once", name: "Allow", kind: "allow_once" },
+      { optionId: "reject", name: "Reject", kind: "reject_once" },
+    ],
+  });
+  assert.deepEqual(outcome, { outcome: { outcome: "selected", optionId: "allow-once" } });
+  assert.equal(shown.length, 0, "the review diff is the gate, not a prompt");
+  assert.ok(
+    logged.some((line) => /edit through without a prompt; the review diff is the gate/.test(line)),
+    "it went through the edit path"
+  );
+  assert.ok(
+    !logged.some((line) => /read-only tool through without a prompt/.test(line)),
+    "and not the read-only path"
+  );
+});
+
+/*
  * An unknown tool still asks. The default answer for a shape we do not
  * recognise is "might write", so it must not be swept up by the read-only
  * skip — that is what keeps a new tool reviewable rather than silent.
