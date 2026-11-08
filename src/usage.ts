@@ -122,28 +122,6 @@ export function creditRateOf(model: any): string | undefined {
   );
 }
 
-/**
- * The `model` command answers with the rate and context window that the plain
- * session model list leaves out. Returns modelId -> extra detail.
- */
-export function readModelDetails(
-  data: any
-): Map<string, { creditRate?: string; contextWindow?: number }> {
-  const out = new Map<string, { creditRate?: string; contextWindow?: number }>();
-  const list = data?.models ?? data?.availableModels ?? data;
-  if (!Array.isArray(list)) return out;
-
-  for (const model of list) {
-    const id = String(model?.id ?? model?.modelId ?? "");
-    if (!id) continue;
-    out.set(id, {
-      creditRate: creditRateOf(model),
-      contextWindow: numberFrom(model?.contextWindow ?? model?.context_window),
-    });
-  }
-  return out;
-}
-
 /** "1M context" / "272k context" — the number is only useful rounded. */
 export function describeContextWindow(tokens: number | undefined): string | undefined {
   if (!tokens || !Number.isFinite(tokens)) return undefined;
@@ -195,7 +173,9 @@ export function readTurnCredits(metering: unknown): number | undefined {
     let total = 0;
     let found = false;
     for (const entry of metering) {
-      const value = numberFrom((entry as any)?.value ?? (entry as any)?.amount);
+      const value = numberFrom(
+        (entry as any)?.value ?? (entry as any)?.amount ?? (entry as any)?.usage
+      );
       if (value === undefined) continue;
       const unit = `${(entry as any)?.unit ?? ""} ${(entry as any)?.unitPlural ?? ""}`.trim();
       if (unit && !/credit/i.test(unit)) continue;
@@ -239,6 +219,58 @@ export function readMeter(params: any): MeterReading {
   const spent = readTurnCredits(params?.meteringUsage);
   if (spent !== undefined) out.turnCredits = spent;
 
+  return out;
+}
+
+/**
+ * One `session_info_update`, which is where the v3 engine says everything that
+ * is not a message or a tool step. `_meta.kiro.kind` says which thing it is.
+ *
+ * Measured against kiro-cli 3.1.0:
+ *
+ * - `context_usage` holds the percentage, and usually the category breakdown
+ *   that used to take a `/context` command.
+ * - `turn_completion` holds one turn's cost under `promptTurnSummaries`.
+ * - `session_usage` holds the conversation's running total. The panel used to
+ *   have to add this up itself; it can now be told, including for a reopened
+ *   chat, where the replay carries it.
+ * - `user_message_id_assigned` names the id a rewind has to quote.
+ * - `summarization_completed` means earlier messages are gone from the session.
+ */
+export interface SessionInfoReading {
+  kind: string;
+  /** Part of a `session/load` replay, so about the past rather than this turn. */
+  replay: boolean;
+  contextPercent?: number;
+  /** In the shape `readContextCommand` takes. */
+  context?: { contextUsagePercentage?: number; breakdown: any };
+  turnCredits?: number;
+  sessionCredits?: number;
+  userMessageId?: string;
+  compacted: boolean;
+}
+
+export function readSessionInfo(kiro: any): SessionInfoReading {
+  const kind = String(kiro?.kind ?? "");
+  const out: SessionInfoReading = { kind, replay: kiro?.replay === true, compacted: false };
+
+  if (kind === "context_usage") {
+    const raw = kiro?.usagePercentage ?? kiro?.contextUsage?.usagePercentage;
+    // Through the same guard as every other percentage: `Number(null)` is 0.
+    const percent = readMeter({ contextUsagePercentage: raw }).contextPercent;
+    if (percent !== undefined) out.contextPercent = percent;
+    if (kiro?.breakdown && typeof kiro.breakdown === "object") {
+      out.context = { contextUsagePercentage: percent, breakdown: kiro.breakdown };
+    }
+  } else if (kind === "turn_completion") {
+    out.turnCredits = readTurnCredits(kiro?.promptTurnSummaries);
+  } else if (kind === "session_usage") {
+    out.sessionCredits = readTurnCredits(kiro?.credits);
+  } else if (kind === "user_message_id_assigned" && kiro?.userMessageId) {
+    out.userMessageId = String(kiro.userMessageId);
+  } else if (kind === "summarization_completed") {
+    out.compacted = kiro?.summarization?.status === "success";
+  }
   return out;
 }
 
@@ -411,6 +443,7 @@ export interface ContextBreakdown {
 const CONTEXT_CATEGORIES: Array<{ key: string; label: string }> = [
   { key: "contextFiles", label: "Context files" },
   { key: "sessionFiles", label: "Files in this chat" },
+  { key: "memory", label: "Memory" },
   { key: "yourPrompts", label: "Your messages" },
   { key: "kiroResponses", label: "Kiro's replies" },
   { key: "tools", label: "Tool definitions" },

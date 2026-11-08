@@ -230,13 +230,29 @@ test("an auto-approved permission does not wait behind a card", async () => {
   const { session, shown } = held({ autoApproveTools: true });
 
   const blocking = session.askPermission({
-    toolCall: { title: "run something", kind: "execute" },
+    toolCall: { title: "do something", kind: "something_new" },
     options: [{ optionId: "yes", name: "Yes", kind: "allow_once" }],
   });
   assert.deepEqual(await blocking, {
     outcome: { outcome: "selected", optionId: "yes" },
   });
   assert.equal(shown.length, 0, "nothing was asked");
+});
+
+/*
+ * The setting predates a Kiro that could run commands through this panel, so
+ * nobody who turned it on agreed to that. A shell request is always asked.
+ */
+test("auto-approve never answers a shell command", async () => {
+  const { session, shown } = held({ autoApproveTools: true });
+  session.askPermission({
+    toolCall: { toolCallId: "t", status: "pending", title: "echo hi > f.txt" },
+    options: [{ optionId: "yes", name: "Yes", kind: "allow_once" }],
+    _meta: { kiro: { consent: { capability: "shell" } } },
+  });
+  await settle();
+  assert.equal(shown.length, 1, "the card is shown");
+  session.cancel();
 });
 
 test("the one-gate edit skip does not wait behind a card either", async () => {

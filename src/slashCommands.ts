@@ -1,27 +1,67 @@
 /**
- * Kiro's own slash commands.
+ * The panel's slash commands.
  *
- * Kiro announces the whole list itself, as a `_kiro.dev/commands/available`
- * notification sent right after `session/new`. Everything here is derived from
- * that notification rather than hard-coded, so a Kiro update that adds a
- * command adds it to the menu without a change here.
+ * The v3 engine has no command endpoint: `_kiro.dev/commands/execute` is
+ * refused, and text like `/usage` goes to the model as a prompt and is charged
+ * for. So this list is the panel's own, and each entry is answered by something
+ * v3 does have — see `KiroSession.runCommand`.
  *
  * Free of `vscode` so `test/slashCommands.test.js` can drive it directly.
  */
 
-/** One command, as Kiro describes it. */
+/** One command the composer knows about. */
 export interface SlashCommand {
   /** The bare name — "compact", never "/compact". */
   name: string;
   description: string;
-  /** Kiro's own argument hint, e.g. "add <path>, remove <path>, clear". */
+  /** What goes after the name, e.g. "level". */
   hint: string;
   subcommands: string[];
-  /** Kiro asks us not to advertise this one. `stats` is the only one today. */
+  /** Runs if typed in full, but is not put in the menu. */
   hidden: boolean;
-  /** The CLI answers this itself rather than the agent, so ACP cannot. */
+  /** Kiro's terminal can do this and the panel cannot. */
   local: boolean;
 }
+
+const runnable = (name: string, description: string, hint = ""): SlashCommand => ({
+  name,
+  description,
+  hint,
+  subcommands: [],
+  hidden: false,
+  local: false,
+});
+
+const terminalOnly = (name: string): SlashCommand => ({
+  name,
+  description: "",
+  hint: "",
+  subcommands: [],
+  hidden: true,
+  local: true,
+});
+
+/**
+ * What the composer recognises.
+ *
+ * The terminal-only names are here so they are recognised at all. Someone used
+ * to `/tools` will type it, and unrecognised it would be sent to the model as a
+ * message nobody wrote. Recognised, the panel says why it will not run.
+ */
+export const PANEL_COMMANDS: SlashCommand[] = [
+  runnable("help", "List the commands that can be run here"),
+  runnable("model", "Show or change the model", "model"),
+  runnable("effort", "Show or change how hard the model thinks", "level"),
+  runnable("compact", "Summarise the conversation to free up context"),
+  runnable("context", "Show what is using the context"),
+  runnable("usage", "Show the plan's credits"),
+  runnable("rewind", "Go back to an earlier message"),
+  runnable("clear", "Start a new chat"),
+  ...[
+    "agent", "chat", "code", "feedback", "goal", "guide", "hooks", "knowledge",
+    "mcp", "paste", "plan", "prompts", "quit", "reply", "stats", "tools", "voice",
+  ].map(terminalOnly),
+];
 
 /**
  * Commands the panel does not offer, and why.
@@ -67,35 +107,8 @@ export function reasonNotOffered(name: string): string {
     case "feedback":
       return "opens Kiro's feedback flow in the CLI.";
     default:
-      return "is handled by the Kiro CLI itself rather than by the agent, so this panel cannot run it.";
+      return "is only available in Kiro's own terminal, so this panel cannot run it.";
   }
-}
-
-/** Read the `_kiro.dev/commands/available` payload. */
-export function parseAvailableCommands(params: any): SlashCommand[] {
-  const raw = params?.commands;
-  if (!Array.isArray(raw)) return [];
-  const seen = new Set<string>();
-  const out: SlashCommand[] = [];
-  for (const entry of raw) {
-    // Kiro sends the name with its slash. Ours never carry one, so that a
-    // name is only ever spelled one way between here and `runCommand`.
-    const name = String(entry?.name ?? "").replace(/^\//, "").trim();
-    if (!name || seen.has(name)) continue;
-    seen.add(name);
-    const meta = entry?.meta ?? {};
-    out.push({
-      name,
-      description: String(entry?.description ?? "").trim(),
-      hint: String(meta?.hint ?? "").trim(),
-      subcommands: Array.isArray(meta?.subcommands)
-        ? meta.subcommands.map((s: unknown) => String(s))
-        : [],
-      hidden: meta?.hidden === true,
-      local: meta?.local === true,
-    });
-  }
-  return out;
 }
 
 /** May this command be run from the panel at all? */
@@ -113,61 +126,16 @@ export function offerable(commands: SlashCommand[]): SlashCommand[] {
 }
 
 /**
- * `/compact` starts the work and returns before it is done.
- *
- * Measured by driving `kiro-cli acp` directly against 2.20.2: the command
- * answers `{ success: true, message: "Compacting conversation..." }`
- * immediately, and the compacted context arrives *after* that, as a
- * `_kiro.dev/metadata` notification several seconds later — which the panel
- * already folds into the usage strip. The present-participle "Compacting…"
- * therefore reads as a non-answer: nothing on the card changes, and the real
- * outcome is on the strip, not here. So the one status Kiro sends is turned
- * into a sentence that says what happened and where to look, and a `/compact`
- * that could not run ("Conversation too short to compact.") is left to speak
- * for itself. The match is on the leading word rather than the exact string,
- * because the trailing ellipsis is Kiro's to change.
- */
-export function isCompacting(message: string): boolean {
-  return /^compacting\b/i.test(String(message ?? "").trim());
-}
-
-/**
- * Has an armed `/compact` landed, given the reading that just arrived?
- *
- * Compaction reports finishing only as a later context reading (measured
- * against kiro-cli 2.20.2), so `runSlashCommand` remembers the figure it
- * started from and asks this of every reading after. A reading is the landing
- * when it is a real number and differs from the start — Kiro rebuilds the
- * context around the summary, moving the percentage either way. A reading
- * equal to the start, or no reading at all, is not yet the finish. When the
- * start was never known, the first real reading is taken as the landing,
- * because there is nothing to compare it against.
- */
-export function compactionLanded(
-  before: number | undefined,
-  reading: number | undefined
-): boolean {
-  if (reading === undefined) return false;
-  if (before === undefined) return true;
-  return reading !== before;
-}
-
-/**
  * What to show for a command that answered.
  *
- * Several commands report through `data` and leave `message` empty — `rewind`,
- * `knowledge`, `goal` and `code` all did when measured against kiro-cli
- * 2.20.2 — so falling straight through to the message would show a blank
- * bubble for a command that worked perfectly well.
+ * A command with structured data and no sentence would otherwise be a blank
+ * card for something that worked perfectly well.
  */
 export function describeCommandResult(
   name: string,
   result: { ok: boolean; data?: any; text?: string }
 ): string {
   const text = String(result?.text ?? "").trim();
-  if (name === "compact" && isCompacting(text)) {
-    return "Compacting the conversation. The context reading above updates when it finishes.";
-  }
   if (text) return text;
 
   const data = result?.data;
@@ -184,38 +152,23 @@ export function describeCommandResult(
   return result?.ok ? `/${name} finished.` : `/${name} did not run.`;
 }
 
-/** One entry in the rewind picker, as `/rewind` reports it. */
+/** One entry in the rewind picker. */
 export interface RewindTurn {
-  /** Kiro's index into its own conversation log; the value it wants back. */
+  /** Position in the session's own list of user messages. */
   logIndex: number;
   /** The user's message that opened the turn. */
   label: string;
-  /** How much of the context window the turn accounts for, e.g. "9%". */
+  /** Unused on v3, which does not say what a turn occupies. */
   group: string;
   responseSnippet: string;
-}
-
-/** Read the turn list out of a `/rewind` result. Newest first, as Kiro sends it. */
-export function parseRewindTurns(data: any): RewindTurn[] {
-  const raw = data?.turns;
-  if (!Array.isArray(raw)) return [];
-  return raw
-    .filter((t) => Number.isFinite(Number(t?.logIndex)))
-    .map((t) => ({
-      logIndex: Number(t.logIndex),
-      label: String(t?.label ?? "").trim(),
-      group: String(t?.group ?? "").trim(),
-      responseSnippet: String(t?.responseSnippet ?? "").trim(),
-    }));
 }
 
 /**
  * How many turns survive a rewind to the turn at `index` in that list.
  *
- * Measured, not assumed: with ALPHA, BRAVO and CHARLIE in the log, rewinding
- * to BRAVO forked a session holding ALPHA *and* BRAVO. So the named turn is
- * kept and everything after it is dropped — and since Kiro sends the list
- * newest first, position 0 keeps all of them and the last position keeps one.
+ * Measured, not assumed: `session/fork` at a message keeps that message and its
+ * reply and drops everything after. The picker lists newest first, so position
+ * 0 keeps all of them and the last position keeps one.
  */
 export function turnsKeptByRewind(total: number, index: number): number {
   const count = Number.isInteger(total) && total > 0 ? total : 0;

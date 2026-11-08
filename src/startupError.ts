@@ -30,6 +30,14 @@ const SIGN_IN_PATTERNS: RegExp[] = [
   /\blogin\s+required\b/i,
 ];
 
+/**
+ * A Kiro too old to have the engine this panel speaks to refuses the flag and
+ * exits, so the words on stderr are the only sign of why.
+ */
+export function needsNewerKiro(output: string): boolean {
+  return /unexpected argument '--agent-engine'/i.test(String(output ?? ""));
+}
+
 /** True when the failure really does look like a missing or stale login. */
 export function looksLikeSignIn(message: string): boolean {
   const text = String(message ?? "");

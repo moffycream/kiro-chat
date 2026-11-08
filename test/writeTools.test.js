@@ -8,7 +8,28 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 
-const { isWriteLikeTool } = require("../out/writeTools");
+const { isShellRequest, isWriteLikeTool } = require("../out/writeTools");
+
+/*
+ * v3 has a shell tool whatever `terminal: false` says. Payload shape captured
+ * from kiro-cli 3.1.0. `autoApproveTools` must never reach one of these.
+ */
+test("a shell request is recognised however it is described", () => {
+  assert.equal(
+    isShellRequest({
+      toolCall: { toolCallId: "t", status: "pending", title: "echo hi > f.txt" },
+      _meta: { kiro: { consent: { capability: "shell" } } },
+    }),
+    true
+  );
+  assert.equal(isShellRequest({ toolCall: { kind: "execute" } }), true);
+  assert.equal(isShellRequest({ toolCall: { kind: "edit" } }), false);
+  assert.equal(
+    isShellRequest({ toolCall: { title: "Replace in File" }, _meta: { kiro: { consent: { capability: "fs_write" } } } }),
+    false
+  );
+  assert.equal(isShellRequest(undefined), false);
+});
 
 test("the tool kinds Kiro uses for edits are recognised", () => {
   assert.equal(isWriteLikeTool({ kind: "edit" }), true);
@@ -96,7 +117,7 @@ test("an edit is not also prompted for when the review will open", () => {
 test("an auto-approved permission is written to the log", () => {
   const ask = session.slice(session.indexOf("private async askPermission"));
   const body = ask.slice(0, ask.indexOf("\n  private "));
-  const auto = body.slice(body.indexOf("if (autoApprove) {"));
+  const auto = body.slice(body.indexOf("if (autoApprove && !isShellRequest(params)) {"));
   const branch = auto.slice(0, auto.indexOf("\n    }"));
   assert.match(branch, /this\.output\.appendLine\(/, "say that it was granted");
   assert.match(branch, /autoApproveTools/, "and why it was never asked");

@@ -13,6 +13,10 @@
  * predicted — opening the panel and then closing the window is the ordinary
  * way to make one.
  *
+ * A v3 session (`sess_…`) is deleted over ACP with `session/delete`. What
+ * follows describes the older ids, which v3 answers "ok" for without removing,
+ * and which are still in the remembered list of anyone upgrading.
+ *
  * Kiro deletes its own sessions: `kiro-cli chat --delete-session <id>`. It is
  * used rather than unlinking the files because Kiro keeps two stores and only
  * it knows about both. `--session-source v2` names the one ACP writes; without
@@ -45,7 +49,34 @@ export const MAX_UNUSED = 50;
  */
 export const MAX_PER_SWEEP = 10;
 
-const SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const SESSION_ID = /^(sess_)?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * How long a v3 session must have sat empty before it is taken back.
+ *
+ * v2 refused to delete a session a live process held, which is what protected
+ * another window's open panel. v3 deletes it anyway, measured against 3.1.0, so
+ * age stands in for that refusal: a panel opened and left untouched for a day
+ * is the only case still exposed, and it has lost nothing but an empty chat.
+ */
+export const MIN_UNUSED_AGE_MS = 24 * 60 * 60 * 1000;
+
+export function isV3Session(sessionId: string): boolean {
+  return /^sess_/i.test(sessionId);
+}
+
+/**
+ * Where v3 keeps one conversation: `~/.kiro/sessions/<folder hash>/<id>/`.
+ * The hash is Kiro's, so the folders are searched rather than computed.
+ */
+function v3SessionDir(sessionId: string, home: string): string | undefined {
+  const root = path.join(home, ".kiro", "sessions");
+  for (const folder of fs.readdirSync(root)) {
+    const candidate = path.join(root, folder, sessionId);
+    if (fs.existsSync(path.join(candidate, "session.json"))) return candidate;
+  }
+  return undefined;
+}
 
 /**
  * Only Kiro's own ids may be passed to a delete.
@@ -87,11 +118,35 @@ export function sessionLogPath(sessionId: string, home: string = os.homedir()): 
  * Anything unreadable, missing, or non-empty answers false: the failure that
  * matters here is deleting a conversation, and "I could not tell" must never
  * round towards it.
+ *
+ * v3 writes `session.json` straight away and `messages.jsonl` only once
+ * something has been said, so there "nothing was said" is that file being
+ * absent or empty, inside a session folder that does exist.
  */
-export function isEmptySession(sessionId: string, home?: string): boolean {
+export function isEmptySession(sessionId: string, home: string = os.homedir()): boolean {
   if (!isSessionId(sessionId)) return false;
   try {
-    return fs.statSync(sessionLogPath(sessionId, home)).size === 0;
+    if (!isV3Session(sessionId)) return fs.statSync(sessionLogPath(sessionId, home)).size === 0;
+    const dir = v3SessionDir(sessionId, home);
+    if (!dir) return false;
+    const log = path.join(dir, "messages.jsonl");
+    return !fs.existsSync(log) || fs.statSync(log).size === 0;
+  } catch {
+    return false;
+  }
+}
+
+/** Has this empty session been left long enough to be sure nobody is in it? */
+export function emptyLongEnough(
+  sessionId: string,
+  home: string = os.homedir(),
+  now: number = Date.now()
+): boolean {
+  if (!isV3Session(sessionId)) return true;
+  try {
+    const dir = v3SessionDir(sessionId, home);
+    if (!dir) return false;
+    return now - fs.statSync(path.join(dir, "session.json")).mtimeMs >= MIN_UNUSED_AGE_MS;
   } catch {
     return false;
   }

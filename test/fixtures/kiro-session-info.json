@@ -1,0 +1,83 @@
+{
+ "kiroCli": "3.1.0",
+ "userMessage": {
+  "userMessageId": "27bb1efb-6c3c-47a3-8244-de0b63789cef",
+  "kind": "user_message_id_assigned"
+ },
+ "context": {
+  "contextUsage": {
+   "usagePercentage": 6.2765627
+  },
+  "breakdown": {
+   "contextFiles": {
+    "tokens": 0,
+    "percent": 0,
+    "items": []
+   },
+   "tools": {
+    "tokens": 4913,
+    "percent": 1.9,
+    "mcp": {
+     "tokens": 0,
+     "percent": 0
+    },
+    "builtin": {
+     "tokens": 4913,
+     "percent": 1.9
+    }
+   },
+   "memory": {
+    "tokens": 0,
+    "percent": 0
+   },
+   "kiroResponses": {
+    "tokens": 0,
+    "percent": 0
+   },
+   "yourPrompts": {
+    "tokens": 0,
+    "percent": 4.4
+   },
+   "sessionFiles": {
+    "tokens": 0,
+    "percent": 0,
+    "items": []
+   }
+  },
+  "kind": "context_usage",
+  "usagePercentage": 6.2765627
+ },
+ "turnCompletion": {
+  "promptTurnSummaries": [
+   {
+    "unit": "credit",
+    "unitPlural": "credits",
+    "usage": 0.021720898839137644
+   }
+  ],
+  "elapsedTime": 3845,
+  "status": "success",
+  "kind": "turn_completion",
+  "executionId": "4a5de408-7fe5-4467-b87f-df0190aae156",
+  "turnId": "4a5de408-7fe5-4467-b87f-df0190aae156",
+  "requestIds": [
+   "6d793a7c-915f-4407-8357-6907c202d2fc"
+  ]
+ },
+ "sessionUsage": {
+  "kind": "session_usage",
+  "credits": [
+   {
+    "usage": 0.021720898839137644,
+    "unit": "credit",
+    "unitPlural": "credits"
+   }
+  ]
+ },
+ "compacted": {
+  "kind": "summarization_completed",
+  "summarization": {
+   "status": "success"
+  }
+ }
+}

@@ -159,10 +159,13 @@ choices rather than a guessed list. Each row shows the model's description and c
 window, with its credit rate on the right, like `1x` or `2.2x`. **auto** is Kiro's default:
 it picks a model per task.
 
-The rates come from Kiro's `model` command, which the panel asks for as it connects — the
-model list alone does not carry them. If a model still shows no rate, that means Kiro did
-not say, not that it is free, and the list says so at the bottom rather than leaving you
-guessing.
+If a model shows no rate, that means Kiro did not say, not that it is free, and the list
+says so at the bottom rather than leaving you guessing.
+
+**Effort** sits under the list for models that support it, and sets how hard the model
+thinks. Each model offers its own levels. Higher effort thinks for longer and uses more
+credits. It applies from your next message, stays with that chat, and goes back to the
+model's default when you change model. `auto` and older models have no effort control.
 
 Under the list is what this chat has cost so far, plus your plan's credits once **Usage**
 has fetched them, so the price is in front of you at the moment you pick a model.
@@ -308,8 +311,8 @@ the result into Settings, search "Kiro Chat", field **Command**.
 through it instead of three. On any other system the extension says so and stops rather
 than failing later with a confusing "kiro-cli not found".
 
-Kiro CLI 2.0 and newer installs natively on Windows. Use Kiro's PowerShell installer, then
-run `kiro-cli login`. To find it, the extension checks the usual install folders — starting
+This panel needs **Kiro CLI 3.0 or newer**, which installs natively on Windows. Use Kiro's
+PowerShell installer, then run `kiro-cli login`. To upgrade an older one, run `kiro-cli update`. To find it, the extension checks the usual install folders — starting
 with `%LOCALAPPDATA%\Kiro-Cli\` — then `where kiro-cli`, and finally WSL.
 
 If you are on an older Kiro CLI that only runs under WSL, that still works: the extension
@@ -358,18 +361,17 @@ login you already have.
   **Next change** and **Previous change** sit at the top of the file. Or use `Alt+Enter` and
   `Shift+Alt+Enter` with the cursor on a hunk, and `Alt+F5` / `Shift+Alt+F5` to walk between
   them. Accepted hunks are written immediately while rejected hunks collapse back to the
-  original. Kiro CLI's built-in edit tool writes directly, so the extension captures its
-  result, restores the pre-turn file when the turn ends, and leaves only the lines you approve.
-  **Closing the tab keeps the hunks you already accepted** and rejects only the ones you
+  original. Kiro CLI 3 hands its edits to the extension before writing them, so a change
+  you reject never reaches the file. **Closing the tab keeps the hunks you already accepted** and rejects only the ones you
   never answered — an accepted hunk was written the moment you clicked it, and putting the
   old file back over the top would undo work you had agreed to. Cancelling the turn is the
   other case, and that really does drop everything. This is on by default and can be
   disabled in settings.
-- **No terminal through the extension.** It tells Kiro it cannot run shell commands on its
-  behalf. Kiro CLI still has its own tools, including running commands and editing files in
-  its own process; the workspace boundary above governs what the extension reads and writes
-  for Kiro, and the permission card is the gate on what Kiro runs itself. Autopilot approves
-  all of it.
+- **Shell commands are always asked about.** Kiro CLI 3 can run commands itself, and the
+  card shows the command before it runs. Read it before allowing it: the workspace boundary
+  above only covers what the extension reads and writes for Kiro, so a command you approve
+  can change anything your account can, with no diff to review afterwards. The auto-approve
+  setting does not answer these for you.
 - Text coming back from Kiro is escaped before it is shown, so a reply cannot inject
   anything into the panel.
 
@@ -380,10 +382,10 @@ All optional.
 | Setting | What it does |
 | --- | --- |
 | `kiroChat.command` | Path to `kiro-cli`. Leave empty to auto-detect. |
-| `kiroChat.args` | Extra arguments for `kiro-cli acp`, e.g. `["--agent", "my-agent"]`. Added after `acp`, where its options belong. |
+| `kiroChat.args` | Extra arguments for `kiro-cli acp`, e.g. `["--agent", "my-agent"]`. Added after `acp`, where its options belong. The panel only works with the v3 engine, so leave `--agent-engine` out. |
 | `kiroChat.env` | Extra environment variables for Kiro. |
 | `kiroChat.allowFileWrites` | Let Kiro keep its edits. Turn off and every edit is undone at the end of the turn — see the note below. |
-| `kiroChat.autoApproveTools` | Skip the approval popup. Off by default. |
+| `kiroChat.autoApproveTools` | Skip the approval popup, except for shell commands. Off by default. |
 | `kiroChat.reviewFileWrites` | Inline red/green review with whole-file and per-hunk decisions. On by default. |
 | `kiroChat.reviewDuringTurn` | Review each file as Kiro finishes editing it, rather than queueing every diff to the end of the turn. On by default. |
 | `kiroChat.attachActiveFile` | Send the file you are looking at with each message. On by default. |
@@ -392,15 +394,13 @@ All optional.
 
 ### What "read-only" actually means
 
-Worth being precise about, because it is not what you might assume. Kiro CLI 2.21 performs
-its own built-in file edits rather than asking this extension to make them, so there is no
-point at which the extension can decline one. Both `kiroChat.allowFileWrites` and **Plan**
-mode work by taking a snapshot before the turn and putting the file back at the end.
+Worth being precise about, because it is not what you might assume. In **Plan** mode the
+extension refuses the edits Kiro CLI 3 sends through it, and it also takes a snapshot before
+the turn and puts those files back at the end, in case one was written another way.
 
-The file therefore does change on disk, briefly, in the middle of the turn. Nothing you do
-in the editor will see it — the contents are restored before the turn finishes — but
-anything else watching the filesystem can: a dev server, a test watcher, a build, a file
-sync. If you need a guarantee that nothing is written at all, don't open the folder.
+Neither covers a shell command you approve, which can write anywhere without the extension
+knowing, so decline those if you need the turn to change nothing. If you need a guarantee
+that nothing is written at all, don't open the folder.
 
 Settings survive upgrades. If the saved path to Kiro ever stops working, for example
 because Kiro updated itself and moved, the extension clears it, goes back to searching, and
@@ -421,6 +421,6 @@ publishes nothing — the extension is installed from the `.vsix`, not from the 
 
 ## Slash commands
 
-Type `/` in the message box for Kiro's own commands (`/compact`, `/rewind`, `/usage`,
-`/context` and the rest), drawn from the list Kiro announces. `/help` shows the same list and
-names the few that only make sense in a terminal.
+Type `/` in the message box for `/model`, `/effort`, `/compact`, `/context`, `/usage`,
+`/rewind`, `/clear` and `/help`. `/help` shows the same list and names the commands that are
+only available in Kiro's own terminal.

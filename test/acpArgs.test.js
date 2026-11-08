@@ -14,8 +14,18 @@ const assert = require("node:assert/strict");
 
 const { acpArgs } = require("../out/acpClient");
 
+// The engine is named explicitly: the help text and the behaviour of 3.1.0
+// disagree about which one is the default, and they speak different protocols.
+const ENGINE = ["--agent-engine", "v3"];
+
 test("the user's arguments go after acp, where the subcommand reads them", () => {
-  assert.deepEqual(acpArgs([], ["--agent", "my-agent"]), ["acp", "--agent", "my-agent"]);
+  assert.deepEqual(acpArgs([], ["--agent", "my-agent"]), ["acp", ...ENGINE, "--agent", "my-agent"]);
+});
+
+/** Passing the flag twice is an error, so one the user set stands alone. */
+test("an engine the user chose is not overridden or doubled", () => {
+  assert.deepEqual(acpArgs([], ["--agent-engine", "v2"]), ["acp", "--agent-engine", "v2"]);
+  assert.deepEqual(acpArgs([], ["--agent-engine=v2"]), ["acp", "--agent-engine=v2"]);
 });
 
 /*
@@ -24,21 +34,21 @@ test("the user's arguments go after acp, where the subcommand reads them", () =>
  * mean nothing runs at all.
  */
 test("what it takes to reach the binary still comes first", () => {
-  assert.deepEqual(acpArgs(["kiro-cli"], []), ["kiro-cli", "acp"]);
+  assert.deepEqual(acpArgs(["kiro-cli"], []), ["kiro-cli", "acp", ...ENGINE]);
 });
 
 test("both kinds land on their own side of acp", () => {
   assert.deepEqual(
     acpArgs(["kiro-cli"], ["--model", "auto"]),
-    ["kiro-cli", "acp", "--model", "auto"]
+    ["kiro-cli", "acp", ...ENGINE, "--model", "auto"]
   );
 });
 
 test("acp is always run, with or without arguments", () => {
-  assert.deepEqual(acpArgs([], []), ["acp"]);
+  assert.deepEqual(acpArgs([], []), ["acp", ...ENGINE]);
 });
 
 /** A missing setting reads as undefined, and must not become ["undefined"]. */
 test("nothing at all is not an argument", () => {
-  assert.deepEqual(acpArgs(undefined, undefined), ["acp"]);
+  assert.deepEqual(acpArgs(undefined, undefined), ["acp", ...ENGINE]);
 });

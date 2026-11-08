@@ -6,41 +6,39 @@ import * as fs from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { AcpClient, acpArgs, needsShell, quote } from "./acpClient";
 import { ActiveReviewInfo, ChangeReviewer } from "./changeReviewer";
-import { isReadOnlyTool, isWriteLikeTool } from "./writeTools";
+import { isReadOnlyTool, isShellRequest, isWriteLikeTool } from "./writeTools";
 import { changedSinceBaseline, describeChange, TurnChange } from "./turnChanges";
 import { findKiro } from "./findKiro";
 import { isInsideAnyRoot, isInsideRoot } from "./workspacePaths";
 import { isStaleLock, lockedPidFrom, parseSessionLock, sessionLockPath } from "./sessionLocks";
 import { savedContextPercent } from "./savedContext";
 import { lookupProcess } from "./processFacts";
-import { looksLikeSignIn } from "./startupError";
+import { looksLikeSignIn, needsNewerKiro } from "./startupError";
+import { EffortState, readSessionConfig, SessionConfig } from "./configOptions";
+import { fetchAccountUsage } from "./accountUsage";
 import { LaunchInputs, launchInputsChanged, snapshotLaunchInputs } from "./launchInputs";
 import {
   DeleteOutcome,
   deleteSessionArgs,
+  emptyLongEnough,
   forgetUnused,
   isEmptySession,
   isSessionId,
+  isV3Session,
   MAX_PER_SWEEP,
   readDeleteOutcome,
   rememberUnused,
   UNUSED_SESSIONS_KEY,
 } from "./unusedSessions";
+import { PANEL_COMMANDS, RewindTurn, SlashCommand } from "./slashCommands";
 import {
-  parseAvailableCommands,
-  parseRewindTurns,
-  RewindTurn,
-  SlashCommand,
-} from "./slashCommands";
-import {
-  creditRateOf,
   formatCredits,
-  describeContextWindow,
   formatUsageReport,
   parseAccountUsage,
   clearSessionUsage,
+  MeterReading,
   readMeter,
-  readModelDetails,
+  readSessionInfo,
   readUsageCommand,
   readContextCommand,
   ContextBreakdown,
@@ -49,7 +47,7 @@ import {
 
 export { formatUsageReport, parseAccountUsage, readUsageCommand, UsageInfo };
 export { readContextCommand, ContextBreakdown };
-export { RewindTurn, SlashCommand };
+export { EffortState, RewindTurn, SlashCommand };
 
 /** What one of Kiro's own commands answered. */
 export interface CommandResult {
@@ -71,6 +69,8 @@ export interface ModelInfo {
   /** e.g. "1M context" — likewise. */
   contextWindow?: string;
   contextWindowTokens?: number;
+  effortLevels?: string[];
+  defaultEffort?: string;
 }
 
 /** An ACP content block: text, an image, or a pointer to a file. */
@@ -92,8 +92,8 @@ export interface SessionEvents {
   onTurnEnd: (reason?: string) => void;
   onError: (message: string) => void;
   onNeedsSetup: (reason: "missing" | "signin" | "failed", detail?: string) => void;
-  onModels: (models: ModelInfo[], currentModelId: string) => void;
-  /** Kiro's own slash commands, as it announces them after `session/new`. */
+  onModels: (models: ModelInfo[], currentModelId: string, effort?: EffortState) => void;
+  /** What the composer can run. Sent once Kiro is connected. */
   onCommands?: (commands: SlashCommand[]) => void;
   onUsage: (usage: UsageInfo) => void;
   /**
@@ -274,7 +274,7 @@ export function isSessionUpdate(method: string): boolean {
  * on one Kiro build and silently stop on the next.
  */
 export function bareMethod(method: string): string {
-  return String(method ?? "").replace(/^_?kiro\.dev\//, "");
+  return String(method ?? "").replace(/^_?kiro(\.dev)?\//, "");
 }
 
 /**
@@ -293,6 +293,8 @@ const MAX_BASELINE_BYTES = 10 * 1024 * 1024;
  * watcher hanging behind it; every other call that can go silent has one.
  */
 const STARTUP_TIMEOUT_MS = 30000;
+/** Compaction runs a model over the whole conversation before it answers. */
+const COMPACT_TIMEOUT_MS = 180000;
 
 function normaliseKind(kind: unknown): string {
   return String(kind ?? "")
@@ -359,8 +361,24 @@ export class KiroSession {
   private usage: UsageInfo = {};
   private supportsImages = false;
   private supportsLoad = false;
-  /** Kiro's own slash commands. Empty until it announces them. */
-  private commands: SlashCommand[] = [];
+  private readonly commands: SlashCommand[] = PANEL_COMMANDS;
+  /** Effort for the current model; undefined when the model takes none. */
+  private effort: EffortState | undefined;
+  /** `kiroChat.model`, waiting for Kiro to finish listing what it offers. */
+  private savedModelToRestore: string | undefined;
+  private modelConfigId = "model";
+  /**
+   * The user messages of this session, oldest first, with the id `session/fork`
+   * needs. Kiro has no call that lists them, so they are collected as they are
+   * assigned and as a load replays them. Compaction removes the earlier ones
+   * from the session, so it empties this too: forking at one answers "Message
+   * not found".
+   */
+  private turnLog: Array<{ id: string; label: string; snippet: string }> = [];
+  /** What the next assigned message id belongs to. */
+  private turnLabel = "";
+  /** The latest breakdown Kiro sent, in the shape `readContextCommand` takes. */
+  private contextData: { contextUsagePercentage?: number; breakdown: any } | undefined;
   /** True while session/load runs, so a replay does not double-paint. */
   private replaying = false;
   /**
@@ -378,7 +396,6 @@ export class KiroSession {
     this.canTidySessions ? savedContextPercent(sessionId) : undefined;
   /** The session a load in flight is bringing in; `sessionId` moves only once it answers. */
   private loadingSessionId: string | undefined;
-  private textSpy: ((text: string) => void) | undefined;
   private readonly changeReviewer: ChangeReviewer;
   /** Baselines are captured before Kiro's built-in tools can touch disk. */
   private readonly turnBaselines = new Map<string, FileSnapshot>();
@@ -527,46 +544,71 @@ export class KiroSession {
     return this.supportsLoad;
   }
 
-  /** Kiro's own slash commands, for the composer's menu. */
+  /** What the composer can run. */
   get availableCommands(): SlashCommand[] {
     return this.commands;
   }
 
-  /**
-   * The turns `/rewind` will offer, newest first.
-   *
-   * Listing and choosing are the same command: `/rewind` with no argument
-   * answers with the list, and `/rewind` with the chosen `logIndex` under
-   * `value` does the rewind. Verified against kiro-cli 2.20.2 — `/help` says
-   * the command takes no arguments, and `_kiro.dev/commands/options` answers
-   * with an empty list for it, so the value on `execute` is the only way in.
-   */
+  /** The turns `/rewind` will offer, newest first. */
   async rewindTurns(): Promise<RewindTurn[]> {
-    const result = await this.runCommand("rewind");
-    return parseRewindTurns(result.data);
+    return this.turnLog
+      .map((turn, logIndex) => ({
+        logIndex,
+        label: turn.label,
+        group: "",
+        responseSnippet: turn.snippet,
+      }))
+      .reverse();
   }
 
   /**
    * Rewind to a turn, and follow Kiro into the session it forks.
    *
-   * A rewind does not truncate the conversation in place — it writes a new one
-   * holding everything up to and including the chosen turn, and hands back its
-   * id under `data.sessionId` with `switchSession: true`. That new session is
-   * not loaded in this process: running a command against it answers "Unknown
-   * session id" until `session/load` has been called. So the load is part of
-   * the rewind, not an optional follow-up, and until it succeeds the panel is
-   * still talking to the old conversation.
+   * A rewind does not truncate the conversation in place. `session/fork` writes
+   * a new one holding everything up to and including the chosen turn and its
+   * reply, and the message is named under `_meta.kiro.messageId`, as
+   * `initialize` advertises. The load is part of the rewind, not an optional
+   * follow-up: until it succeeds the panel is still in the old conversation.
    */
   async rewindTo(logIndex: number, keptCredits?: number): Promise<string> {
-    const result = await this.runCommand("rewind", { value: String(logIndex) });
-    const forked = String(result.data?.sessionId ?? "").trim();
-    if (!result.ok || !forked) {
-      throw new Error(result.text || "Kiro did not rewind the conversation.");
-    }
+    await this.ensureReady();
+    if (!this.client || !this.sessionId) throw new Error("Kiro is not connected.");
+    const turn = this.turnLog[logIndex];
+    if (!turn) throw new Error("This checkpoint is no longer available.");
+    const result = await this.client.request(
+      "session/fork",
+      {
+        sessionId: this.sessionId,
+        cwd: this.workspaceRoot(),
+        mcpServers: [],
+        _meta: { kiro: { messageId: turn.id } },
+      },
+      30000
+    );
+    const forked = String(result?.sessionId ?? "").trim();
+    if (!forked) throw new Error("Kiro did not rewind the conversation.");
     this.output.appendLine(`Rewound into session ${forked}.`);
+    const model = this.currentModelId;
+    const level = this.effort?.current;
     // What the kept turns cost — the removed ones' spend is not this fork's.
     await this.loadSession(forked, keptCredits);
+    await this.restoreAfterFork(model, level);
     return forked;
+  }
+
+  /**
+   * A fork starts on `auto` with no effort, measured against 3.1.0, though a
+   * plain reload keeps both. Going back to an earlier message should not also
+   * quietly change which model answers. The rewind itself has already
+   * succeeded, so a failure here is logged and the picker shows what is true.
+   */
+  private async restoreAfterFork(model: string, level: string | undefined): Promise<void> {
+    try {
+      if (model && model !== this.currentModelId) await this.setModel(model, false);
+      if (level && this.effort && this.effort.current !== level) await this.setEffort(level);
+    } catch (err) {
+      this.output.appendLine(`Could not restore the model after rewinding: ${String(err)}`);
+    }
   }
 
   /**
@@ -629,6 +671,11 @@ export class KiroSession {
 
     this.loadingSessionId = sessionId;
     this.replaying = true;
+    // Rebuilt from the replay, and a breakdown describes the chat being left.
+    this.turnLog = [];
+    this.contextData = undefined;
+    // A reopened chat keeps the model it was using.
+    this.savedModelToRestore = undefined;
     try {
       const load = () =>
         this.client!.request(
@@ -659,13 +706,7 @@ export class KiroSession {
       // it stays on the list and is tidied away at the next connection — it
       // cannot be deleted now, because this process still holds it open.
       if (leaving) this.unspoken.delete(leaving);
-      // Loading answers with the same model block a new session does — which
-      // means it carries no credit rate either. Rebuilding the list from it
-      // would drop the rates the picker shows, so ask for them again.
-      if (result) {
-        this.readModels(result);
-        void this.enrichModels();
-      }
+      if (result) this.readModels(result);
       this.setStatus("ready");
     } catch (err) {
       /*
@@ -887,12 +928,16 @@ export class KiroSession {
     this.launchInputs = this.currentLaunchInputs();
 
     this.client?.stop();
+    let tooOld = false;
     this.client = new AcpClient({
       command,
       args: acpArgs(launchArgs, userArgs),
       cwd: this.workspaceRoot(),
       env,
-      onLog: (line) => this.output.appendLine(line),
+      onLog: (line) => {
+        tooOld ||= needsNewerKiro(line);
+        this.output.appendLine(line);
+      },
       onNotification: (method, params) => this.handleNotification(method, params),
       onRequest: (method, params) => this.handleRequest(method, params),
       onExit: () => {
@@ -929,6 +974,7 @@ export class KiroSession {
       this.output.appendLine(`Past chats can be reopened: ${this.supportsLoad}`);
       this.output.appendLine(`Images accepted in prompts: ${this.supportsImages}`);
       this.events.onCapabilities({ image: this.supportsImages });
+      this.events.onCommands?.(this.commands);
 
       this.connected = this.client;
       // The empty conversations left by earlier runs, now that there is a
@@ -938,6 +984,11 @@ export class KiroSession {
       const message = err instanceof Error ? err.message : String(err);
       this.setStatus("stopped");
       this.output.appendLine(`Failed to start "${command}": ${message}`);
+      if (tooOld) {
+        this.events.onError(
+          "This version of Kiro Chat needs Kiro CLI 3.0 or newer. Run kiro-cli update in a terminal, then restart Kiro from the title bar."
+        );
+      }
       // Only blame the login when the error actually says so. This used to
       // report "signin" for every failure in here — a dropped pipe, a slow
       // spawn, a missing session id — which sent people off to log in again
@@ -968,18 +1019,14 @@ export class KiroSession {
       // Nothing has been said into it yet, so it is a candidate for reuse and,
       // if the window closes first, for tidying away.
       this.noteSessionCreated(this.sessionId);
+      this.turnLog = [];
 
       this.readModels(session);
       this.setStatus("ready");
 
-      const config = vscode.workspace.getConfiguration("kiroChat");
-      const saved = config.get<string>("model", "").trim();
-      if (saved && saved !== this.currentModelId) {
-        void this.setModel(saved, false);
-      }
-
-      // Credit rates come from a second call. Not worth blocking the panel on.
-      void this.enrichModels();
+      this.savedModelToRestore =
+        vscode.workspace.getConfiguration("kiroChat").get<string>("model", "").trim() || undefined;
+      this.restoreSavedModel();
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       this.setStatus("stopped");
@@ -1025,6 +1072,10 @@ export class KiroSession {
     // real one, not the load-time estimate the saved figure was standing in for.
     this.contextFromSave = false;
     this.currentTurnModel = this.modelLabel(this.currentModelId);
+    const firstText = usable.find((block) => block.type === "text") as
+      | { text: string }
+      | undefined;
+    this.turnLabel = (firstText?.text ?? "").trim().split("\n")[0].slice(0, 200);
     this.beginTurnFileCapture(usable);
     this.setStatus("busy");
     try {
@@ -1127,54 +1178,136 @@ export class KiroSession {
     this.emitTurnCredits();
   }
   /**
-   * Run one of Kiro's own commands — `usage`, `model` — and hand back what it
-   * answered. This is the only route to the account credit picture and to the
-   * per-model credit rates; neither is in plain ACP.
+   * Answer one of the panel's commands.
    *
-   * The shape matters and is easy to get wrong. Kiro wants
-   *
-   *   { sessionId, command: { command: "usage", args: {} } }
-   *
-   * where `command` is an adjacently tagged enum. Passing the name as a plain
-   * string, or as "/usage" with the slash, is rejected outright — which is why
-   * the panel used to answer "Kiro would not report account usage here" every
-   * single time. The names have no leading slash and are checked against the
-   * list Kiro itself reports.
+   * The v3 engine has no command endpoint, so each is answered by whatever it
+   * does have: config options for `model` and `effort`, its own method for
+   * `compact`, the readings it volunteers for `context`, and a short-lived v2
+   * agent for `usage`. `context` and `usage` do not touch the conversation,
+   * so they can answer during a turn.
    */
   async runCommand(name: string, args: Record<string, unknown> = {}): Promise<CommandResult> {
     await this.ensureReady();
     if (!this.client || !this.sessionId) throw new Error("Kiro is not connected.");
-    if (this.textSpy) throw new Error("A command is already running.");
+    const value = String(args.value ?? "").trim();
+
+    if (name === "context") return this.contextAnswer();
+    if (name === "usage") return this.accountUsage();
     if (this.status === "busy") {
       throw new Error("Kiro is still working on the last message.");
     }
 
-    // Some commands narrate through the normal stream. Catch that so it does
-    // not land in the transcript as if the user had asked for it.
-    let collected = "";
-    this.textSpy = (text: string) => {
-      collected += text;
-    };
+    switch (name) {
+      case "model":
+        return value ? this.modelCommand(value) : this.describeModels();
+      case "effort":
+        return value ? this.effortCommand(value) : this.describeEffort();
+      case "compact":
+        return this.compact();
+      default:
+        throw new Error(`/${name} cannot be run here.`);
+    }
+  }
 
+  private contextAnswer(): CommandResult {
+    const data = this.contextData;
+    const breakdown = data ? readContextCommand(data) : undefined;
+    if (!data || !breakdown) return { ok: false, text: "Kiro has not reported its context yet." };
+    const lines = breakdown.categories.map(
+      (category) =>
+        `${category.label}: ${category.tokens.toLocaleString("en-US")} tokens (${category.percent}%)`
+    );
+    return { ok: true, data: { ...data, model: this.currentModelId }, text: lines.join("\n") };
+  }
+
+  private async accountUsage(): Promise<CommandResult> {
+    if (!this.launch) throw new Error("Kiro is not connected.");
+    const answer = await fetchAccountUsage(
+      { ...this.launch, cwd: this.workspaceRoot() },
+      (line) => this.output.appendLine(`[usage] ${line}`)
+    );
+    // Only after the process has gone, and never in the way of the answer.
+    if (answer.sessionId && this.canTidySessions) {
+      setTimeout(() => void this.deleteSession(answer.sessionId as string), 1500);
+    }
+    return { ok: answer.ok, data: answer.data, text: answer.text };
+  }
+
+  private describeModels(): CommandResult {
+    const lines = this.models.map(
+      (model) =>
+        `${model.modelId === this.currentModelId ? "→" : " "} ${model.name}${
+          model.creditRate ? `  ${model.creditRate}` : ""
+        }`
+    );
+    return { ok: true, text: lines.join("\n") || "Kiro has not listed any models." };
+  }
+
+  /** `/model haiku` works if it can only mean one model. */
+  private async modelCommand(wanted: string): Promise<CommandResult> {
+    const needle = wanted.toLowerCase();
+    const exact = this.models.find(
+      (model) => model.modelId.toLowerCase() === needle || model.name.toLowerCase() === needle
+    );
+    const partial = this.models.filter((model) => model.modelId.toLowerCase().includes(needle));
+    const model = exact ?? (partial.length === 1 ? partial[0] : undefined);
+    if (!model) {
+      return {
+        ok: false,
+        text: partial.length
+          ? `"${wanted}" could be ${partial.map((m) => m.modelId).join(", ")}.`
+          : `Kiro has no model called "${wanted}".`,
+      };
+    }
+    // Not remembered: a command typed into one conversation is not a new default.
+    await this.setModel(model.modelId, false);
+    return { ok: true, text: `Model set to ${model.name}.` };
+  }
+
+  private describeEffort(): CommandResult {
+    const effort = this.effort;
+    if (!effort) return { ok: false, text: `${this.modelLabel(this.currentModelId)} has no effort levels.` };
+    const current = effort.levels.find((level) => level.value === effort.current);
+    return {
+      ok: true,
+      text: `Effort is ${current?.name ?? effort.current}. Levels: ${effort.levels
+        .map((level) => level.value)
+        .join(", ")}.`,
+    };
+  }
+
+  private async effortCommand(wanted: string): Promise<CommandResult> {
+    if (!this.effort) return this.describeEffort();
+    const level = wanted.toLowerCase() === "default" ? this.effort.defaultLevel ?? "" : wanted.toLowerCase();
+    try {
+      await this.setEffort(level);
+    } catch (err) {
+      return { ok: false, text: err instanceof Error ? err.message : String(err) };
+    }
+    return this.describeEffort();
+  }
+
+  /** Answers once it has finished, unlike the v2 command it replaces. */
+  private async compact(): Promise<CommandResult> {
     this.setStatus("busy");
     try {
-      const result = await this.client.request(
-        "_kiro.dev/commands/execute",
-        {
-          sessionId: this.sessionId,
-          command: { command: name.replace(/^\//, ""), args },
-        },
-        20000
+      const result = await this.client!.request(
+        "_kiro/session/compact",
+        { sessionId: this.sessionId },
+        COMPACT_TIMEOUT_MS
       );
-      const message = String(result?.message ?? "");
+      const ok = result?.success !== false;
+      if (ok) {
+        this.turnLog = [];
+        this.endSavedContext();
+      }
       return {
-        ok: result?.success !== false,
-        data: result?.data,
-        text: (collected.trim() || contentToText(result?.content) || message).trim(),
+        ok,
+        text: ok
+          ? "Compacted. The context reading updates with Kiro's next reply."
+          : "Kiro could not compact this conversation.",
       };
     } finally {
-      this.textSpy = undefined;
-      // Only hand the status back if the agent did not stop underneath us.
       if (this.currentStatus === "busy") this.setStatus("ready");
     }
   }
@@ -1271,6 +1404,8 @@ export class KiroSession {
         list = forgetUnused(list, id);
         continue;
       }
+      // Not yet. Stays on the list for a later start.
+      if (!emptyLongEnough(id)) continue;
       const outcome = await this.deleteSession(id);
       if (outcome === "busy") continue;
       list = forgetUnused(list, id);
@@ -1278,8 +1413,21 @@ export class KiroSession {
     await this.store.update(UNUSED_SESSIONS_KEY, list);
   }
 
-  /** One `kiro-cli chat --delete-session`, and what it answered. */
+  /** A v3 session over ACP; an older one through `kiro-cli chat --delete-session`. */
   private deleteSession(sessionId: string): Promise<DeleteOutcome> {
+    if (isV3Session(sessionId)) {
+      if (!this.client?.isRunning) return Promise.resolve<DeleteOutcome>("failed");
+      return this.client.request("session/delete", { sessionId }, 15000).then(
+        () => {
+          this.output.appendLine(`Removed the empty session ${sessionId}.`);
+          return "deleted" as DeleteOutcome;
+        },
+        (err) => {
+          this.output.appendLine(`Left the empty session ${sessionId} alone: ${String(err)}`);
+          return "failed" as DeleteOutcome;
+        }
+      );
+    }
     const launch = this.launch;
     if (!launch) return Promise.resolve<DeleteOutcome>("failed");
     const args = deleteSessionArgs(launch.launchArgs, sessionId);
@@ -1434,66 +1582,53 @@ export class KiroSession {
   // ---- models ---------------------------------------------------------
 
   private readModels(session: any): void {
-    const block = session?.models ?? session?.modelState;
-    const list = block?.availableModels ?? block?.models ?? [];
-    const raw = Array.isArray(list) ? list : [];
-
-    // The exact shape varies between Kiro builds, and a missing credit rate is
-    // otherwise invisible. Log it so the panel can be told what to read.
-    this.output.appendLine(`Model list as Kiro sent it: ${JSON.stringify(raw)}`);
-
-    this.models = raw
-      .map((m: any) => ({
-        modelId: String(m?.modelId ?? m?.id ?? ""),
-        name: String(m?.name ?? m?.displayName ?? m?.modelId ?? m?.id ?? ""),
-        description: m?.description ? String(m.description) : undefined,
-        creditRate: creditRateOf(m),
-      }))
-      .filter((m: ModelInfo) => m.modelId);
-    this.currentModelId = String(block?.currentModelId ?? this.models[0]?.modelId ?? "");
+    const config = this.applyConfig(session?.configOptions);
     this.output.appendLine(
-      `Kiro offers ${this.models.length} model(s); current is "${this.currentModelId}".`
+      config
+        ? `Kiro offers ${config.models.length} model(s); current is "${config.currentModelId}".`
+        : "Kiro sent no model list."
     );
-    this.events.onModels(this.models, this.currentModelId);
+  }
+
+  /** The one place the model list and effort are written. */
+  private applyConfig(options: unknown): SessionConfig | undefined {
+    const config = readSessionConfig(options);
+    if (!config) return undefined;
+    this.models = config.models;
+    this.currentModelId = config.currentModelId;
+    this.modelConfigId = config.modelConfigId;
+    this.effort = config.effort;
+    this.events.onModels(this.models, this.currentModelId, this.effort);
+    this.restoreSavedModel();
+    return config;
   }
 
   /**
-   * The model list that comes back with a new session carries no credit rate —
-   * only the `model` command has `rateMultiplier` and the context window. Ask
-   * for it once, so the picker can show what each model costs.
+   * Put the remembered model back, once Kiro has listed it.
+   *
+   * `session/new` can answer before Kiro has fetched its model list, and the
+   * list then follows as a `config_option_update`. Measured against 3.1.0,
+   * setting a model inside that window leaves the option holding that one id
+   * and no effort at all, so this waits until the id is actually on offer.
    */
-  private async enrichModels(): Promise<void> {
-    if (this.models.length === 0) return;
-    try {
-      const result = await this.runCommand("model");
-      const details = readModelDetails(result.data);
-      if (details.size === 0) {
-        this.output.appendLine("The model command reported no credit rates.");
-        return;
-      }
-
-      this.models = this.models.map((model) => {
-        const extra = details.get(model.modelId);
-        if (!extra) return model;
-        return {
-          ...model,
-          creditRate: model.creditRate ?? extra.creditRate,
-          contextWindow: describeContextWindow(extra.contextWindow),
-          contextWindowTokens: extra.contextWindow,
-        };
-      });
-      this.output.appendLine(`Credit rates read for ${details.size} model(s).`);
-      this.events.onModels(this.models, this.currentModelId);
-    } catch (err) {
-      // Not fatal. The picker simply shows no rate, and says so.
-      this.output.appendLine(
-        `Could not read model credit rates: ${err instanceof Error ? err.message : String(err)}`
-      );
+  private restoreSavedModel(): void {
+    const saved = this.savedModelToRestore;
+    if (!saved || !this.sessionId) return;
+    const listed = this.models.some((model) => model.modelId === saved);
+    if (!listed && this.models.length < 2) return;
+    this.savedModelToRestore = undefined;
+    if (!listed) {
+      this.output.appendLine(`The remembered model "${saved}" is no longer offered.`);
+      return;
     }
+    if (saved === this.currentModelId) return;
+    this.setModel(saved, false).catch((err) =>
+      this.output.appendLine(`Could not restore model "${saved}": ${String(err)}`)
+    );
   }
 
-  getModels(): { models: ModelInfo[]; currentModelId: string } {
-    return { models: this.models, currentModelId: this.currentModelId };
+  getModels(): { models: ModelInfo[]; currentModelId: string; effort?: EffortState } {
+    return { models: this.models, currentModelId: this.currentModelId, effort: this.effort };
   }
 
   getUsage(): UsageInfo {
@@ -1501,37 +1636,53 @@ export class KiroSession {
   }
 
   /**
-   * Record a model change we did not make — `/model haiku` from the composer
-   * goes through Kiro's own command, so nothing here would otherwise know, and
-   * the button would go on naming the model that was replaced. It is not
-   * written to settings: `setModel` remembers a *choice*, and a command typed
-   * into one conversation is not a new default.
+   * Write one config option and answer with what Kiro now says.
+   *
+   * The answer has to be read, because a value Kiro does not accept is not an
+   * error: measured against 3.1.0, `effortLevel: "bogus"` answers success with
+   * the old value still in place.
    */
-  noteModelChanged(modelId: string): void {
-    const id = String(modelId ?? "").trim();
-    if (!id || id === this.currentModelId) return;
-    this.currentModelId = id;
-    this.output.appendLine(`Model changed to "${id}" by command.`);
-    this.events.onModels(this.models, this.currentModelId);
-  }
-
-  async setModel(modelId: string, remember = true): Promise<void> {
+  private async setConfigOption(configId: string, value: string): Promise<SessionConfig | undefined> {
     if (!this.client?.isRunning || !this.sessionId) {
       throw new Error("Kiro is not connected yet.");
     }
-    await this.client.request(
-      "session/set_model",
-      { sessionId: this.sessionId, modelId },
+    const result = await this.client.request(
+      "session/set_config_option",
+      { sessionId: this.sessionId, configId, value },
       10000
     );
-    this.currentModelId = modelId;
+    return this.applyConfig(result?.configOptions);
+  }
+
+  async setModel(modelId: string, remember = true): Promise<void> {
+    const config = await this.setConfigOption(this.modelConfigId, modelId);
+    if (config?.currentModelId !== modelId) {
+      throw new Error(`Kiro did not switch to "${modelId}".`);
+    }
     this.output.appendLine(`Model set to "${modelId}".`);
     if (remember) {
       await vscode.workspace
         .getConfiguration("kiroChat")
         .update("model", modelId, vscode.ConfigurationTarget.Global);
     }
-    this.events.onModels(this.models, this.currentModelId);
+  }
+
+  /**
+   * Set how hard the current model thinks, from the next message on.
+   *
+   * Lasts for this conversation and survives it being reopened. Changing model
+   * puts it back to that model's default, which is Kiro's rule, so a choice is
+   * not carried across: a level one model has may not exist on the next.
+   */
+  async setEffort(level: string): Promise<void> {
+    const effort = this.effort;
+    if (!effort) throw new Error("This model has no effort levels.");
+    if (!effort.levels.some((candidate) => candidate.value === level)) {
+      throw new Error(`"${level}" is not one of ${effort.levels.map((l) => l.value).join(", ")}.`);
+    }
+    const config = await this.setConfigOption(effort.configId, level);
+    if (config?.effort?.current !== level) throw new Error(`Kiro did not set effort to "${level}".`);
+    this.output.appendLine(`Effort set to "${level}".`);
   }
 
   // ---- messages coming from Kiro -------------------------------------
@@ -1548,32 +1699,32 @@ export class KiroSession {
       this.readUsage(params);
       return;
     }
-    /*
-     * Kiro lists its own slash commands, once, just after `session/new`.
-     *
-     * This was being dropped on the floor, which is why the panel had no way
-     * to reach `/compact` or `/rewind` at all. Compared through `bareMethod`
-     * because it arrives prefixed, exactly as the session updates do.
-     */
-    if (bareMethod(method) === "commands/available") {
-      this.commands = parseAvailableCommands(params);
-      this.output.appendLine(
-        `Kiro offers ${this.commands.length} commands: ${this.commands
-          .map((c) => c.name)
-          .join(", ")}`
-      );
-      this.events.onCommands?.(this.commands);
-      return;
-    }
     if (!isSessionUpdate(method)) {
       this.output.appendLine(`[notify] ${method}`);
       return;
     }
-    // A load may replay the whole conversation. The panel already has it
-    // from its own store, so ignore the echo rather than paint it twice.
-    if (this.replaying) return;
 
     const update = params?.update ?? params;
+    const kind = normaliseKind(update?.sessionUpdate ?? update?.type ?? update?.kind);
+
+    /*
+     * Read before the replay check: a load's context and credit figures are
+     * the reopened chat's real ones, unlike the messages it repeats.
+     */
+    if (kind === "config_option_update" || kind === "session_info_update") {
+      const expected = this.loadingSessionId ?? this.sessionId;
+      if (params?.sessionId && expected && params.sessionId !== expected) return;
+      if (kind === "config_option_update") this.applyConfig(update.configOptions);
+      else this.readSessionInfoUpdate(update?._meta?.kiro);
+      return;
+    }
+
+    // The panel draws from its own store, so a replay is not painted. The flag
+    // also catches what arrives after `session/load` has already answered.
+    if (this.replaying || update?._meta?.kiro?.replay === true) {
+      this.noteReplayed(kind, update);
+      return;
+    }
 
     // Some builds attach the meter to an ordinary update rather than sending a
     // metadata notification of its own. Reading both is what keeps the strip
@@ -1589,14 +1740,12 @@ export class KiroSession {
     ) {
       this.readUsage(update);
     }
-    const kind = normaliseKind(update?.sessionUpdate ?? update?.type ?? update?.kind);
 
     switch (kind) {
       case "agent_message_chunk": {
         const text = contentToText(update.content);
-        // A command is collecting, or the panel is the audience.
-        if (this.textSpy) this.textSpy(text);
-        else this.events.onText(text);
+        this.noteReplySnippet(text);
+        this.events.onText(text);
         break;
       }
       case "agent_thought_chunk": {
@@ -1628,9 +1777,64 @@ export class KiroSession {
     }
   }
 
+  private noteReplySnippet(text: string): void {
+    const turn = this.turnLog[this.turnLog.length - 1];
+    if (turn && !turn.snippet && text.trim()) turn.snippet = text.trim().slice(0, 120);
+  }
+
+  /** A replayed message is not drawn, but it is a point `/rewind` can go back to. */
+  private noteReplayed(kind: string, update: any): void {
+    const text = contentToText(update?.content);
+    if (kind === "agent_message_chunk") {
+      this.noteReplySnippet(text);
+      return;
+    }
+    if (kind !== "user_message_chunk") return;
+    const id = String(update?._meta?.kiro?.messageId ?? "");
+    if (!id) return;
+    const last = this.turnLog[this.turnLog.length - 1];
+    const firstLine = text.trim().split("\n")[0].slice(0, 200);
+    if (last?.id === id) {
+      if (!last.label) last.label = firstLine;
+    } else {
+      this.turnLog.push({ id, label: firstLine, snippet: "" });
+    }
+  }
+
+  /** Context, credits and turn bookkeeping, which v3 sends as session info. */
+  private readSessionInfoUpdate(kiro: any): void {
+    if (!kiro) return;
+    const reading = readSessionInfo(kiro);
+    if (reading.userMessageId && !reading.replay) {
+      this.turnLog.push({ id: reading.userMessageId, label: this.turnLabel, snippet: "" });
+    }
+    if (reading.compacted && !reading.replay) this.turnLog = [];
+    if (reading.context) this.contextData = reading.context;
+
+    if (reading.contextPercent !== undefined || (reading.turnCredits !== undefined && !reading.replay)) {
+      // What a past turn cost is not what this turn cost.
+      this.applyMeter({
+        contextPercent: reading.contextPercent,
+        turnCredits: reading.replay ? undefined : reading.turnCredits,
+      });
+    }
+
+    if (reading.sessionCredits !== undefined) {
+      // Kiro's own total replaces ours, leaving out the turn not yet banked so
+      // that `emitTurnCredits` arrives at the same figure.
+      this.completedCredits = reading.sessionCredits - (this.currentTurnCredits ?? 0);
+      this.creditsUnknown = false;
+      this.usage = { ...this.usage, sessionCredits: reading.sessionCredits };
+      this.events.onUsage({ ...this.usage });
+    }
+  }
+
   /** Fold whatever a notification carried into the running totals. */
   private readUsage(params: any): void {
-    const reading = readMeter(params);
+    this.applyMeter(readMeter(params));
+  }
+
+  private applyMeter(reading: MeterReading): void {
     // While a reopened chat shows the figure Kiro saved, the reading Kiro
     // sends on load is only a text-based estimate — about half the real
     // figure — so it does not replace it. The first turn ends that.
@@ -2620,7 +2824,11 @@ export class KiroSession {
       );
     };
 
-    if (autoApprove) {
+    /*
+     * Never for a shell command. The setting was written when Kiro could not
+     * run one through this panel, and turning it on should not grant that.
+     */
+    if (autoApprove && !isShellRequest(params)) {
       const allow = allowOption();
       // The other branch that answers without asking writes down that it did.
       // This one did not, so with `autoApproveTools` on there was no record

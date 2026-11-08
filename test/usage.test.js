@@ -16,7 +16,6 @@ const {
   formatUsageReport,
   parseAccountUsage,
   readMeter,
-  readModelDetails,
   readUsageCommand,
   SESSION_USAGE_KEYS,
 } = require("../out/usage");
@@ -48,32 +47,6 @@ const USAGE_DATA = {
   bonusCredits: [],
   addOnCredits: [],
   overageCapable: true,
-};
-
-const MODEL_DATA = {
-  models: [
-    {
-      id: "auto",
-      displayName: "auto",
-      contextWindow: 1000000,
-      description: "Models chosen by task for optimal usage and consistent quality",
-      rateMultiplier: 1,
-    },
-    {
-      id: "claude-opus-5",
-      displayName: "claude-opus-5",
-      contextWindow: 1000000,
-      description: "Claude Opus 5 model with 1M context window",
-      rateMultiplier: 2.2,
-    },
-    {
-      id: "gpt-5.6-luna",
-      displayName: "gpt-5.6-luna",
-      contextWindow: 272000,
-      description: "Experimental preview of OpenAI GPT 5.6 Luna with 272k context window",
-      rateMultiplier: 0.1,
-    },
-  ],
 };
 
 test("the usage command's plan figures are read", () => {
@@ -109,15 +82,6 @@ test("the usage command is summarised for the transcript", () => {
 test("an unrecognised usage payload falls back to what Kiro printed", () => {
   assert.equal(formatUsageReport(undefined, "Not signed in."), "Not signed in.");
   assert.equal(formatUsageReport({}, ""), "");
-});
-
-test("model credit rates and context windows are read from the model command", () => {
-  const details = readModelDetails(MODEL_DATA);
-  assert.equal(details.get("claude-opus-5").creditRate, "2.2x");
-  assert.equal(details.get("gpt-5.6-luna").creditRate, "0.1x");
-  assert.equal(details.get("auto").creditRate, "1x");
-  assert.equal(details.get("gpt-5.6-luna").contextWindow, 272000);
-  assert.equal(readModelDetails(undefined).size, 0);
 });
 
 test("context windows are described in round numbers", () => {

@@ -607,42 +607,71 @@ before opening `ChangeReviewer`. The prompt stays busy until those reviews settl
 callback path and the built-in-tool path covered; different Kiro versions use different
 ones.
 
-The extension advertises `terminal: false` in its client capabilities, so Kiro never asks to run shell commands.
+**`terminal: false` does not stop the shell on v3.** It only says the client will not host a
+terminal. The engine has a shell tool of its own and runs it after a `session/request_permission`
+whose `_meta.kiro.consent.capability` is `shell`. That card is the only gate: a shell command is
+not a tracked edit, so what it writes gets no review and no keep-or-undo card. `isShellRequest`
+keeps `autoApproveTools` from answering one, because that setting predates this.
+
+## The v3 engine
+
+**The panel speaks to `kiro-cli acp --agent-engine v3`, named explicitly.** `acp --help` says v2
+is the default; 3.1.0 starts v3 with no flag. The two are different protocols, so `acpArgs` adds
+the flag unless `kiroChat.args` already has one. A Kiro older than 3.0 refuses it and
+`needsNewerKiro` says so. Everything below this heading was measured against 3.1.0 by driving
+`kiro-cli acp`, and sections further down marked 2.x are history unless they say otherwise.
+
+**`configOptions` replaces the `models` block.** `session/new`, `session/load`, `session/fork`
+and `session/set_config_option` all answer with it, and `config_option_update` repeats it.
+`configOptions.ts` reads the model list, the rates and effort. `session/set_model` is refused.
+Three traps:
+
+- **`session/new` can answer before the model list exists**, which then arrives as a
+  `config_option_update`. Setting a model in that window collapses the option to that one id and
+  loses effort, so `restoreSavedModel` waits until the remembered id is listed.
+- **A bad value is not an error.** `effortLevel: "bogus"` answers success with the old value still
+  there, so `setConfigOption` callers read the answer back rather than trusting it.
+- **The effort option's id is `effortLevel`, category `thought_level`**, and it is simply absent
+  for `auto` and older models. Changing model resets it to that model's default. A reload keeps
+  model and effort; **a fork does not** (it comes back on `auto`), so `restoreAfterFork` puts them
+  back.
+
+**Context and credits arrive as `session_info_update`**, told apart by `_meta.kiro.kind`.
+`readSessionInfo` reads them: `context_usage` (with the category breakdown that needed a
+`/context` command on v2), `turn_completion` (one turn's cost), `session_usage` (Kiro's own running
+total, which also comes with a reload), `user_message_id_assigned` and `summarization_completed`.
+These are read *before* the replay check, because a load's figures are the reopened chat's real
+ones. A turn's cost carrying `replay: true` must not be billed to the turn in progress.
+
+**A replay is marked `_meta.kiro.replay: true`** and can land after `session/load` has answered,
+so `KiroSession.replaying` alone is not enough.
+
+**Edits come through `fs/write_text_file` on v3**, so `ChangeReviewer` holds a real write open and
+a rejected edit never reaches the disk. The direct-write path stays for anything that bypasses it.
 
 ## Slash commands
 
-**The list is Kiro's, and it announces it.** `_kiro.dev/commands/available` arrives right
-after `session/new` with all 25 commands, each carrying `description` and a `meta` holding
-`hint`, `subcommands`, `hidden` and `local`. It was being dropped on the floor, which is
-why the panel could reach none of them. `slashCommands.ts` (free of `vscode`, so
-`test/slashCommands.test.js` drives it) parses that notification; the fixture in
-`test/fixtures/kiro-commands.json` is the real payload, captured by driving `kiro-cli acp`.
-Hard-coding the list would go stale silently — an unknown name is refused by
-`commands/execute` as a *parse error*, which is not a thing to show someone who picked it
-off a menu.
+**The list is the panel's own, because v3 has no command endpoint.**
+`_kiro.dev/commands/execute` is refused, nothing announces a list, and `/usage` sent as text goes
+to the model and is charged for. `PANEL_COMMANDS` is the whole list and `KiroSession.runCommand`
+answers each from what v3 does have: config options for `model` and `effort`,
+`_kiro/session/compact`, the readings already received for `context`, and a new chat for `clear`.
 
-**Compare the method through `bareMethod`, always.** The notification arrives prefixed.
-`isSessionUpdate` already stripped `_kiro.dev/` for exactly this reason and now shares that
-one helper; every new `handleNotification` branch must use it, or it works on one Kiro
-build and silently stops on the next.
+**`/usage` borrows a v2 agent.** No v3 method or `kiro-cli` subcommand reports the plan.
+`accountUsage.ts` starts `acp --agent-engine v2` for one question and the empty session it needed
+is deleted afterwards. When Kiro removes v2 this fails with an error the panel already shows.
 
-**`{ value }` is how an argument reaches a command**, and it took the oracle to find it.
-`/help` says `Usage: /rewind` — no arguments — and `_kiro.dev/commands/options` answers with
-an empty list for it, so `execute` is the only way in. Guessing `{ index: 0 }` looked like
-it worked: it returned `success: true` with the turn list, because an argument Kiro does not
-recognise is *ignored* and the command re-lists. Only `{ value: "0" }` actually rewound.
+**Compare the method through `bareMethod`, always.** Notifications arrive with `_kiro/` or
+`_kiro.dev/` prefixes depending on the build. Every new `handleNotification` branch must use it,
+or it works on one Kiro build and silently stops on the next.
+
 **A command that succeeds is not proof the argument was read** — check the effect, not the
-status.
+status. v2's `/rewind` ignored an argument it did not recognise and answered `success: true`; v3's
+config options do the same thing with a bad value.
 
-`_kiro.dev/commands/options` also takes `command` as a plain string, while
-`commands/execute` takes the adjacently-tagged `{ command: { command, args } }`. Those two
-are not the same shape.
-
-**Not every command belongs in a webview.** `NOT_IN_PANEL` names them with the reason:
-`paste` wants a clipboard, `voice` a microphone, `reply` `$EDITOR`, `quit` kills the process
-the panel is talking to, `chat` is a competing conversation store. `local: true` marks the
-ones the CLI answers itself; `hidden: true` (only `stats`) means do not advertise, not do not
-run — it stays typeable. A menu row that hangs is worse than one that is absent.
+**Not every command belongs in a webview.** `NOT_IN_PANEL` names some with the reason, and every
+name v2 offered that v3 cannot answer stays in `PANEL_COMMANDS` as `local: true`, so typing `/tools`
+gets an explanation instead of a billed turn.
 
 **A leading slash is only a command when the name is one Kiro has.** `parseSlash` in
 `chat.js` checks the known list first; without that, "/usr/bin/env is on my PATH" is eaten
@@ -738,18 +767,18 @@ figure: a command's own cost is not the conversation's spend, and folding it int
 
 ### Rewind forks; it does not truncate
 
-Measured against kiro-cli 2.20.2. `/rewind` with no argument answers with
-`data.turns` — `logIndex`, `label`, `group`, `responseSnippet`, newest first. `/rewind` with
-that `logIndex` under `value` answers with `data: { sessionId, switchSession: true }`.
+`session/fork` with `_meta.kiro.messageId` writes a new session. Nothing lists the messages, so
+`turnLog` collects their ids from `user_message_id_assigned` during a turn and from replayed
+`user_message_chunk`s on a load. `RewindTurn.logIndex` is a position in that list. Compaction
+removes earlier messages from the session (forking at one answers "Message not found"), so it
+empties the list.
 
 Three things follow, and each one is load-bearing:
 
-- **The chosen turn is kept.** With ALPHA, BRAVO and CHARLIE in the log, rewinding to BRAVO
-  forked a session holding ALPHA *and* BRAVO. `turnsKeptByRewind` encodes that; getting it
+- **The chosen turn is kept**, with its reply. `turnsKeptByRewind` encodes that; getting it
   backwards trims one turn too many every time.
-- **The forked session is not loaded.** Running a command against the new id answers
-  "Unknown session id" until `session/load` has been called, so the load is part of
-  `rewindTo`, not an optional follow-up.
+- **The forked session is not loaded**, so the load is part of `rewindTo`, not an optional
+  follow-up, and so is putting the model and effort back.
 - **`chatSessionId` must move with it.** The conversation afterwards has a different id;
   leaving the record on the old one resumes the un-rewound original next time the chat is
   opened — the wrong-session bug `openChat` guards against from the other end.
@@ -765,13 +794,13 @@ loading a forked session sent `user_message_chunk` and `agent_message_chunk` for
 surviving turn. `KiroSession.replaying` swallowing those is what stops the panel painting
 each message twice, and it is not optional.
 
-**`session/compact` and `session/fork` are not on the ACP surface.** Both strings are in the
-binary and both answer "Method not found" over `kiro-cli acp` — they belong to the v3
-WebSocket engine behind `kiro-cli serve`. Compaction and rewinding go through
-`_kiro.dev/commands/execute` like everything else. Grepping the binary for method names is a
-good way to find candidates and a bad way to decide one exists.
+**Grepping the binary for method names is a good way to find candidates and a bad way to
+decide one exists.** The v3 method list is advertised under `_meta.kiro.extensionMethods` in the
+`initialize` answer, which is the place to look first.
 
-**A refused `session/load` is repaired once, and only against proof.** Kiro writes
+**A refused `session/load` is repaired once, and only against proof.** This is the v2 lock file.
+On 3.1.0 a session another process holds loads without complaint, so it should not trigger, and
+it is kept only for what an older session might still do. Kiro writes
 `~/.kiro/sessions/cli/<id>.lock` holding the pid that opened a session, and refuses to
 load one whose pid is still alive. It stores `started_at` beside the pid and never
 compares it, so a number Windows has reissued reads as the original owner and the chat
@@ -825,10 +854,7 @@ These are the things that were expensive to discover; the comments in `kiroSessi
   `TOOL_VERBS`, and a real title always wins. `rawInput.__tool_use_purpose` is Kiro's own
   note on *why*, and is the reason the steps list is worth unfolding.
   `test/toolSteps.test.js` pins all of this to the captured payloads.
-- **`runCommand`** hits `_kiro.dev/commands/execute` with an adjacently-tagged enum: `{ sessionId, command: { command: "usage", args: {} } }`. A plain string, or a name with a leading `/`, is rejected outright.
-- **`textSpy`** — Kiro's own commands narrate through the ordinary `agent_message_chunk` stream. The spy diverts that so command output doesn't land in the transcript as if the user had asked for it.
-- **Credit rates need a second call.** The model list returned by `session/new` carries no rate; only the `model` command has `rateMultiplier` and the context window. `enrichModels()` fetches it in the background after connecting.
-- **The usage meter arrives two ways** — as a `_kiro.dev/metadata` notification, and sometimes bolted onto an ordinary `session/update`. `handleNotification` reads both; dropping either leaves the usage strip blank for a whole conversation.
+- **The usage meter has moved** to `session_info_update` on v3 (see "The v3 engine"). The `_kiro.dev/metadata` route is still read, and is what the older fixtures exercise.
 - `session/prompt` is sent with the payload under **both** `prompt` and `content`, because Kiro's docs and the ACP spec disagree on the field name.
 - The five composer workflows live in `chatModes.ts`. They are explicit prompt instructions,
   rather than claims that Kiro ACP natively exposes all five. Plan additionally passes
@@ -904,10 +930,11 @@ Three things now keep them from being made, and all three depend on the same mea
   back, and the chip sat on a dash until the first turn — Restart followed by `+` every time.
   Only the credit side is reset on reuse, and `onUsage` still fires because the panel has
   already emptied its chip on `cleared`.
-- **The rest are handed back through `kiro-cli chat --delete-session <id>`**, Kiro's own
-  command, because Kiro keeps two stores and only it knows about both. `--session-source v2`
-  names the one ACP writes; without it the delete also searches the older sqlite store and
-  takes 20-30 seconds instead of 2.
+- **The rest are handed back through Kiro.** A v3 session (`sess_…`, a folder under
+  `~/.kiro/sessions/<hash>/`) goes through `session/delete`. It is empty when `messages.jsonl` is
+  absent or zero bytes, and v3 will delete one another window holds, so `emptyLongEnough` makes it
+  wait a day. Pre-v3 ids go through `kiro-cli chat --delete-session <id> --session-source v2`,
+  because v3's `session/delete` answers "ok" for them and removes nothing.
 
 **Nothing is deleted on the strength of the list.** `unusedSessions.ts` (free of `vscode`)
 keeps ids in `globalState` because the commonest empty session outlives the window that
@@ -1250,6 +1277,15 @@ counts, and a descendant rule deliberately does not.
 - Menus are anchored inside positioned parents (`.attach-wrap`, `.input-shell`, `.composer`) so they can't spill out of a narrow sidebar.
 
 **CSP is nonce-based** (`script-src 'nonce-...'`), so there are no inline handlers in the HTML — everything is wired up in `chat.js`. Text from Kiro goes through `escapeHtml` before the small hand-rolled markdown renderer runs, so a reply cannot inject markup.
+
+**Lists in `renderMarkdown` are a stack, and an item's `<li>` stays open until the next item
+at its depth.** The indent used to be matched and thrown away, so nesting came out flat and
+bullets under "1." ended the numbered list, making the numbers restart. A child is two or
+more columns in from its parent and one column either way is the same level, because models
+are not consistent about indents. A blank line ends a list only if what follows is not part
+of it (`listContinuesAfter`), and `<ol start>` keeps the count when something interrupted the
+list. A fence may be indented to any depth so a code block can sit inside a nested item; it
+keeps that indent on its placeholder and the code is dedented by the same amount.
 
 **`renderMarkdown`'s `FENCE` pattern is anchored to a line, and must stay that way.**
 Matching ``` anywhere meant a run of backticks *inside a sentence* — "uses longer fences

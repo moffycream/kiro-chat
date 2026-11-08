@@ -1,196 +1,82 @@
 /*
- * Kiro's own slash commands.
+ * The panel's slash commands.
  *
- * The fixture is not invented: `test/fixtures/kiro-commands.json` is the
- * `_kiro.dev/commands/available` payload as kiro-cli 2.20.2 actually sent it,
- * captured by driving `kiro-cli acp` directly. A test written against a made-up
- * shape proves only that the parser agrees with the person who wrote it.
+ * The v3 engine has no command endpoint, so the list is the panel's own and
+ * each entry is answered by something v3 does have. `test/v3Session.test.js`
+ * drives those answers.
  */
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const fs = require("node:fs");
-const path = require("node:path");
 
 const {
   describeCommandResult,
-  isCompacting,
-  compactionLanded,
   isRunnable,
   NOT_IN_PANEL,
   offerable,
-  parseAvailableCommands,
-  parseRewindTurns,
+  PANEL_COMMANDS,
+  reasonNotOffered,
   turnsKeptByRewind,
 } = require("../out/slashCommands");
 
-const payload = JSON.parse(
-  fs.readFileSync(path.join(__dirname, "fixtures", "kiro-commands.json"), "utf8")
-);
-const commands = parseAvailableCommands(payload);
-
-test("the whole list Kiro announces is read", () => {
-  assert.equal(commands.length, 25, "kiro-cli 2.20.2 offers 25 commands");
-  const names = commands.map((c) => c.name);
-  for (const expected of ["compact", "rewind", "context", "usage", "clear"]) {
-    assert.ok(names.includes(expected), `${expected} must survive parsing`);
+test("everything the panel can answer is on the list", () => {
+  const offered = offerable(PANEL_COMMANDS).map((c) => c.name);
+  for (const name of ["help", "model", "effort", "compact", "context", "usage", "rewind", "clear"]) {
+    assert.ok(offered.includes(name), `${name} must be offered`);
   }
 });
 
-/**
- * Kiro writes the name with its slash and we never do, so that a name is
- * spelled one way between the menu, the parser and `runCommand`. The slash was
- * what `_kiro.dev/commands/execute` rejected outright when the usage panel
- * first sent one.
- */
-test("names are stored without the slash Kiro sends", () => {
-  for (const command of commands) {
-    assert.ok(!command.name.startsWith("/"), `${command.name} kept its slash`);
-  }
-});
-
-test("metadata Kiro attaches is carried through", () => {
-  const context = commands.find((c) => c.name === "context");
-  assert.equal(context.hint, "add <path>, remove <path>, clear");
-  assert.deepEqual(context.subcommands, ["show", "add", "remove", "clear"]);
-
-  const chat = commands.find((c) => c.name === "chat");
-  assert.equal(chat.local, true, "chat is handled by the CLI itself");
-
-  const stats = commands.find((c) => c.name === "stats");
-  assert.equal(stats.hidden, true, "Kiro marks stats hidden");
-});
-
-test("a payload that is not a list is not a crash", () => {
-  assert.deepEqual(parseAvailableCommands(undefined), []);
-  assert.deepEqual(parseAvailableCommands({ commands: "nope" }), []);
-  assert.deepEqual(parseAvailableCommands({ commands: [{}] }), []);
+/** A name is spelled one way between the menu, the parser and `runCommand`. */
+test("names carry no slash and are unique", () => {
+  const names = PANEL_COMMANDS.map((c) => c.name);
+  assert.equal(new Set(names).size, names.length);
+  for (const name of names) assert.ok(!name.startsWith("/"), `${name} kept its slash`);
 });
 
 /**
  * `quit` would kill the process the panel is talking to, `paste` reads a
  * clipboard the CLI does not have behind a webview, `voice` a microphone,
  * `reply` opens $EDITOR, and `chat` is a second conversation store competing
- * with the panel's own history. None of them can work from here, and a menu
- * row that hangs is worse than one that is absent.
+ * with the panel's own history.
  */
 test("commands that cannot work from a webview are not offered", () => {
-  const offered = offerable(commands).map((c) => c.name);
+  const offered = offerable(PANEL_COMMANDS).map((c) => c.name);
   for (const name of NOT_IN_PANEL) {
     assert.ok(!offered.includes(name), `${name} must not be offered`);
   }
-  assert.ok(offered.includes("compact"), "compact is the point of the exercise");
-  assert.ok(offered.includes("rewind"));
-  assert.ok(offered.includes("usage"));
-});
-
-/** Hidden means "do not advertise", not "do not run". */
-test("a hidden command stays runnable but is left out of the menu", () => {
-  const stats = commands.find((c) => c.name === "stats");
-  assert.equal(isRunnable(stats), true, "stats can still be typed in full");
-  assert.ok(
-    !offerable(commands).some((c) => c.name === "stats"),
-    "but the menu does not put it in front of anyone"
-  );
 });
 
 /**
- * Measured, not assumed: `/rewind`, `/knowledge`, `/goal` and `/code` all
- * answered with an empty `message` and everything in `data`. Falling straight
- * through to the message would show a blank card for a command that worked.
+ * Recognised but refused. Unrecognised, `/tools` would go to the model as a
+ * message nobody wrote, and be charged for: measured against kiro-cli 3.1.0.
  */
+test("a command only Kiro's terminal has is known, refused, and explained", () => {
+  for (const name of ["tools", "mcp", "agent", "quit"]) {
+    const command = PANEL_COMMANDS.find((c) => c.name === name);
+    assert.ok(command, `${name} must be recognised`);
+    assert.equal(isRunnable(command), false);
+    assert.match(reasonNotOffered(name), /\.$/, "and the reason is a sentence");
+  }
+});
+
 test("a command that answers only with data still says something", () => {
   assert.equal(
-    describeCommandResult("compact", { ok: false, text: "Conversation too short to compact." }),
-    "Conversation too short to compact."
+    describeCommandResult("compact", { ok: false, text: "Kiro could not compact this conversation." }),
+    "Kiro could not compact this conversation."
   );
   assert.equal(
-    describeCommandResult("mcp", { ok: true, text: "", data: { message: "No MCP servers configured" } }),
-    "No MCP servers configured"
+    describeCommandResult("x", { ok: true, text: "", data: { message: "Nothing here" } }),
+    "Nothing here"
   );
-  assert.equal(
-    describeCommandResult("knowledge", { ok: true, text: "", data: { entries: [1, 2, 3] } }),
-    "3 entries."
-  );
-  assert.equal(
-    describeCommandResult("knowledge", { ok: true, text: "", data: { entries: [] } }),
-    "No entries."
-  );
+  assert.equal(describeCommandResult("x", { ok: true, text: "", data: { entries: [1, 2, 3] } }), "3 entries.");
+  assert.equal(describeCommandResult("x", { ok: true, text: "", data: { entries: [] } }), "No entries.");
   assert.equal(describeCommandResult("goal", { ok: true, text: "" }), "/goal finished.");
   assert.equal(describeCommandResult("goal", { ok: false, text: "" }), "/goal did not run.");
 });
 
-/*
- * `/compact` returns "Compacting conversation..." the moment it starts and
- * does the work afterwards — the compacted context arrives later as a metadata
- * notification the strip already reads. Measured against kiro-cli 2.20.2 by
- * driving `kiro-cli acp` directly. Passing that status straight through showed
- * a card that read like a non-answer, so it is turned into a sentence that
- * says what happened and where the result will show.
- */
-test("compact says it started and points at the strip, not a bare status", () => {
-  assert.ok(isCompacting("Compacting conversation..."));
-  assert.ok(isCompacting("  compacting the conversation  "), "leading-word match, any tail");
-  assert.equal(isCompacting("Conversation too short to compact."), false);
-  assert.equal(isCompacting(""), false);
-
-  const started = describeCommandResult("compact", {
-    ok: true,
-    text: "Compacting conversation...",
-  });
-  assert.match(started, /finishes/, "tells the user where the result lands");
-  assert.notEqual(started, "Compacting conversation...", "not the bare status");
-
-  // A compact that cannot run still speaks for itself.
-  assert.equal(
-    describeCommandResult("compact", { ok: false, text: "Conversation too short to compact." }),
-    "Conversation too short to compact."
-  );
-  // The special-casing is scoped to /compact; other commands are untouched.
-  assert.equal(
-    describeCommandResult("model", { ok: true, text: "Compacting conversation..." }),
-    "Compacting conversation..."
-  );
-});
-
-/*
- * Compaction reports finishing only as a later context reading, so the panel
- * arms the wait with the figure it started from and treats the next reading
- * that differs as the landing. Without this the completion was a silent number
- * change on the strip and the user never knew /compact had finished.
- */
-test("compaction is judged landed by the reading that follows it", () => {
-  // A reading that differs from the start is the finish, either direction.
-  assert.equal(compactionLanded(9, 4), true, "context fell");
-  assert.equal(compactionLanded(2.45, 6.43), true, "context rose as it rebuilt");
-  // The same reading is not yet the finish — nothing has changed.
-  assert.equal(compactionLanded(2.45, 2.45), false);
-  // No reading at all is never the finish.
-  assert.equal(compactionLanded(9, undefined), false);
-  assert.equal(compactionLanded(undefined, undefined), false);
-  // With no starting figure, the first real reading is taken as the landing.
-  assert.equal(compactionLanded(undefined, 5), true);
-});
-
-test("rewind turns are read as Kiro reports them", () => {
-  const turns = parseRewindTurns({
-    turns: [
-      { logIndex: 4, label: "Reply with only: CHARLIE", group: "2%", responseSnippet: "CHARLIE" },
-      { logIndex: 2, label: "Reply with only: BRAVO", group: "2%", responseSnippet: "BRAVO" },
-      { logIndex: 0, label: "Reply with only: ALPHA", group: "2%", responseSnippet: "ALPHA" },
-    ],
-  });
-  assert.equal(turns.length, 3);
-  assert.equal(turns[0].logIndex, 4, "newest first, as sent");
-  assert.equal(turns[2].label, "Reply with only: ALPHA");
-  assert.deepEqual(parseRewindTurns(undefined), []);
-  assert.deepEqual(parseRewindTurns({ turns: [{ label: "no index" }] }), []);
-});
-
 /**
- * Measured against kiro-cli 2.20.2: with ALPHA, BRAVO and CHARLIE in the log,
- * rewinding to BRAVO forked a session that still held ALPHA *and* BRAVO. So
- * the chosen turn is kept and only what came after it is dropped. Getting this
- * backwards would trim one turn too many off the transcript every time.
+ * Measured against kiro-cli 3.1.0: `session/fork` at the first of two messages
+ * gave a session holding that message and its reply. So the chosen turn is
+ * kept and only what came after is dropped.
  */
 test("rewinding to a turn keeps that turn", () => {
   assert.equal(turnsKeptByRewind(3, 0), 3, "the newest turn keeps everything");

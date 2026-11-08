@@ -202,7 +202,12 @@ test("a turn ends the saved figure, and /context cannot overwrite it", () => {
     /breakdown\.percent !== undefined && !this\.session\.showsSavedContext/,
     "opening the details panel keeps the saved figure"
   );
-  assert.match(provider, /name === "context" && this\.session\.showsSavedContext/, "and so does typing /context");
+  const runner = provider.slice(provider.indexOf("private async runSlashCommand("));
+  assert.match(
+    runner.slice(0, runner.indexOf("\n  }")),
+    /percent !== undefined && !this\.session\.showsSavedContext/,
+    "and so does typing /context"
+  );
 });
 
 test("a load that fails does not leave the saved figure standing over live readings", async () => {

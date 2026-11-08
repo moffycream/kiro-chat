@@ -16,10 +16,13 @@ const path = require("node:path");
 
 const {
   deleteSessionArgs,
+  emptyLongEnough,
   forgetUnused,
   isEmptySession,
   isSessionId,
+  isV3Session,
   MAX_UNUSED,
+  MIN_UNUSED_AGE_MS,
   readDeleteOutcome,
   rememberUnused,
   sessionLogPath,
@@ -90,6 +93,48 @@ test("only a session whose log is empty counts as empty", () => {
   assert.equal(isEmptySession(missing, home), false, "no log is not proof of emptiness");
   assert.equal(isSessionId("../../etc/passwd"), false);
   assert.equal(isEmptySession("../../etc/passwd", home), false);
+});
+
+/*
+ * v3 keeps a folder per session, and `messages.jsonl` appears with the first
+ * thing said. Layout measured against kiro-cli 3.1.0.
+ */
+test("a v3 session is empty only if its folder exists and has no messages", () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "kiro-unused-"));
+  const V3 = `sess_${ID}`;
+  const USED = `sess_${OTHER}`;
+  assert.equal(isSessionId(V3), true);
+  assert.equal(isSessionId(`sess_${ID} && del /q *`), false);
+  assert.equal(isV3Session(V3), true);
+  assert.equal(isV3Session(ID), false);
+
+  fs.mkdirSync(path.join(home, ".kiro", "sessions", "abc123", V3), { recursive: true });
+  fs.mkdirSync(path.join(home, ".kiro", "sessions", "abc123", USED), { recursive: true });
+  fs.writeFileSync(path.join(home, ".kiro", "sessions", "abc123", V3, "session.json"), "{}");
+  fs.writeFileSync(path.join(home, ".kiro", "sessions", "abc123", USED, "session.json"), "{}");
+  fs.writeFileSync(path.join(home, ".kiro", "sessions", "abc123", USED, "messages.jsonl"), "{}\n");
+
+  assert.equal(isEmptySession(V3, home), true);
+  assert.equal(isEmptySession(USED, home), false, "a conversation must never be deleted");
+  assert.equal(
+    isEmptySession("sess_00000000-0000-4000-8000-000000000000", home),
+    false,
+    "no folder is not proof of emptiness"
+  );
+});
+
+/* v3 will delete a session another window holds, so age has to protect it. */
+test("a v3 session is only taken back once it has sat empty for a day", () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "kiro-unused-"));
+  const V3 = `sess_${ID}`;
+  const dir = path.join(home, ".kiro", "sessions", "abc123", V3);
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, "session.json"), "{}");
+  const written = fs.statSync(path.join(dir, "session.json")).mtimeMs;
+
+  assert.equal(emptyLongEnough(V3, home, written + 1000), false, "another window may be in it");
+  assert.equal(emptyLongEnough(V3, home, written + MIN_UNUSED_AGE_MS), true);
+  assert.equal(emptyLongEnough(ID, home, written), true, "older ids have Kiro's own refusal");
 });
 
 /*

@@ -1,5 +1,38 @@
 # Changelog
 
+## 0.39.0
+
+- **Choose how hard the model thinks.** The model menu now has an Effort control
+  under the list, for models that support it. The levels come from Kiro, so each
+  model shows its own, from Low up to Max. It applies from your next message and
+  stays with that chat when you reopen it. Changing model goes back to that
+  model's default. You can also type `/effort high`.
+- **Works with Kiro CLI 3.** Kiro 3 switched to a new engine that refused most of
+  what this panel relied on: the model list came up empty and slash commands
+  failed. The panel now speaks to the new engine. **Kiro CLI 3.0 or newer is
+  required**, so if yours is older, run `kiro-cli update`. Your existing chats
+  still open.
+- **Rejecting an edit now stops it reaching your file.** Kiro 3 hands edits to the
+  panel before writing them, so a rejected change is never written at all, rather
+  than being written and then put back.
+- **Kiro 3 can run shell commands, and always asks first.** They appear as a
+  permission card showing the command. `autoApproveTools` no longer answers these
+  for you. A command you approve can change files without a review, so read it
+  before allowing it.
+- **Fewer slash commands.** Kiro 3 has no command system this panel can reach, so
+  the menu now holds `/model`, `/effort`, `/compact`, `/context`, `/usage`,
+  `/rewind`, `/clear` and `/help`. Others, like `/tools` and `/mcp`, say they are
+  only available in Kiro's own terminal instead of being sent to the model.
+- `/clear` now starts a new chat. Rewinding can no longer go back past a
+  `/compact`, because compacting removes those earlier messages from Kiro's side.
+- The running credit total for a reopened chat is now Kiro's own figure, so it
+  stays right even for chats whose early turns have dropped out of the panel's
+  history.
+- **Nested lists display properly.** Indented bullets used to come out flat, and
+  bullets under a numbered item made the numbering restart (1, 1, 2). Lists now
+  nest, numbering carries on, and a code block inside a list item stays in it
+  instead of showing its raw backticks.
+
 ## 0.38.13
 
 - **Reading a file no longer asks for permission.** In Review and Manual mode,

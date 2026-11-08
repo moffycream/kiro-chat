@@ -55,6 +55,8 @@
   let breakBeforeText = false;
   let models = [];
   let currentModelId = "";
+  /** `{ configId, current, levels, defaultLevel }`, or null for a model with no levels. */
+  let effort = null;
   const CHAT_MODES = [
     { id: "default", label: "Default", description: "General coding assistance" },
     { id: "spec", label: "Spec", description: "Structured feature development" },
@@ -372,12 +374,20 @@
      * `(?![\s\S])` rather than `$` for the unterminated case: `$` under the
      * `m` flag means end of *line*, which would cut every block at its first
      * newline. Streaming replies rely on that branch.
+     *
+     * The indent may be any depth, because a code block inside a nested list
+     * item sits well past three spaces, and it is kept on the placeholder so
+     * the block can stay inside its item. The code is dedented by the same
+     * amount, or every line would be drawn pushed in by the list's indent.
      */
-    const FENCE = /^[ \t]{0,3}```([^\n`]*)\n?([\s\S]*?)(?:^[ \t]{0,3}```[ \t]*$|(?![\s\S]))/gm;
-    const withoutCode = source.replace(FENCE, (_, info, code) => {
+    const FENCE = /^([ \t]*)```([^\n`]*)\n?([\s\S]*?)(?:^[ \t]*```[ \t]*$|(?![\s\S]))/gm;
+    const withoutCode = source.replace(FENCE, (_, indent, info, rawCode) => {
       // An info string may carry more than the language; the first word is it.
       const lang = String(info).trim().split(/\s+/)[0] || "";
       const index = blocks.length;
+      const code = indent
+        ? rawCode.replace(new RegExp(`^[ \\t]{0,${indent.length}}`, "gm"), "")
+        : rawCode;
       blocks.push(
         '<div class="code-block">' +
           '<button type="button" class="code-copy" title="Copy code" aria-label="Copy code">' +
@@ -391,20 +401,75 @@
           )}</code></pre>` +
           "</div>"
       );
-      // Newlines around it so the placeholder always lands on a line of
-      // its own, even when the fence was opened part-way through a sentence.
-      return `\n\u0000CODE${index}\u0000\n`;
+      // Newlines around it so the placeholder always lands on a line of its own.
+      return `\n${indent}\u0000CODE${index}\u0000\n`;
     });
 
     const html = [];
     const lines = escapeHtml(withoutCode).split("\n");
-    let list = null;
+
+    /*
+     * Lists are a stack, because they nest.
+     *
+     * The indent used to be matched and thrown away, so every item landed in
+     * one flat list. Worse, a list of a different kind closed the one before:
+     * bullets under "1." ended the numbered list, the next item opened a new
+     * one, and the numbering went 1, 1, 2. So an item's `<li>` stays open until
+     * the next item at its own depth, which is what lets a child list or a code
+     * block be inside it.
+     */
+    const listStack = [];
+    const topList = () => listStack[listStack.length - 1];
+    const closeTopList = () => html.push(`</li></${listStack.pop().tag}>`);
     const closeList = () => {
-      if (list) {
-        html.push(`</${list}>`);
-        list = null;
-      }
+      while (listStack.length) closeTopList();
     };
+    const widthOf = (indent) => indent.replace(/\t/g, "    ").length;
+    const LIST_ITEM = /^([ \t]*)(?:[-*+]|(\d+)[.)])\s+(.*)$/;
+
+    /*
+     * Models indent by two, three or four and are not always consistent, so
+     * one column either way is the same level and two or more in is a child.
+     */
+    const addListItem = (width, number, text) => {
+      const tag = number === undefined ? "ul" : "ol";
+      while (listStack.length && width < topList().indent - 1) closeTopList();
+      let indent = width;
+      if (listStack.length && width <= topList().indent + 1) {
+        if (topList().tag === tag) {
+          html.push(`</li><li>${inline(text)}`);
+          return;
+        }
+        indent = topList().indent;
+        closeTopList();
+      }
+      // A list that resumes after something interrupted it keeps counting.
+      const start = tag === "ol" && Number(number) !== 1 ? ` start="${Number(number)}"` : "";
+      html.push(`<${tag}${start}><li>${inline(text)}`);
+      listStack.push({ tag, indent });
+    };
+
+    /** Does this indent place the line inside an item? Closes any it has left. */
+    const insideListItem = (width) => {
+      if (!listStack.length || width < listStack[0].indent + 2) return false;
+      while (width < topList().indent + 2) closeTopList();
+      return true;
+    };
+
+    /*
+     * A blank line only ends a list if what follows is not part of it. Models
+     * routinely put a blank line between items, and ending the list there is
+     * another way the numbering restarted.
+     */
+    const listContinuesAfter = (index) => {
+      let next = index + 1;
+      while (next < lines.length && !lines[next].trim()) next += 1;
+      if (next >= lines.length || !listStack.length) return false;
+      const line = lines[next];
+      if (LIST_ITEM.test(line)) return true;
+      return widthOf(line.match(/^[ \t]*/)[0]) >= listStack[0].indent + 2;
+    };
+    let afterBlankLine = false;
 
     /*
      * GFM pipe tables.
@@ -473,16 +538,20 @@
           continue;
         }
       }
-      const codeMatch = line.match(/^\u0000CODE(\d+)\u0000$/);
+      const codeMatch = line.match(/^([ \t]*)\u0000CODE(\d+)\u0000$/);
       if (codeMatch) {
-        closeList();
-        html.push(blocks[Number(codeMatch[1])]);
+        afterBlankLine = false;
+        if (!insideListItem(widthOf(codeMatch[1]))) closeList();
+        html.push(blocks[Number(codeMatch[2])]);
         continue;
       }
       if (!line.trim()) {
-        closeList();
+        if (!listContinuesAfter(i)) closeList();
+        afterBlankLine = true;
         continue;
       }
+      const followsBlank = afterBlankLine;
+      afterBlankLine = false;
       const heading = line.match(/^(#{1,6})\s+(.*)$/);
       if (heading) {
         closeList();
@@ -492,24 +561,15 @@
         )}>`);
         continue;
       }
-      const bullet = line.match(/^\s*[-*+]\s+(.*)$/);
-      if (bullet) {
-        if (list !== "ul") {
-          closeList();
-          html.push("<ul>");
-          list = "ul";
-        }
-        html.push(`<li>${inline(bullet[1])}</li>`);
+      const item = line.match(LIST_ITEM);
+      if (item) {
+        addListItem(widthOf(item[1]), item[2], item[3]);
         continue;
       }
-      const numbered = line.match(/^\s*\d+[.)]\s+(.*)$/);
-      if (numbered) {
-        if (list !== "ol") {
-          closeList();
-          html.push("<ol>");
-          list = "ol";
-        }
-        html.push(`<li>${inline(numbered[1])}</li>`);
+      // An indented line under an item is more of that item, as in markdown:
+      // the same paragraph, or a new one if a blank line came first.
+      if (insideListItem(widthOf(line.match(/^[ \t]*/)[0]))) {
+        html.push(followsBlank ? `<p>${inline(line.trim())}</p>` : ` ${inline(line.trim())}`);
         continue;
       }
       closeList();
@@ -1412,7 +1472,8 @@
       label.textContent = `Chat ${turns.length - index}: ${turn.label || "(no message)"}`;
       const meta = document.createElement("span");
       meta.className = "rewind-meta";
-      meta.textContent = `${index === 0 ? "Current checkpoint" : `Remove ${index} later ${index === 1 ? "chat" : "chats"}`} — ${turn.responseSnippet || ""}`;
+      const removes = index === 0 ? "Current checkpoint" : `Remove ${index} later ${index === 1 ? "chat" : "chats"}`;
+      meta.textContent = turn.responseSnippet ? `${removes} — ${turn.responseSnippet}` : removes;
       row.append(label, meta);
       row.title = turn.group ? `${turn.label} — ${turn.group} of the context` : turn.label;
       row.addEventListener("click", () => {
@@ -1922,21 +1983,82 @@
       modelMenu.appendChild(row);
     }
 
+    const control = effortControl();
+    if (control) modelMenu.appendChild(control);
+
     modelMenu.appendChild(creditsFooter());
   }
 
-  function setModels(list, currentId) {
+  /*
+   * How hard the current model thinks, under the list that chose it, which is
+   * where the Kiro IDE puts it too. Kiro only sends levels for a model that has
+   * them, so nothing is drawn for `auto` and the older models. Segments are
+   * `.mode-row`s for the same reason as `editModeSegments`, and like them they
+   * wait for the extension: the highlight moves when `models` comes back.
+   */
+  function effortControl() {
+    if (!effort || !effort.levels || effort.levels.length === 0) return null;
+    const wrap = document.createElement("div");
+    wrap.className = "model-effort";
+
+    const head = document.createElement("div");
+    head.className = "model-effort-head";
+    head.textContent = "Effort";
+    wrap.appendChild(head);
+
+    const group = document.createElement("div");
+    group.className = "menu-segments";
+    group.setAttribute("role", "group");
+    group.setAttribute("aria-label", "Effort");
+    for (const level of effort.levels) {
+      const segment = document.createElement("button");
+      segment.type = "button";
+      segment.className = "mode-row segment effort-segment";
+      segment.textContent = level.name;
+      segment.title = level.value === effort.defaultLevel ? `${level.name} (model default)` : level.name;
+      segment.dataset.effort = level.value;
+      if (level.value === effort.current) {
+        segment.classList.add("selected");
+        segment.setAttribute("aria-current", "true");
+      }
+      group.appendChild(segment);
+    }
+    wrap.appendChild(group);
+
+    const note = document.createElement("div");
+    note.className = "model-effort-note";
+    note.textContent = "Higher effort thinks for longer and uses more credits.";
+    wrap.appendChild(note);
+    return wrap;
+  }
+
+  function effortName() {
+    if (!effort) return "";
+    const level = (effort.levels || []).find((l) => l.value === effort.current);
+    return level ? level.name : "";
+  }
+
+  function setModels(list, currentId, effortState) {
     models = list || [];
     currentModelId = currentId || "";
+    effort = effortState || null;
     const active = models.find((m) => m.modelId === currentModelId);
-    const shown = active ? active.name : "Default model";
+    const level = effortName();
+    const shown = active ? (level ? `${active.name} · ${level}` : active.name) : "Default model";
     modelLabel.textContent = shown;
     // Same as the workflow button: the markup's static "Model" says which
     // picker this is but not what is in it, which is all the label was for.
     modelBtn.title = `Model: ${shown}`;
     modelBtn.setAttribute("aria-label", `Model: ${shown}`);
     modelBtn.disabled = busy;
+    // The redraw replaces the segment that was clicked, and with it the focus.
+    const hadEffortFocus =
+      document.activeElement && document.activeElement.classList.contains("effort-segment");
     renderModelMenu();
+    if (hadEffortFocus) {
+      const selected = modelMenu.querySelector(".effort-segment.selected");
+      if (selected) selected.focus();
+    }
   }
 
   function menuHeading(text, note) {
@@ -2590,6 +2712,13 @@
   });
 
   modelMenu.addEventListener("click", (event) => {
+    // Stays open, as supervision does: this is something you might adjust
+    // while looking at it, and staying put is what shows the change landing.
+    const segment = event.target.closest(".effort-segment");
+    if (segment) {
+      vscode.postMessage({ type: "setEffort", level: segment.dataset.effort });
+      return;
+    }
     const row = event.target.closest(".model-row");
     if (!row) return;
     setMenu(modelMenu, modelBtn, false);
@@ -3694,10 +3823,8 @@
       addCommandCard("/" + name, "**/" + name + "** " + command.reason, false);
       return;
     }
-    // Answered from the list rather than from Kiro's own text dump. Same
-    // source — `commands/available` is where both come from — but the
-    // structured form can be laid out to fit a sidebar, and it can say which
-    // commands actually run here. See `addHelpCard`.
+    // Answered from the same list the menu uses, laid out to fit a sidebar and
+    // able to say which commands actually run here. See `addHelpCard`.
     if (name === "help" && !value) {
       addHelpCard();
       return;
@@ -4513,7 +4640,7 @@
         break;
 
       case "models":
-        setModels(message.models, message.currentModelId);
+        setModels(message.models, message.currentModelId, message.effort);
         renderUsage(usage);
         break;
 

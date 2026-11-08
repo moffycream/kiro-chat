@@ -9,12 +9,9 @@ import {
   parseAccountUsage,
   readUsageCommand,
   readContextCommand,
-  SessionStatus,
 } from "./kiroSession";
 import {
   describeCommandResult,
-  isCompacting,
-  compactionLanded,
   isRunnable,
   offerable,
   reasonNotOffered,
@@ -190,20 +187,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
   /** The chat waiting to be written, held back so a turn is one write. */
   private pendingChat: ChatRecord | undefined;
   private flushTimer: NodeJS.Timeout | undefined;
-  /**
-   * A `/compact` that started but has not reported finishing.
-   *
-   * Compaction returns "Compacting conversation…" at once and does the work
-   * afterwards — the compacted context arrives seconds later as a metadata
-   * notification, the same route as any other reading (measured against
-   * kiro-cli 2.20.2). That silent strip update was the only sign it had
-   * finished, so the user was left watching a card that never closed. This
-   * holds the label and the context reading from before compaction; the next
-   * reading to differ is compaction landing, and the card is told so.
-   */
-  private pendingCompact:
-    | { label: string; before: number | undefined; timer: NodeJS.Timeout; interrupted: boolean }
-    | undefined;
 
   constructor(
     private readonly extensionUri: vscode.Uri,
@@ -223,23 +206,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     this.session = new KiroSession(
       output,
       {
-        onStatus: (status, detail) => {
-          this.noteCompactionInterrupted(status);
-          this.post({ type: "status", status, detail });
-        },
+        onStatus: (status, detail) => this.post({ type: "status", status, detail }),
         onText: (text) => this.post({ type: "chunk", text }),
         onThought: (text) => this.post({ type: "thought", text }),
         onTool: (tool) => this.post({ type: "tool", tool }),
         onTurnEnd: (reason) => this.post({ type: "turnEnd", reason }),
         onError: (message) => this.post({ type: "error", text: message }),
         onNeedsSetup: (reason) => this.onNeedsSetup(reason),
-        onModels: (models, currentModelId) =>
-          this.post({ type: "models", models, currentModelId }),
+        onModels: (models, currentModelId, effort) =>
+          this.post({ type: "models", models, currentModelId, effort }),
         onCommands: (commands) => this.postCommands(commands),
-        onUsage: (usage) => {
-          this.post({ type: "usage", usage });
-          this.notePossibleCompaction(usage.contextPercent);
-        },
+        onUsage: (usage) => this.post({ type: "usage", usage }),
         // The cost of the turn, for the bubble it paid for. The strip above
         // carries the running total for the chat, which answers how much has
         // been spent and not what that answer cost.
@@ -347,6 +324,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
           break;
         case "setModel":
           await this.changeModel(String(message.modelId ?? ""));
+          break;
+        case "setEffort":
+          await this.changeEffort(String(message.level ?? ""));
           break;
         case "refreshUsage":
           await this.refreshUsage();
@@ -870,13 +850,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     this.repostPermissions();
 
     const state = this.session.getModels();
-    if (state.models.length > 0) {
-      this.post({ type: "models", models: state.models, currentModelId: state.currentModelId });
-    }
+    if (state.models.length > 0) this.postModels();
     this.post({ type: "capabilities", caps: { image: this.session.canSendImages } });
     this.post({ type: "status", status: this.session.currentStatus });
-    // Announced once per session, so a panel rebuilt mid-conversation never
-    // hears it. Without this the slash menu is empty until the next new chat.
+    // Announced once per connection, so a panel rebuilt mid-conversation never
+    // hears it. Without this the slash menu is empty until the next restart.
     this.postCommands(this.session.availableCommands);
     this.postSettings();
 
@@ -1725,9 +1703,30 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       vscode.window.showWarningMessage(`Could not switch model: ${message}`);
-      const state = this.session.getModels();
-      this.post({ type: "models", models: state.models, currentModelId: state.currentModelId });
+      this.postModels();
     }
+  }
+
+  /** No segment marks itself chosen, so a failure only has to redraw the truth. */
+  private async changeEffort(level: string): Promise<void> {
+    if (!level) return;
+    try {
+      await this.session.setEffort(level);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      vscode.window.showWarningMessage(`Could not change effort: ${message}`);
+      this.postModels();
+    }
+  }
+
+  private postModels(): void {
+    const state = this.session.getModels();
+    this.post({
+      type: "models",
+      models: state.models,
+      currentModelId: state.currentModelId,
+      effort: state.effort,
+    });
   }
 
   async pickModel(): Promise<void> {
@@ -1781,175 +1780,57 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
   }
 
   /**
-   * Run one of Kiro's slash commands on the user's behalf.
+   * Run one of the panel's slash commands on the user's behalf.
    *
    * The result goes into the transcript as its own entry rather than as an
    * agent message: nobody asked Kiro a question, and a `/usage` table sitting
    * in a reply bubble reads as something the model said.
-   *
-   * Whatever the command changed then has to be believed. `/model` and
-   * `/clear` both alter state the panel is *also* displaying, and a panel that
-   * goes on showing the old model, or a transcript Kiro has just forgotten, is
-   * telling the user something untrue — the same failure the permission card
-   * and the mode picker are each built to avoid. So the answer is read for
-   * what it says it did, not just printed.
    */
   private async runSlashCommand(name: string, value: string): Promise<void> {
+    // The v3 engine has no way to forget a conversation in place, and starting
+    // a new chat is what the user was after: an empty panel Kiro remembers
+    // nothing about.
+    if (name === "clear") {
+      await this.newSession();
+      return;
+    }
     const label = value ? `/${name} ${value}` : `/${name}`;
     this.post({ type: "commandRunning", label });
+    /*
+     * `/compact` runs a model over the conversation, so its card spins until
+     * the request answers. It is one request now, so the card closes on that
+     * answer rather than having to infer the finish from a later reading.
+     */
+    if (name === "compact") {
+      this.post({ type: "commandProgress", label, text: "Compacting the conversation…" });
+    }
+    const finish = (ok: boolean, text: string) =>
+      this.post(
+        name === "compact"
+          ? { type: "commandDone", label, text }
+          : { type: "commandResult", label, ok, text }
+      );
     try {
-      const args = value ? { value } : {};
-      const result = await this.session.runCommand(name, args);
+      const result = await this.session.runCommand(name, value ? { value } : {});
       this.output.appendLine(
         `${label} answered: ${JSON.stringify(result.data ?? result.text).slice(0, 400)}`
       );
-
-      // `/clear` wipes Kiro's memory of the conversation. Leaving the messages
-      // on screen would offer a transcript Kiro can no longer be asked about.
-      if (name === "clear" && result.ok) {
-        this.post({ type: "cleared" });
-      }
-      // `/model` changes the model the button names.
-      const model = String(result.data?.model?.id ?? "").trim();
-      if (model) this.session.noteModelChanged(model);
       /*
-       * Several commands report the context meter back on the way out.
-       *
        * Only the percentage is taken. `readMeter` would also read a credit
-       * figure, and a command's own cost is not this conversation's spend —
-       * folding it into `sessionCredits` would inflate the number on the strip
-       * every time the menu was used.
+       * figure, and a command's own cost is not this conversation's spend.
+       * Not over a reopened chat's saved figure, which is the better number.
        */
       const percent = readMeter(result.data).contextPercent;
-      // `/context` typed by hand is the same estimate the panel skips over a
-      // saved figure. Anything else that reports a percentage (`/compact`) has
-      // changed the conversation, so its figure is newer than the save.
-      const estimateOverSave = name === "context" && this.session.showsSavedContext;
-      if (percent !== undefined && name !== "context") this.session.endSavedContext();
-      if (percent !== undefined && !estimateOverSave) {
+      if (percent !== undefined && !this.session.showsSavedContext) {
         this.post({
           type: "usage",
           usage: this.session.mergeUsage({ contextPercent: percent }),
         });
       }
-
-      /*
-       * `/compact` has only *started* here — the compacted context lands later
-       * as a metadata reading, seconds after this returns. A plain result card
-       * would print "Compacting…" once and then sit motionless until the
-       * finish, which reads as frozen. So compaction that really began gets a
-       * live progress card instead: it spins until the landing reading arrives
-       * and `commandDone` resolves that same card in place. Only arm when it
-       * truly started (`ok` and the "Compacting…" status), never when it was
-       * refused for being too short — that speaks for itself as a normal card.
-       */
-      const compactStarted =
-        name === "compact" && result.ok && isCompacting(String(result.text ?? ""));
-      if (compactStarted) {
-        // A safety net: if the landing reading never differs (a conversation
-        // that compacts to the same percentage) or the notification is missed,
-        // the spinner would hang. Resolve it after a grace period with a
-        // reading-free message so the card always settles.
-        const timer = setTimeout(() => this.resolveCompact(undefined), 30000);
-        this.pendingCompact = {
-          label,
-          before: this.session.usageSnapshot.contextPercent,
-          timer,
-          interrupted: false,
-        };
-        this.post({
-          type: "commandProgress",
-          label,
-          text: "Compacting the conversation…",
-        });
-      } else {
-        this.post({
-          type: "commandResult",
-          label,
-          ok: result.ok,
-          text: describeCommandResult(name, result),
-        });
-      }
+      finish(result.ok, describeCommandResult(name, result));
     } catch (error) {
-      this.pendingCompact = undefined;
-      this.post({
-        type: "commandResult",
-        label,
-        ok: false,
-        text: error instanceof Error ? error.message : String(error),
-      });
+      finish(false, error instanceof Error ? error.message : String(error));
     }
-  }
-
-  /**
-   * The reading that follows an armed `/compact` is compaction landing.
-   *
-   * Called on every usage update. When a compaction is pending, the first
-   * reading that is actually a number and differs from the one it started
-   * from is the finish — Kiro rebuilds the context around the summary, which
-   * changes the percentage either way. The card that said "Compacting…" is
-   * updated to say it is done and what the reading is now, closing the loop
-   * the user complained never closed. A reading identical to the start is
-   * ignored rather than mistaken for completion, and the wait is disarmed
-   * regardless once a fresh number arrives so it cannot fire twice.
-   */
-  private notePossibleCompaction(percent: number | undefined): void {
-    const pending = this.pendingCompact;
-    if (!pending) return;
-    if (!compactionLanded(pending.before, percent)) return;
-    /*
-     * A reading arrived — but if a fresh turn started while we were waiting
-     * (the user sent a prompt during the seconds compaction runs), this
-     * reading may belong to *that* turn, not to compaction, and its percentage
-     * would be a lie stamped on the compact card. We cannot tell the two apart
-     * here, so an interrupted wait resolves without claiming a figure rather
-     * than claiming the wrong one. Compaction still happened; the strip above
-     * carries the real number once things settle.
-     */
-    this.resolveCompact(pending.interrupted ? undefined : percent);
-  }
-
-  /**
-   * A new turn began while a `/compact` was still landing.
-   *
-   * From this point the next context reading can no longer be trusted to be
-   * compaction's, so the pending wait is marked. It is not resolved here — the
-   * spinner should stay until a reading (or the timer) settles it — only
-   * flagged so that resolution drops the untrustworthy percentage. Statuses
-   * other than a turn starting (`busy`) are ignored.
-   */
-  private noteCompactionInterrupted(status: SessionStatus): void {
-    if (status !== "busy") return;
-    if (this.pendingCompact) this.pendingCompact.interrupted = true;
-  }
-
-  /**
-   * Settle the live `/compact` card, once.
-   *
-   * Reached three ways: the landing reading arrived (`percent` is a number),
-   * the grace timer fired without one, or an interrupted wait dropped the
-   * figure (both `percent` undefined). Either way the spinner must stop — a
-   * progress card that never resolves is worse than the silent finish this set
-   * out to fix. The timer is cleared and the pending wait dropped first, so a
-   * reading and a timeout racing cannot both post.
-   *
-   * The card always shows a percentage. A trusted reading is used as given;
-   * otherwise (interrupted or timed out) the *current* context reading stands
-   * in, since that is the live figure the user asked to see rather than a
-   * pointer to the strip. Only a session that has never reported any reading
-   * at all leaves nothing to show, and then the card names that plainly.
-   */
-  private resolveCompact(percent: number | undefined): void {
-    const pending = this.pendingCompact;
-    if (!pending) return;
-    clearTimeout(pending.timer);
-    this.pendingCompact = undefined;
-    const shown = percent ?? this.session.usageSnapshot.contextPercent;
-    const text =
-      shown === undefined
-        ? "Compacted. Context not reported yet."
-        : `Compacted. Context is now ${Math.round(shown)}%.`;
-    this.post({ type: "commandDone", label: pending.label, text });
   }
 
   /** Offer the turns `/rewind` can go back to. */

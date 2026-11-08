@@ -418,6 +418,16 @@ body {
   margin-bottom: 0.25em;
 }
 
+/* The list's own bottom margin would open a gap after every nested group. */
+.msg li > ul,
+.msg li > ol {
+  margin: 0.25em 0 0;
+}
+
+.msg li > p {
+  margin: 0.35em 0 0;
+}
+
 .msg a {
   color: var(--vscode-textLink-foreground);
 }
@@ -2437,6 +2447,18 @@ button:disabled {
   font-size: inherit;
   color: var(--vscode-button-secondaryForeground);
   background: var(--vscode-button-secondaryBackground);
+}
+
+.model-effort {
+  padding: 6px 0;
+  border-top: 1px solid var(--menu-separator);
+}
+
+.model-effort-head,
+.model-effort-note {
+  padding: 0 10px;
+  font-size: 0.85em;
+  color: var(--vscode-descriptionForeground);
 }
 
 .model-empty {

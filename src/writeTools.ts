@@ -45,6 +45,21 @@ export function isWriteLikeTool(update: unknown): boolean {
   return WRITE_COMMANDS.includes(command);
 }
 
+/**
+ * True when a permission request is to run a shell command.
+ *
+ * The v3 engine has a shell tool of its own and ignores `terminal: false`, which
+ * only says the client will not host a terminal. Measured against 3.1.0: it asks
+ * first, with `consent.capability: "shell"` and the command as the title.
+ */
+export function isShellRequest(params: unknown): boolean {
+  if (!params || typeof params !== "object") return false;
+  const value = params as any;
+  if (value._meta?.kiro?.consent?.capability === "shell") return true;
+  const kind = normaliseKind(value.toolCall?.kind ?? value.kind);
+  return kind === "execute" || kind === "shell";
+}
+
 /** Kinds that cannot change a file, whatever else they do. */
 const READ_ONLY_KINDS = ["read", "search", "grep", "glob", "list", "fetch", "think"];
 

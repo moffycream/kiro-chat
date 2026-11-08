@@ -2,7 +2,7 @@
   "name": "kiro-agent-chat",
   "displayName": "Kiro Agent Chat (Unofficial)",
   "description": "Chat with the Kiro agent inside VS Code, like Copilot Chat.",
-  "version": "0.38.13",
+  "version": "0.39.0",
   "publisher": "moffycream",
   "license": "MIT",
   "engines": {
@@ -195,7 +195,7 @@
         "kiroChat.autoApproveTools": {
           "type": "boolean",
           "default": false,
-          "description": "Approve every tool Kiro asks to run without asking you first. Leave this off unless you trust the workspace."
+          "description": "Approve the tools Kiro asks to run without asking you first. Shell commands are always asked about. Leave this off unless you trust the workspace."
         },
         "kiroChat.reviewFileWrites": {
           "type": "boolean",

@@ -633,8 +633,8 @@ test("backticks inside a sentence do not open a code block", () => {
   const fence = body.match(/const FENCE = (\/.*\/gm);/);
   assert.ok(fence, "the fence pattern should be named and anchored");
 
-  assert.match(fence[1], /^\/\^\[ \\t\]\{0,3\}```/, "the opening fence must start a line");
-  assert.match(fence[1], /\^\[ \\t\]\{0,3\}```\[ \\t\]\*\$/, "and so must the closing one");
+  assert.match(fence[1], /^\/\^\(\[ \\t\]\*\)```/, "the opening fence must start a line");
+  assert.match(fence[1], /\^\[ \\t\]\*```\[ \\t\]\*\$/, "and so must the closing one");
   assert.ok(fence[1].endsWith("/gm"), "which needs the multiline flag");
 
   /*
@@ -669,6 +669,95 @@ function loadRenderer() {
   assert.ok(from > -1 && to > from, "the renderer should be findable in chat.js");
   return new Function(js.slice(from, to) + "\nreturn renderMarkdown;")();
 }
+
+/*
+ * Lists nest. The indent used to be matched and discarded, so every item landed
+ * in one flat list, and bullets under a numbered item ended the numbered list
+ * and made the numbering restart.
+ */
+test("nested bullets are rendered nested", () => {
+  assert.equal(
+    loadRenderer()("- a\n  - b\n    - c\n- d"),
+    "<ul><li>a<ul><li>b<ul><li>c</li></ul></li></ul></li><li>d</li></ul>"
+  );
+});
+
+test("any usual indent nests, tabs included", () => {
+  const expected = "<ul><li>a<ul><li>b</li><li>c</li></ul></li></ul>";
+  assert.equal(loadRenderer()("- a\n    - b\n    - c"), expected, "four spaces");
+  assert.equal(loadRenderer()("- a\n\t- b\n\t- c"), expected, "a tab");
+  assert.equal(loadRenderer()("* a\n  + b\n  + c"), expected, "other markers");
+});
+
+test("a list climbs back out to the right level", () => {
+  assert.equal(
+    loadRenderer()("- a\n  - b\n    - c\n  - d\n- e"),
+    "<ul><li>a<ul><li>b<ul><li>c</li></ul></li><li>d</li></ul></li><li>e</li></ul>"
+  );
+});
+
+test("bullets under a numbered item do not restart the numbering", () => {
+  assert.equal(
+    loadRenderer()("1. one\n   - x\n   - y\n2. two\n3. three"),
+    "<ol><li>one<ul><li>x</li><li>y</li></ul></li><li>two</li><li>three</li></ol>"
+  );
+});
+
+test("numbers can nest under bullets", () => {
+  assert.equal(
+    loadRenderer()("- a\n  1. x\n  2. y\n- b"),
+    "<ul><li>a<ol><li>x</li><li>y</li></ol></li><li>b</li></ul>"
+  );
+});
+
+test("a blank line between items does not end the list", () => {
+  assert.equal(
+    loadRenderer()("1. one\n\n2. two\n\n   - x\n\n3. three"),
+    "<ol><li>one</li><li>two<ul><li>x</li></ul></li><li>three</li></ol>"
+  );
+});
+
+test("a list interrupted by something else keeps counting", () => {
+  assert.equal(
+    loadRenderer()("1. one\n\nSome text.\n\n2. two"),
+    '<ol><li>one</li></ol><p>Some text.</p><ol start="2"><li>two</li></ol>'
+  );
+});
+
+test("an indented line belongs to the item above it", () => {
+  const render = loadRenderer();
+  assert.equal(render("- a\n  more\n- b"), "<ul><li>a more</li><li>b</li></ul>");
+  assert.equal(render("- a\n\n  second\n- b"), "<ul><li>a<p>second</p></li><li>b</li></ul>");
+  assert.equal(render("- a\n  - b\n  back on a"), "<ul><li>a<ul><li>b</li></ul> back on a</li></ul>");
+});
+
+test("a code block stays inside its nested item, dedented", () => {
+  const html = loadRenderer()("- a\n    - b\n\n      ```js\n      if (x) {\n        y();\n      }\n      ```\n\n    - c\n- d");
+  assert.doesNotMatch(html, /```/, "the fence must not be printed");
+  assert.match(html, /^<ul><li>a<ul><li>b<div class="code-block">/);
+  assert.match(html, /<\/div><\/li><li>c<\/li><\/ul><\/li><li>d<\/li><\/ul>$/);
+  const code = html.slice(html.indexOf("<code"), html.indexOf("</code>")).replace(/<[^>]+>/g, "");
+  assert.match(code, /^if \(x\) \{\n  y\(\);\n\}$/, "the list's indent is gone, the code's own is not");
+});
+
+test("a list ends where ordinary text starts", () => {
+  assert.equal(loadRenderer()("- a\n  - b\n\nAfter."), "<ul><li>a<ul><li>b</li></ul></li></ul><p>After.</p>");
+  assert.equal(loadRenderer()("- a\nAfter."), "<ul><li>a</li></ul><p>After.</p>");
+});
+
+/** A reply is rendered on every frame, so each partial one must be well formed. */
+test("every prefix of a streaming nested list is balanced", () => {
+  const render = loadRenderer();
+  const reply = "Intro\n\n1. one\n   - x\n\n     ```js\n     a();\n     ```\n   - y\n2. two\n\n- b\n  - c\n\nEnd";
+  for (let n = 0; n <= reply.length; n += 1) {
+    const html = render(reply.slice(0, n));
+    for (const tag of ["ul", "ol", "li"]) {
+      const opened = (html.match(new RegExp(`<${tag}[ >]`, "g")) || []).length;
+      const closed = (html.match(new RegExp(`</${tag}>`, "g")) || []).length;
+      assert.equal(opened, closed, `<${tag}> unbalanced after ${n} characters: ${html}`);
+    }
+  }
+});
 
 /*
  * Tables came out as a wall of pipes.
@@ -3324,14 +3413,9 @@ test("every slash command message is both posted and handled", () => {
  * a parse error, which is not a thing to show someone who picked it off a
  * menu. `_kiro.dev/commands/available` was already being dropped on the floor.
  */
-test("the command list comes from Kiro's own announcement", () => {
+test("the command list reaches the webview once Kiro is connected", () => {
   const session = fs.readFileSync(path.join(root, "src", "kiroSession.ts"), "utf8");
-  assert.match(session, /commands\/available/, "the notification must be read");
-  assert.match(
-    session,
-    /bareMethod\(method\) === "commands\/available"/,
-    "and compared with the vendor prefix stripped, as every Kiro notification must be"
-  );
+  assert.match(session, /PANEL_COMMANDS/, "the panel's own list, since v3 announces none");
   assert.match(session, /onCommands/, "the session must pass the list on");
   assert.match(provider, /postCommands/, "the provider must hand it to the webview");
 });
@@ -3491,8 +3575,7 @@ test("a rewind repoints the chat at the session Kiro forked", () => {
 test("a command that changes what the panel shows is believed", () => {
   const runner = sliceFrom(provider, "private async runSlashCommand(");
   assert.match(runner, /name === "clear"/, "clear must be recognised");
-  assert.match(runner, /type: "cleared"/, "and empty the transcript");
-  assert.match(runner, /noteModelChanged/, "model updates the button");
+  assert.match(runner, /this\.newSession\(\)/, "and start a new chat, which empties the transcript");
 });
 
 /**
@@ -3661,7 +3744,7 @@ test("overlapping commands leave no card spinning forever", () => {
 });
 
 /**
- * `/compact` runs seconds after it returns, so the user needs to see it is in
+ * `/compact` takes seconds, so the user needs to see it is in
  * progress and see it finish. The card spins (`commandProgress` → a card with
  * the same `.spinning` ring a running tool uses) and its finish resolves that
  * same card in place (`commandDone`), so one card goes from "Compacting…" to
@@ -3691,40 +3774,35 @@ test("compact shows a live spinner and resolves it in place", () => {
 });
 
 /**
- * A prompt sent DURING compaction must not stamp a wrong figure on the card.
- *
- * Compaction returns at once and runs for seconds after, and the composer is
- * free in that window — so the user can send a prompt while it works. Every
- * turn reports its own context reading, and the completion wait cannot tell a
- * prompt's reading from compaction's. If a turn started while waiting, the
- * card resolves without a percentage ("See the context reading above.")
- * rather than claiming the interleaved turn's number as the compacted one.
+ * A failed `/compact` must close its spinning card too. Compaction is one
+ * request now, so both of its endings go through `commandDone`.
  */
-test("a prompt during compaction does not put a wrong figure on the card", () => {
-  // A new turn (status "busy") marks the pending wait as interrupted.
-  const onStatus = sliceFrom(provider, "onStatus: (status, detail) =>");
-  assert.match(onStatus, /noteCompactionInterrupted\(status\)/, "status feeds the guard");
+test("compact settles its card whether it worked or not", () => {
+  const runner = sliceFrom(provider, "private async runSlashCommand(");
+  const finish = runner.slice(runner.indexOf("const finish ="), runner.indexOf("try {"));
+  assert.match(finish, /name === "compact"[\s\S]*type: "commandDone"/);
+  assert.match(runner, /catch \(error\) \{\s*finish\(false,/, "a thrown error still finishes it");
+});
 
-  const mark = sliceFrom(provider, "private noteCompactionInterrupted(");
-  assert.match(mark, /if \(status !== "busy"\) return/, "only a turn start counts");
-  assert.match(mark, /this\.pendingCompact\.interrupted = true/, "and it marks the wait");
+/**
+ * Effort is drawn from what Kiro sent and nothing else, because the levels
+ * differ by model and a model with none must show no control at all.
+ */
+test("the effort control follows Kiro and claims nothing until it answers", () => {
+  const control = sliceFrom(js, "function effortControl()");
+  assert.match(control, /if \(!effort \|\| !effort\.levels \|\| effort\.levels\.length === 0\) return null/);
+  assert.match(control, /effort\.levels/);
+  assert.match(control, /level\.value === effort\.current/, "the highlight is Kiro's current value");
 
-  // Resolution drops the percentage when the wait was interrupted.
-  const note = sliceFrom(provider, "private notePossibleCompaction(");
-  assert.match(
-    note,
-    /pending\.interrupted \? undefined : percent/,
-    "an interrupted wait resolves without a figure"
-  );
+  const click = sliceFrom(js, 'modelMenu.addEventListener("click"');
+  const branch = click.slice(0, click.indexOf('closest(".model-row")'));
+  assert.match(branch, /type: "setEffort"/, "a click only posts");
+  assert.doesNotMatch(branch, /classList/, "and marks nothing itself");
 
-  // The figure-free resolution still settles the card with a real reading.
-  const resolve = sliceFrom(provider, "private resolveCompact(");
-  assert.match(
-    resolve,
-    /percent \?\? this\.session\.usageSnapshot\.contextPercent/,
-    "an interrupted or timed-out wait falls back to the current reading"
-  );
-  assert.match(resolve, /Context is now \$\{Math\.round\(shown\)\}%/, "and shows it as a percentage");
+  const handler = sliceFrom(provider, 'case "setEffort"');
+  assert.match(handler.slice(0, 120), /changeEffort/);
+  const change = sliceFrom(provider, "private async changeEffort(");
+  assert.match(change, /this\.postModels\(\)/, "a failure redraws what is true");
 });
 
 /**
@@ -3826,16 +3904,12 @@ test("the page markup contains no backticks", () => {
  * The src copies are gone and the rules are asserted where they run, against
  * the same fixture Kiro really sent.
  */
-const { isRunnable, offerable, parseAvailableCommands } = require("../out/slashCommands");
+const { isRunnable, offerable, PANEL_COMMANDS } = require("../out/slashCommands");
 
 /** The list exactly as the provider posts it: whole, with the two flags. */
 function webviewCommands() {
-  const payload = JSON.parse(
-    fs.readFileSync(path.join(root, "test", "fixtures", "kiro-commands.json"), "utf8")
-  );
-  const parsed = parseAvailableCommands(payload);
-  const offered = new Set(offerable(parsed).map((c) => c.name));
-  return parsed.map((c) => ({
+  const offered = new Set(offerable(PANEL_COMMANDS).map((c) => c.name));
+  return PANEL_COMMANDS.map((c) => ({
     ...c,
     offered: offered.has(c.name),
     runnable: isRunnable(c),

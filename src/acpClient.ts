@@ -43,9 +43,17 @@ export function needsShell(command: string): boolean {
  * Both were concatenated in front of `acp`, so the example the setting itself
  * documented could not start Kiro at all — and `--agent` is the one route to
  * an agent config, which is where a `resources` list of memory files lives.
+ *
+ * The engine is named rather than left to Kiro. `kiro-cli acp --help` still
+ * says v2 is the default while 3.1.0 starts v3 with no flag, and the two speak
+ * different protocols, so what the panel gets must not depend on which of those
+ * is true on a given machine. A flag the user set themselves wins, because
+ * passing it twice is an error.
  */
 export function acpArgs(launch: string[], user: string[]): string[] {
-  return [...(launch ?? []), "acp", ...(user ?? [])];
+  const own = user ?? [];
+  const named = own.some((arg) => /^--agent-engine(=|$)/.test(arg));
+  return [...(launch ?? []), "acp", ...(named ? [] : ["--agent-engine", "v3"]), ...own];
 }
 
 /** Wrap in double quotes for cmd.exe when there is anything to protect. */
