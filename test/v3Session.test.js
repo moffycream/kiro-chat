@@ -356,3 +356,32 @@ test("too old a Kiro is named from what it printed", () => {
   assert.equal(needsNewerKiro("[kiro stderr] error: unexpected argument '--agent-engine' found"), true);
   assert.equal(needsNewerKiro("error: something else"), false);
 });
+
+/*
+ * A real process that fails the way an old CLI does, with the wording kiro-cli
+ * uses for a flag it does not know. It has to reach the setup screen as its own
+ * reason: said as a chat error, it was wiped when that screen opened, leaving
+ * "this is probably temporary" for something that will not fix itself.
+ */
+test("a Kiro too old for the flag gets the update screen, not a chat error", async () => {
+  const os = require("node:os");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "kiro-old-"));
+  const fake = path.join(dir, "kiro-cli.cmd");
+  fs.writeFileSync(
+    fake,
+    "@echo off\r\necho error: unexpected argument '--agent-engine' found 1>&2\r\nexit /b 2\r\n"
+  );
+  const KiroSession = loadKiroSession({ command: fake, args: [], env: {} });
+  const told = [];
+  const events = new Proxy(
+    {
+      onError: (message) => told.push(["error", message]),
+      onNeedsSetup: (reason) => told.push(["setup", reason]),
+    },
+    { get: (target, key) => target[key] ?? (() => {}) }
+  );
+  const session = new KiroSession({ appendLine() {} }, events);
+  await assert.rejects(session.ensureReady(), /needs Kiro CLI 3\.0 or newer/);
+  assert.deepEqual(told, [["setup", "outdated"]]);
+  session.dispose();
+});

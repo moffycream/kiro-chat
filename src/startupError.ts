@@ -30,6 +30,8 @@ const SIGN_IN_PATTERNS: RegExp[] = [
   /\blogin\s+required\b/i,
 ];
 
+export const KIRO_TOO_OLD = "This version of Kiro Chat needs Kiro CLI 3.0 or newer.";
+
 /**
  * A Kiro too old to have the engine this panel speaks to refuses the flag and
  * exits, so the words on stderr are the only sign of why.

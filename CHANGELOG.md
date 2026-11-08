@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.39.1
+
+- **A clear screen when Kiro CLI is too old.** With a Kiro CLI older than 3.0,
+  the panel said the problem was "probably temporary" and offered to try again,
+  which could never work. It now says Kiro CLI needs updating, with an **Update
+  Kiro** button that opens PowerShell with the command typed in for you to run,
+  and **Try again** for afterwards. Your chats are safe.
+
 ## 0.39.0
 
 - **Choose how hard the model thinks.** The model menu now has an Effort control

@@ -3774,6 +3774,26 @@ test("compact shows a live spinner and resolves it in place", () => {
 });
 
 /**
+ * Too old a Kiro cannot be fixed by retrying, so it skips the quiet reconnect,
+ * and the screen says what to do rather than that it is probably temporary.
+ */
+test("an outdated Kiro gets a screen of its own", () => {
+  const gate = sliceFrom(provider, "private onNeedsSetup(");
+  assert.match(gate.slice(0, gate.indexOf("setup.reconnect")), /reason !== "outdated"/);
+
+  const render = sliceFrom(js, "function renderSetup()");
+  assert.match(render, /if \(outdated\) renderOutdated\(wrap\)/);
+
+  const screen = sliceFrom(js, "function renderOutdated(wrap)");
+  assert.match(screen, /dataset\.act = "updateKiro"/);
+  assert.match(screen, /dataset\.act = "retry"/);
+  assert.doesNotMatch(screen, /temporary/);
+
+  const handler = sliceFrom(provider, 'case "updateKiro"');
+  assert.match(handler.slice(0, 200), /runInTerminal\("kiro-cli update"\)/);
+});
+
+/**
  * A failed `/compact` must close its spinning card too. Compaction is one
  * request now, so both of its endings go through `commandDone`.
  */

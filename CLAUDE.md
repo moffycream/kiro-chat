@@ -617,8 +617,10 @@ keeps `autoApproveTools` from answering one, because that setting predates this.
 
 **The panel speaks to `kiro-cli acp --agent-engine v3`, named explicitly.** `acp --help` says v2
 is the default; 3.1.0 starts v3 with no flag. The two are different protocols, so `acpArgs` adds
-the flag unless `kiroChat.args` already has one. A Kiro older than 3.0 refuses it and
-`needsNewerKiro` says so. Everything below this heading was measured against 3.1.0 by driving
+the flag unless `kiroChat.args` already has one. A Kiro older than 3.0 refuses it, which
+`needsNewerKiro` spots on stderr and reports as `onNeedsSetup("outdated")`. It must stay a setup
+reason: `renderSetup` empties the transcript, so a chat error sent first is wiped before anyone
+reads it, which is what the first version did. Everything below this heading was measured against 3.1.0 by driving
 `kiro-cli acp`, and sections further down marked 2.x are history unless they say otherwise.
 
 **`configOptions` replaces the `models` block.** `session/new`, `session/load`, `session/fork`

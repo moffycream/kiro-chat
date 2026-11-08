@@ -347,6 +347,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
           this.runInTerminal("kiro-cli login");
           this.setup.signIn();
           break;
+        case "updateKiro":
+          // Typed and left for the user to run, like install and sign-in.
+          this.runInTerminal("kiro-cli update");
+          break;
         case "copyCommand":
           await vscode.env.clipboard.writeText(this.installCommand());
           vscode.window.showInformationMessage(
@@ -791,15 +795,19 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
    * simply not there yet, start watching for it. Later failures are the
    * watcher's own retries; they must not restart the screen underneath it.
    */
-  private onNeedsSetup(reason: "missing" | "signin" | "failed", detail?: string): void {
+  private onNeedsSetup(
+    reason: "missing" | "signin" | "failed" | "outdated",
+    detail?: string
+  ): void {
     if (this.setupActive) return;
 
     // Kiro has worked in this window before, so this is a reconnect, not a
     // first run. Retry quietly behind the loading state: a torn-down client
     // or a slow spawn fixes itself, and throwing a setup screen at someone
     // who was chatting seconds ago is how "restart" came to mean "log in
-    // again". Only a real sign-in error skips the retries.
-    if (this.everConnected && reason !== "signin") {
+    // again". Only a sign-in error or a Kiro that is too old skips the
+    // retries, because trying again cannot fix either.
+    if (this.everConnected && reason !== "signin" && reason !== "outdated") {
       this.setup.reconnect();
       return;
     }

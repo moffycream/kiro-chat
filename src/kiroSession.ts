@@ -13,7 +13,7 @@ import { isInsideAnyRoot, isInsideRoot } from "./workspacePaths";
 import { isStaleLock, lockedPidFrom, parseSessionLock, sessionLockPath } from "./sessionLocks";
 import { savedContextPercent } from "./savedContext";
 import { lookupProcess } from "./processFacts";
-import { looksLikeSignIn, needsNewerKiro } from "./startupError";
+import { KIRO_TOO_OLD, looksLikeSignIn, needsNewerKiro } from "./startupError";
 import { EffortState, readSessionConfig, SessionConfig } from "./configOptions";
 import { fetchAccountUsage } from "./accountUsage";
 import { LaunchInputs, launchInputsChanged, snapshotLaunchInputs } from "./launchInputs";
@@ -91,7 +91,7 @@ export interface SessionEvents {
   onTool: (tool: ToolStep) => void;
   onTurnEnd: (reason?: string) => void;
   onError: (message: string) => void;
-  onNeedsSetup: (reason: "missing" | "signin" | "failed", detail?: string) => void;
+  onNeedsSetup: (reason: "missing" | "signin" | "failed" | "outdated", detail?: string) => void;
   onModels: (models: ModelInfo[], currentModelId: string, effort?: EffortState) => void;
   /** What the composer can run. Sent once Kiro is connected. */
   onCommands?: (commands: SlashCommand[]) => void;
@@ -984,10 +984,11 @@ export class KiroSession {
       const message = err instanceof Error ? err.message : String(err);
       this.setStatus("stopped");
       this.output.appendLine(`Failed to start "${command}": ${message}`);
+      // Its own reason, not a chat message: the setup screen empties the
+      // transcript as it opens, so anything said there is gone at once.
       if (tooOld) {
-        this.events.onError(
-          "This version of Kiro Chat needs Kiro CLI 3.0 or newer. Run kiro-cli update in a terminal, then restart Kiro from the title bar."
-        );
+        this.events.onNeedsSetup("outdated");
+        throw new Error(KIRO_TOO_OLD);
       }
       // Only blame the login when the error actually says so. This used to
       // report "signin" for every failure in here — a dropped pipe, a slow

@@ -4065,22 +4065,65 @@
     wrap.appendChild(actions);
   }
 
+  /**
+   * Kiro is installed but older than this panel can talk to. Trying again
+   * cannot help until it is updated, so updating is the button that is loud.
+   */
+  function renderOutdated(wrap) {
+    const heading = document.createElement("h2");
+    heading.textContent = "Kiro CLI needs updating";
+    wrap.appendChild(heading);
+
+    const lead = document.createElement("p");
+    lead.textContent =
+      "This version of Kiro Chat needs Kiro CLI 3.0 or newer. Update it, then press Try again. Your chats are safe.";
+    wrap.appendChild(lead);
+
+    const note = document.createElement("p");
+    note.className = "hint";
+    note.textContent =
+      "Update Kiro opens PowerShell with the command typed in. Press Enter to run it.";
+    wrap.appendChild(note);
+
+    const actions = document.createElement("div");
+    actions.className = "setup-actions";
+
+    const update = document.createElement("button");
+    update.type = "button";
+    update.dataset.act = "updateKiro";
+    update.textContent = "Update Kiro";
+    actions.appendChild(update);
+
+    const again = document.createElement("button");
+    again.type = "button";
+    again.className = "ghost";
+    again.dataset.act = "retry";
+    again.textContent = "Try again";
+    actions.appendChild(again);
+
+    wrap.appendChild(actions);
+  }
+
   function renderSetup() {
     if (!setup) return;
+    const outdated = setup.reason === "outdated";
     setComposerEnabled(
       false,
-      setup.reason === "failed"
-        ? "Kiro isn't connected"
-        : "Finish setting Kiro up to start chatting"
+      outdated
+        ? "Update Kiro CLI to start chatting"
+        : setup.reason === "failed"
+          ? "Kiro isn't connected"
+          : "Finish setting Kiro up to start chatting"
     );
     messagesEl.innerHTML = "";
     current = null;
     buffer = "";
 
-    if (setup.reason === "failed") {
+    if (setup.reason === "failed" || outdated) {
       const wrap = document.createElement("div");
       wrap.className = "setup";
-      renderFailure(wrap);
+      if (outdated) renderOutdated(wrap);
+      else renderFailure(wrap);
 
       const footer = document.createElement("p");
       footer.className = "hint";
