@@ -610,8 +610,12 @@ ones.
 **`terminal: false` does not stop the shell on v3.** It only says the client will not host a
 terminal. The engine has a shell tool of its own and runs it after a `session/request_permission`
 whose `_meta.kiro.consent.capability` is `shell`. That card is the only gate: a shell command is
-not a tracked edit, so what it writes gets no review and no keep-or-undo card. `isShellRequest`
-keeps `autoApproveTools` from answering one, because that setting predates this.
+not a tracked edit, so what it writes gets no review and no keep-or-undo card. Manual and Review
+always ask. Autopilot answers it like any other permission: 0.39.0 excluded shell from
+`autoApproveTools`, and since Autopilot *is* that setting, its menu promised every permission
+while each command stalled the turn on a card nobody was there to answer. The exception is a
+read-only turn, where `isShellRequest` still forces the card: Plan promises to change nothing,
+its button does not show the supervision, and the end-of-turn restore cannot undo a command.
 
 ## The v3 engine
 

@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.39.2
+
+- **Autopilot no longer stops at shell commands.** It promised to approve every
+  permission, but since 0.39.0 each command waited on a card, so a turn you had
+  left running could sit there until you came back. Autopilot now runs them
+  without asking. A command can change anything your account can, with no diff
+  or keep-or-undo card afterwards, so only use Autopilot in a folder you trust.
+  Manual and Review still ask before every command, and so does the Plan
+  workflow, even with Autopilot on, because Plan promises to change nothing.
+
 ## 0.39.1
 
 - **A clear screen when Kiro CLI is too old.** With a Kiro CLI older than 3.0,

@@ -367,11 +367,12 @@ login you already have.
   old file back over the top would undo work you had agreed to. Cancelling the turn is the
   other case, and that really does drop everything. This is on by default and can be
   disabled in settings.
-- **Shell commands are always asked about.** Kiro CLI 3 can run commands itself, and the
-  card shows the command before it runs. Read it before allowing it: the workspace boundary
-  above only covers what the extension reads and writes for Kiro, so a command you approve
-  can change anything your account can, with no diff to review afterwards. The auto-approve
-  setting does not answer these for you.
+- **Shell commands are asked about, unless you choose Autopilot.** Kiro CLI 3 can run
+  commands itself, and the card shows the command before it runs. Read it before allowing
+  it: the workspace boundary above only covers what the extension reads and writes for
+  Kiro, so a command can change anything your account can, with no diff to review
+  afterwards. Autopilot runs them without asking, so only use it in a folder you trust.
+  The Plan workflow still asks, even with Autopilot on.
 - Text coming back from Kiro is escaped before it is shown, so a reply cannot inject
   anything into the panel.
 
@@ -385,7 +386,7 @@ All optional.
 | `kiroChat.args` | Extra arguments for `kiro-cli acp`, e.g. `["--agent", "my-agent"]`. Added after `acp`, where its options belong. The panel only works with the v3 engine, so leave `--agent-engine` out. |
 | `kiroChat.env` | Extra environment variables for Kiro. |
 | `kiroChat.allowFileWrites` | Let Kiro keep its edits. Turn off and every edit is undone at the end of the turn — see the note below. |
-| `kiroChat.autoApproveTools` | Skip the approval popup, except for shell commands. Off by default. |
+| `kiroChat.autoApproveTools` | Skip the approval popup, shell commands included, except for a command in Plan. Autopilot turns this on. Off by default. |
 | `kiroChat.reviewFileWrites` | Inline red/green review with whole-file and per-hunk decisions. On by default. |
 | `kiroChat.reviewDuringTurn` | Review each file as Kiro finishes editing it, rather than queueing every diff to the end of the turn. On by default. |
 | `kiroChat.attachActiveFile` | Send the file you are looking at with each message. On by default. |

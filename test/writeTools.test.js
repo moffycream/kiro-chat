@@ -12,7 +12,7 @@ const { isShellRequest, isWriteLikeTool } = require("../out/writeTools");
 
 /*
  * v3 has a shell tool whatever `terminal: false` says. Payload shape captured
- * from kiro-cli 3.1.0. `autoApproveTools` must never reach one of these.
+ * from kiro-cli 3.1.0. This is what keeps a command asked about in Plan.
  */
 test("a shell request is recognised however it is described", () => {
   assert.equal(
@@ -117,7 +117,7 @@ test("an edit is not also prompted for when the review will open", () => {
 test("an auto-approved permission is written to the log", () => {
   const ask = session.slice(session.indexOf("private async askPermission"));
   const body = ask.slice(0, ask.indexOf("\n  private "));
-  const auto = body.slice(body.indexOf("if (autoApprove && !isShellRequest(params)) {"));
+  const auto = body.slice(body.indexOf("if (autoApprove &&"));
   const branch = auto.slice(0, auto.indexOf("\n    }"));
   assert.match(branch, /this\.output\.appendLine\(/, "say that it was granted");
   assert.match(branch, /autoApproveTools/, "and why it was never asked");

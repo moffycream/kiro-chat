@@ -2826,10 +2826,15 @@ export class KiroSession {
     };
 
     /*
-     * Never for a shell command. The setting was written when Kiro could not
-     * run one through this panel, and turning it on should not grant that.
+     * Shell commands included. 0.39.0 excluded them, which left Autopilot —
+     * this setting, under its menu name — promising every permission while
+     * stalling the turn on a card for each command nobody was there to answer.
+     *
+     * Except in a read-only turn. Plan promises to change nothing, its button
+     * does not even show the supervision, and a command is the one thing the
+     * end-of-turn restore cannot undo. The card is what keeps that promise.
      */
-    if (autoApprove && !isShellRequest(params)) {
+    if (autoApprove && !(this.turnReadOnly && isShellRequest(params))) {
       const allow = allowOption();
       // The other branch that answers without asking writes down that it did.
       // This one did not, so with `autoApproveTools` on there was no record

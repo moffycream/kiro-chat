@@ -240,16 +240,39 @@ test("an auto-approved permission does not wait behind a card", async () => {
 });
 
 /*
- * The setting predates a Kiro that could run commands through this panel, so
- * nobody who turned it on agreed to that. A shell request is always asked.
+ * Autopilot is this setting, and it promises every permission. Payload shape
+ * captured from kiro-cli 3.1.0. A card here stalls a turn nobody is watching.
  */
-test("auto-approve never answers a shell command", async () => {
+const SHELL_REQUEST = {
+  toolCall: { toolCallId: "t", status: "pending", title: "echo hi > f.txt" },
+  options: [
+    { optionId: "always", name: "Always allow", kind: "allow_always" },
+    { optionId: "once", name: "Allow", kind: "allow_once" },
+  ],
+  _meta: { kiro: { consent: { capability: "shell" } } },
+};
+
+test("auto-approve answers a shell command, granting it once", async () => {
   const { session, shown } = held({ autoApproveTools: true });
-  session.askPermission({
-    toolCall: { toolCallId: "t", status: "pending", title: "echo hi > f.txt" },
-    options: [{ optionId: "yes", name: "Yes", kind: "allow_once" }],
-    _meta: { kiro: { consent: { capability: "shell" } } },
+  assert.deepEqual(await session.askPermission(SHELL_REQUEST), {
+    outcome: { outcome: "selected", optionId: "once" },
   });
+  assert.equal(shown.length, 0, "nothing was asked");
+});
+
+/* Plan promises to change nothing, and the restore cannot undo a command. */
+test("auto-approve still asks about a shell command in a read-only turn", async () => {
+  const { session, shown } = held({ autoApproveTools: true });
+  session.turnReadOnly = true;
+  session.askPermission(SHELL_REQUEST);
+  await settle();
+  assert.equal(shown.length, 1, "the card is shown");
+  session.cancel();
+});
+
+test("without auto-approve a shell command is still asked about", async () => {
+  const { session, shown } = held();
+  session.askPermission(SHELL_REQUEST);
   await settle();
   assert.equal(shown.length, 1, "the card is shown");
   session.cancel();
