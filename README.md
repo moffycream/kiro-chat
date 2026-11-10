@@ -313,7 +313,14 @@ than failing later with a confusing "kiro-cli not found".
 
 This panel needs **Kiro CLI 3.0 or newer**, which installs natively on Windows. Use Kiro's
 PowerShell installer, then run `kiro-cli login`. To upgrade an older one, run `kiro-cli update`. To find it, the extension checks the usual install folders — starting
-with `%LOCALAPPDATA%\Kiro-Cli\` — then `where kiro-cli`, and finally WSL.
+with `%LOCALAPPDATA%\Kiro-Cli\` — then `where kiro-cli`, and finally WSL. Once a day the
+panel asks Kiro whether a newer CLI exists and, if so, offers to type the update for you.
+
+The panel always runs Kiro's V3 engine, whatever you answered when `kiro-cli` asked you in a
+terminal to stay on V2 or continue with V3. Kiro's "Trust this workspace?" question is only
+asked in a terminal too. Here VS Code's own Workspace Trust is the check: the extension does
+not run in a folder VS Code has not trusted, so keep that setting on if you open folders you
+did not write. Once it runs, Kiro loads that folder's steering files and agents without asking.
 
 If you are on an older Kiro CLI that only runs under WSL, that still works: the extension
 finds it and runs it through WSL for you. One thing to know: keep your project inside the

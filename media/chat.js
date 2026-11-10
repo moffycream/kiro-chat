@@ -699,6 +699,58 @@
   // visible immediately.
   measureDock();
 
+  const LOGIN_REFRESH_TEXT =
+    "Kiro could not refresh its login, so this message was not sent. That is usually the " +
+    "connection, for example just after the computer wakes. Check you are online and try " +
+    "again. If it keeps failing, sign in.";
+
+  /**
+   * The turn is over and nothing is lost, so this stays in the conversation.
+   * Only the live card has buttons: a reopened chat shows the same words as an
+   * ordinary error, because by then there is no refused turn to send.
+   */
+  function addLoginRefreshCard() {
+    clearEmptyState();
+    const was = atBottom();
+    const card = document.createElement("div");
+    card.className = "command-card";
+
+    const text = document.createElement("div");
+    text.textContent = LOGIN_REFRESH_TEXT;
+    card.appendChild(text);
+
+    const actions = document.createElement("div");
+    actions.className = "login-actions";
+
+    const again = document.createElement("button");
+    again.type = "button";
+    again.textContent = "Try again";
+    again.addEventListener("click", () => {
+      retireLoginRefreshCards();
+      startThinking();
+      vscode.postMessage({ type: "retryRefusedTurn" });
+    });
+    actions.appendChild(again);
+
+    const signIn = document.createElement("button");
+    signIn.type = "button";
+    signIn.className = "ghost";
+    signIn.textContent = "Sign in";
+    signIn.addEventListener("click", () => {
+      vscode.postMessage({ type: "signInKeepingChat" });
+    });
+    actions.appendChild(signIn);
+
+    card.appendChild(actions);
+    messagesEl.appendChild(card);
+    scroll(was);
+  }
+
+  /** A new turn has replaced the refused one, so its buttons have nothing to do. */
+  function retireLoginRefreshCards() {
+    messagesEl.querySelectorAll(".login-actions").forEach((node) => node.remove());
+  }
+
   function addBubble(kind, text) {
     clearEmptyState();
     const was = atBottom();
@@ -4033,8 +4085,12 @@
     wrap.appendChild(heading);
 
     const lead = document.createElement("p");
-    lead.textContent =
-      "It was working a moment ago, so this is probably temporary. Trying again usually sorts it.";
+    // Nothing here may guess at the cause. This screen also greets a first run
+    // and a fault that will not clear by itself, so reassurance about how long
+    // it will last is untrue exactly when it matters.
+    lead.textContent = setup.error
+      ? "Kiro could not connect. This is the reason it gave:"
+      : "Kiro could not connect, and it gave no reason.";
     wrap.appendChild(lead);
 
     if (setup.error) {
@@ -4156,7 +4212,7 @@
     heading.textContent = missing
       ? "Let's get Kiro installed"
       : setup.resume
-        ? "Your Kiro login has expired"
+        ? "Kiro needs you to sign in"
         : "Almost there";
     wrap.appendChild(heading);
 
@@ -4811,6 +4867,7 @@
 
       case "userMessage":
         finishAgentBubble();
+        retireLoginRefreshCards();
         addUserBubble(message);
         recordUser(message);
         // Kiro has the turn now. Say so where the answer will appear, rather
@@ -5077,6 +5134,12 @@
         finishAgentBubble();
         addBubble("error", message.text);
         recordSimple("error", message.text);
+        break;
+
+      case "loginRefreshFailed":
+        finishAgentBubble();
+        addLoginRefreshCard();
+        recordSimple("error", LOGIN_REFRESH_TEXT);
         break;
 
       case "needsSetup":

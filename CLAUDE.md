@@ -992,7 +992,7 @@ The viewer lives entirely in the webview and needs no extension-host message.
 
 ### Modules kept free of `vscode` on purpose
 
-`src/usage.ts`, `src/setupWatcher.ts`, `src/startupError.ts`, `src/history.ts`, `src/promptBlocks.ts`, `src/editModes.ts`, `src/sessionLocks.ts`, `src/processFacts.ts`, `src/launchInputs.ts` and the `needsShell`/`quote` exports of `src/acpClient.ts` have no `vscode` import so the tests can `require("../out/...")` directly. There is no VS Code test harness in this repo — that constraint is the entire testing strategy. Keep new parsing and logic modules importable without `vscode`.
+`src/usage.ts`, `src/setupWatcher.ts`, `src/startupError.ts`, `src/history.ts`, `src/promptBlocks.ts`, `src/editModes.ts`, `src/sessionLocks.ts`, `src/processFacts.ts`, `src/launchInputs.ts`, `src/tokenRetry.ts`, `src/agentConfig.ts`, `src/cliUpdate.ts` and the `needsShell`/`quote` exports of `src/acpClient.ts` have no `vscode` import so the tests can `require("../out/...")` directly. There is no VS Code test harness in this repo — that constraint is the entire testing strategy. Keep new parsing and logic modules importable without `vscode`.
 
 `setupWatcher.ts` additionally takes its timers through an injected `Scheduler`, so `test/setupWatcher.test.js` drives the whole state machine without waiting out a real interval. Follow that pattern for anything else that polls.
 
@@ -1459,16 +1459,54 @@ Three things this flow gets wrong easily:
 - **`leaveSetup()` hangs off the `ready` status, not off the watcher.** Pressing Connect, or restarting from the title bar, connects without the watcher saying anything. Dismissing the screen only on the watcher's `connected` strands the user on install instructions with a dead composer while Kiro is up.
 - **`setBusy` defers to setup.** A `ready` status arriving mid-setup must not re-enable Send, so `setBusy` ORs in `setup !== null`.
 
-**A login that expires mid-chat is a setup reason, not a chat error.** Measured against
-kiro-cli 3.0.0: with a stale token `initialize` and `session/new` both succeed, and the first
-refusal is `session/prompt` with -32000 "…not signed in. Please sign in and retry." `send`
-used to hand that to `onError` like any failure, so the panel showed Kiro's own sentence in a
-bubble and Retry sent the same turn through the same process. `signInExpired` fires
-`onNeedsSetup("signin")` and then stops the client — in that order, because the provider pins
-the chat to `currentSessionId` from the callback, and because `ensureReady` returns at once for
-a live client with a session, so a reconnect that reused it would prove nothing about the new
-login. `resumeChatAfterSetup` is what brings the conversation back: the setup screen empties
-the transcript, and `openChat` is the one path that already shows a stored transcript and
-loads its session. `kiro-cli acp --auth-method` defaults to `cli`, so the token is Kiro's own
-store and the panel owes it nothing; `kiro-cli whoami` still says "Logged in" on an expired
-token, so it is no proof either way. `test/signInExpired.test.js` drives the real class.
+**"Not signed in" from `session/prompt` is two different failures, told apart by `data`.**
+Kiro's access token is short-lived and Kiro refreshes it itself. In the one refusal on record
+(kiro-cli 3.0.0, `~/.kiro/logs`), the refresh failed with a network error reaching the sign-in
+server at the moment a laptop woke, and `session/prompt` answered -32000 "…not signed in. Please
+sign in and retry." with `data.detail: "TokenExpiredError"`. A refresh succeeded about ninety
+seconds later with nobody doing anything, and no turn or model call was logged for the refused
+message. 0.39.3 read that sentence as a dead login and sent people to `kiro-cli login`, which was
+wrong. `isExpiredToken` (`tokenRetry.ts`, free of `vscode`) keys on the detail, never the words;
+that needs `rpcError` to keep an object `data`, which it used to discard. Four things there are
+load-bearing:
+
+- **`promptRetryingToken` retries for about two minutes and only while `turnBegan` is false.**
+  Any reply or tool update means Kiro started, and sending that turn again could bill it twice.
+- **The wait is a step row**, because the header already names the newest unfinished step and
+  two silent minutes look like a hang. `wakeTokenRetry` lets Stop end it at once, and a turn
+  stopped during the wait shows no card.
+- **Out of retries, the chat stays on screen** with Try again and Sign in. Try again sends
+  `refusedTurn`, which is refused if its session is no longer the live one: sending it would
+  put the message in a different conversation.
+- **A refusal saying "sign in" without that detail still goes to the sign-in screen**
+  (`signInExpired`), stops the client, and `resumeChatAfterSetup` reopens the chat. What a truly
+  logged-out v3 sends is **not measured**: `kiro-cli` will not start against an empty profile
+  ("home directory not found"), and nobody should log out to find out. Neither is whether
+  `whoami` notices an expired token.
+
+**Kiro's terminal questions never reach the panel.** "Stay on V2 or continue with V3" and "Trust
+this workspace?" are asked only by interactive `kiro-cli`. `acpArgs` names V3, and measured against
+3.1.0, `acp` in a never-trusted folder opens a session and loads that folder's steering and agents
+without a word; hooks and MCP servers were not tested. VS Code's Workspace Trust is the gate
+(`untrustedWorkspaces: supported: false`). A trust card in the panel could not stop anything,
+because the files are loaded by the time a session exists.
+
+**A CLI update is offered from `kiro-cli update --check`, at most once a day.** The handshake
+carries no `agentInfo`, so nothing else names a version, and `needsNewerKiro` only catches a CLI
+that rejects the engine flag. `readUpdateCheck` answers `undefined` for anything it cannot read,
+and only a readable answer stamps the day. The "update available" wording comes from strings in
+the binary, because the installed CLI was current; check it when one is actually offered.
+
+**`customAgent/config_error` becomes a warning, once per file and reason.** Kiro skips the agent
+and repeats the report on every start. `rememberAgentWarning` is what stops that being a nag.
+
+**A Kiro that dies while starting is reported with what it printed.** The pending request only
+learns `AGENT_STOPPED`; the reason is on stderr, as `error:` and then the reason, among ordinary
+log lines. `startupReason` picks it out and `describeStartupFailure` substitutes it for that one
+message only, since any other message already says what went wrong. It rides on the thrown error
+as well as the callback, because the reconnect watcher reports what `connect` threw. The provider's
+`onNeedsSetup` callback used to drop `detail` altogether, so the failure screen had never once shown
+a reason. That screen also said "probably temporary", which it cannot know: it greets a first run
+too. A report of `Access is denied. (os error 5)` came from a real user. The cause is not
+established. `kiro-cli` unpacks its own `node.exe` and `bun.exe` into its install folder and runs
+that `node.exe`, so a copy still running during an update is the first thing to rule out.

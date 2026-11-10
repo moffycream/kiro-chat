@@ -3579,3 +3579,9 @@ button.change-summary:hover {
   background: var(--vscode-toolbar-hoverBackground, var(--vscode-list-hoverBackground));
   color: var(--vscode-textLink-activeForeground, var(--vscode-textLink-foreground));
 }
+
+.login-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}

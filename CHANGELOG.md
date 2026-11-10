@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.39.4
+
+- **A connection blip no longer sends you to sign in.** 0.39.3 treated Kiro's “not
+  signed in” message as an expired login, but it usually means Kiro could not reach
+  the sign-in server to renew a short-lived token, often just after the computer
+  wakes. The panel now waits and sends your message again for about two minutes, and
+  says that is what it is doing. If it still can’t, your chat stays on screen with
+  **Try again** and **Sign in** buttons.
+- **Told when a newer Kiro CLI exists.** Once a day the panel checks and offers to
+  type the update in PowerShell for you to run.
+- **Told when Kiro rejects one of your agents.** An agent that Kiro 3 will not load
+  used to just go missing. You now get one warning naming the file and the reason.
+- **The README explains two questions the panel doesn’t ask.** It always uses Kiro’s
+  V3 engine, and VS Code’s Workspace Trust stands in for Kiro’s own trust question.
+- **When Kiro won't start, the panel says why.** The screen only ever said it was
+  probably temporary, and the real reason stayed in the log. It now shows the
+  reason Kiro gave, such as a file it was refused access to.
+
 ## 0.39.3
 
 - **An expired login now asks you to sign in, instead of telling you to retry.**

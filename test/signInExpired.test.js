@@ -1,13 +1,10 @@
 /*
- * A login that expires under a running conversation.
+ * Kiro refusing a turn and saying to sign in, with nothing marking it as a
+ * token that merely could not be refreshed. That one is `tokenRetry.test.js`.
  *
- * Measured against kiro-cli 3.0.0: with a stale token, `initialize` and
- * `session/new` both succeed, and the first thing to fail is `session/prompt`,
- * with -32000 and the sentence below. `send` used to hand that to `onError`
- * like any chat failure, so the panel showed Kiro's own "please sign in and
- * retry" in a bubble, and Retry sent the same turn through the same process
- * to fail the same way. The sign-in detection existed for the handshake and
- * never ran here. These drive the real class against that refusal.
+ * What a truly logged-out Kiro sends has not been measured: kiro-cli will not
+ * start against an empty profile. These pin what the panel does with the
+ * sentence alone, against the real class.
  */
 const test = require("node:test");
 const assert = require("node:assert/strict");
@@ -16,11 +13,10 @@ const Module = require("node:module");
 
 const root = path.join(__dirname, "..");
 
-/** Kiro's refusal, as `rpcError` folds `data` into the message. */
+/** The sentence with no structured detail beside it. */
 const REFUSAL =
   "Kiro could not load the available models because you are not signed in. " +
-  'Please sign in and retry. {"errorType":"ModelRegistryUnauthenticatedError",' +
-  '"retryErrorType":"CLIENT_ERROR","detail":"TokenExpiredError"}';
+  "Please sign in and retry.";
 
 function anything() {
   const fn = function () {
@@ -94,7 +90,7 @@ function refusing(message) {
   return { session, seen, client };
 }
 
-test("an expired login mid-chat asks for a sign-in, not a retry", async () => {
+test("a refusal saying sign in, with no token detail, asks for a sign-in", async () => {
   const { session, seen, client } = refusing(REFUSAL);
   await session.send([{ type: "text", text: "test" }]);
 

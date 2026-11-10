@@ -1,4 +1,5 @@
 import { spawn, ChildProcess } from "node:child_process";
+import { AGENT_STOPPED } from "./startupError";
 
 /**
  * A very small JSON-RPC 2.0 client that speaks to `kiro-cli acp`
@@ -93,7 +94,9 @@ export function rpcError(error: any): Error {
   const message = typeof error?.message === "string" ? error.message : "";
   const data = typeof error?.data === "string" ? error.data : undefined;
   const text = [message, data].filter(Boolean).join(": ") || JSON.stringify(error);
-  return Object.assign(new Error(text), { code: error?.code, data });
+  // The original `data`, whatever its shape. Only a string belongs in the
+  // sentence, but an object is how Kiro says what kind of failure this was.
+  return Object.assign(new Error(text), { code: error?.code, data: error?.data });
 }
 
 export function killArgs(
@@ -187,7 +190,7 @@ export class AcpClient {
 
     proc.on("exit", (code, signal) => {
       this.options.onLog(`Kiro exited (code ${code ?? "none"}, signal ${signal ?? "none"}).`);
-      this.failAllPending(new Error("The Kiro agent stopped running."));
+      this.failAllPending(new Error(AGENT_STOPPED));
       this.proc = undefined;
       this.options.onExit(code, signal);
     });

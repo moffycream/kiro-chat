@@ -592,11 +592,11 @@ test("a whole-file rejection cancels a running turn", () => {
  * still read the session id and pin the chat to it. `test/signInExpired.test.js`
  * drives the behaviour; this pins the order.
  */
-test("a turn refused for an expired login goes to setup, with the session still readable", () => {
+test("a turn refused for a sign-in goes to setup, with the session still readable", () => {
   const send = session.slice(session.indexOf("async send(blocks"));
   const body = send.slice(0, send.indexOf("private signInExpired"));
   assert.match(body, /looksLikeSignIn\(message\)/);
-  assert.match(body, /if \(!signedOut\) this\.events\.onError\(message\)/);
+  assert.match(body, /!signedOut\)\s*\{\s*this\.events\.onError\(message\)/);
 
   const expired = session.slice(session.indexOf("private signInExpired("));
   const method = expired.slice(0, expired.indexOf("private emitTurnCredits"));

@@ -4214,3 +4214,47 @@ test("an expired login brings the interrupted chat back after sign-in", () => {
   const render = sliceFrom(js, "function renderSetup()");
   assert.match(render, /setup\.resume/, "the screen says the chat is kept");
 });
+
+/**
+ * Both halves of the card shown when Kiro could not refresh its token. It stays
+ * in the conversation, and its buttons go as soon as a new turn replaces the
+ * refused one. Sign in must not be the setup screen's message, whose watcher
+ * takes over the panel.
+ */
+test("a refused token gets a card with Try again and Sign in", () => {
+  assert.match(provider, /type: "loginRefreshFailed"/);
+  const handler = sliceFrom(js, 'case "loginRefreshFailed"');
+  assert.match(handler, /addLoginRefreshCard\(\)/);
+  assert.match(handler, /recordSimple\("error", LOGIN_REFRESH_TEXT\)/);
+
+  const card = sliceFrom(js, "function addLoginRefreshCard(");
+  assert.match(card, /type: "retryRefusedTurn"/);
+  assert.match(card, /type: "signInKeepingChat"/);
+  assert.doesNotMatch(card, /innerHTML/);
+
+  assert.match(sliceFrom(provider, 'case "retryRefusedTurn"'), /this\.retryRefusedTurn\(\)/);
+  const signIn = sliceFrom(provider, 'case "signInKeepingChat"');
+  assert.match(signIn, /runInTerminal\("kiro-cli login"\)/);
+  assert.doesNotMatch(signIn, /setup\.signIn/);
+
+  assert.match(sliceFrom(js, 'case "userMessage"'), /retireLoginRefreshCards\(\)/);
+});
+
+test("an update is typed for the user, never run", () => {
+  const offer = sliceFrom(provider, "private offerCliUpdate(");
+  assert.match(offer, /runInTerminal\("kiro-cli update"\)/);
+  assert.match(provider.slice(provider.indexOf("private runInTerminal(")), /sendText\(command, false\)/);
+});
+
+/**
+ * The session always knew why Kiro would not start, and the provider's
+ * callback dropped it. Both halves, and no guessing at the cause on a screen
+ * that also greets a first run.
+ */
+test("the failure screen carries Kiro's own reason", () => {
+  assert.match(provider, /onNeedsSetup: \(reason, detail\) => this\.onNeedsSetup\(reason, detail\)/);
+  const screen = sliceFrom(js, "function renderFailure(wrap)");
+  assert.match(screen, /setup\.error/);
+  assert.doesNotMatch(screen, /temporary/);
+  assert.doesNotMatch(screen, /a moment ago, so/);
+});

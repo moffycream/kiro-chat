@@ -13,7 +13,15 @@ import { isInsideAnyRoot, isInsideRoot } from "./workspacePaths";
 import { isStaleLock, lockedPidFrom, parseSessionLock, sessionLockPath } from "./sessionLocks";
 import { savedContextPercent } from "./savedContext";
 import { lookupProcess } from "./processFacts";
-import { KIRO_TOO_OLD, looksLikeSignIn, needsNewerKiro } from "./startupError";
+import {
+  describeStartupFailure,
+  KIRO_TOO_OLD,
+  looksLikeSignIn,
+  needsNewerKiro,
+} from "./startupError";
+import { isExpiredToken, retryExpiredToken } from "./tokenRetry";
+import { CLI_UPDATE_KEY, CliUpdate, runUpdateCheck, updateCheckDue } from "./cliUpdate";
+import { AgentConfigError, readAgentConfigError } from "./agentConfig";
 import { EffortState, readSessionConfig, SessionConfig } from "./configOptions";
 import { fetchAccountUsage } from "./accountUsage";
 import { LaunchInputs, launchInputsChanged, snapshotLaunchInputs } from "./launchInputs";
@@ -112,6 +120,12 @@ export interface SessionEvents {
    */
   onTurnCredits?: (turn: { credits: number; model?: string }) => void;
   onCapabilities: (caps: { image: boolean }) => void;
+  /** Kiro kept refusing a turn because it could not refresh its access token. */
+  onLoginRefreshFailed?: (message: string) => void;
+  /** A newer Kiro CLI exists. Checked at most once a day. */
+  onCliUpdate?: (update: Extract<CliUpdate, { available: true }>) => void;
+  /** Kiro refused to load an agent and carried on without it. */
+  onAgentConfigError?: (problem: AgentConfigError) => void;
   /** A review is on screen, so the chat can offer to keep or undo the lot. */
   onReviewActive?: (info: ActiveReviewInfo | undefined) => void;
   /** What the turn changed on disk, so the chat can offer keep or undo. */
@@ -483,6 +497,16 @@ export class KiroSession {
    */
   private permissionGeneration = 0;
   private turnCancelled = false;
+  /** What the current process has logged, for the reason if it dies starting. */
+  private startupLog: string[] = [];
+  /** Set by anything showing Kiro really started on the turn being attempted. */
+  private turnBegan = false;
+  /** Ends a wait between token retries early, for Stop and teardown. */
+  private wakeTokenRetry: (() => void) | undefined;
+  /** The turn Kiro would not take, so Try again can send exactly that. */
+  private refusedTurn:
+    | { sessionId: string; blocks: ContentBlock[]; options: SendOptions }
+    | undefined;
   /**
    * Pre-turn snapshots of everything the last turn changed, kept after the
    * turn so the keep-or-undo card can still put them back.
@@ -929,6 +953,7 @@ export class KiroSession {
 
     this.client?.stop();
     let tooOld = false;
+    this.startupLog = [];
     this.client = new AcpClient({
       command,
       args: acpArgs(launchArgs, userArgs),
@@ -936,6 +961,7 @@ export class KiroSession {
       env,
       onLog: (line) => {
         tooOld ||= needsNewerKiro(line);
+        this.startupLog = [...this.startupLog, line].slice(-40);
         this.output.appendLine(line);
       },
       onNotification: (method, params) => this.handleNotification(method, params),
@@ -980,8 +1006,12 @@ export class KiroSession {
       // The empty conversations left by earlier runs, now that there is a
       // binary to ask. Never awaited: nothing here is waiting on the answer.
       void this.tidyUnusedSessions();
+      void this.offerCliUpdate().catch((err) =>
+        this.output.appendLine(`Could not check for a Kiro CLI update: ${String(err)}`)
+      );
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
+      const failure = err instanceof Error ? err.message : String(err);
+      const message = describeStartupFailure(failure, this.startupLog);
       this.setStatus("stopped");
       this.output.appendLine(`Failed to start "${command}": ${message}`);
       // Its own reason, not a chat message: the setup screen empties the
@@ -995,7 +1025,9 @@ export class KiroSession {
       // spawn, a missing session id — which sent people off to log in again
       // when they were already signed in and hid what really broke.
       this.events.onNeedsSetup(looksLikeSignIn(message) ? "signin" : "failed", message);
-      throw err;
+      // The reason rides on the error too: the reconnect watcher reports what
+      // this throws once its quiet retries run out.
+      throw message === failure ? err : new Error(message);
     }
   }
 
@@ -1029,11 +1061,12 @@ export class KiroSession {
         vscode.workspace.getConfiguration("kiroChat").get<string>("model", "").trim() || undefined;
       this.restoreSavedModel();
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
+      const failure = err instanceof Error ? err.message : String(err);
+      const message = describeStartupFailure(failure, this.startupLog);
       this.setStatus("stopped");
       this.output.appendLine(`Could not start a conversation: ${message}`);
       this.events.onNeedsSetup(looksLikeSignIn(message) ? "signin" : "failed", message);
-      throw err;
+      throw message === failure ? err : new Error(message);
     }
   }
 
@@ -1079,6 +1112,7 @@ export class KiroSession {
     this.turnLabel = (firstText?.text ?? "").trim().split("\n")[0].slice(0, 200);
     this.beginTurnFileCapture(usable);
     this.setStatus("busy");
+    this.refusedTurn = undefined;
     try {
       /*
        * Kiro's docs call this field `content`; the ACP spec calls it `prompt`.
@@ -1090,11 +1124,7 @@ export class KiroSession {
        * already there for a turn that has genuinely wedged, and that is the
        * user's judgement rather than a guess made here.
        */
-      const result = await this.client.request("session/prompt", {
-        sessionId: this.sessionId,
-        prompt: usable,
-        content: usable,
-      });
+      const result = await this.promptRetryingToken(this.client, this.sessionId, usable);
       // Something was said into it, so it is a conversation now. After the
       // prompt rather than before: one Kiro refused leaves the log empty, and
       // a session marked spoken with nothing in it is never tidied.
@@ -1109,17 +1139,29 @@ export class KiroSession {
       await this.finishDirectFileReviews();
       this.reportTurnChanges();
       const message = err instanceof Error ? err.message : String(err);
-      const signedOut = looksLikeSignIn(message);
-      // A login that has expired is not a chat error: the handshake and
-      // `session/new` both succeed on a stale token (measured against 3.0.0),
-      // so this is the first place Kiro says so, and retrying the same turn
-      // through the same process fails identically. It gets the sign-in
-      // screen, not a bubble telling the user to retry.
-      if (!signedOut) this.events.onError(message);
+      /*
+       * Two refusals that use the same words and need opposite answers. An
+       * access token that could not be refreshed is usually the network, and
+       * by now it has been retried for a couple of minutes: the chat stays on
+       * screen, with Try again and Sign in. Anything else saying "sign in" has
+       * no such detail, and gets the sign-in screen.
+       */
+      const tokenRefused = isExpiredToken(err);
+      const stoppedWaiting = tokenRefused && this.turnCancelled;
+      const signedOut = !tokenRefused && looksLikeSignIn(message);
+      if (tokenRefused) {
+        this.output.appendLine(`Kiro could not refresh its access token: ${message}`);
+        if (!stoppedWaiting && this.sessionId) {
+          this.refusedTurn = { sessionId: this.sessionId, blocks: usable, options };
+          this.events.onLoginRefreshFailed?.(message);
+        }
+      } else if (!signedOut) {
+        this.events.onError(message);
+      }
       // A turn that failed part of the way through still spent what it
       // spent, and that is the turn you most want the number for.
       this.emitTurnCredits();
-      this.events.onTurnEnd("error");
+      this.events.onTurnEnd(stoppedWaiting ? "cancelled" : "error");
       if (signedOut) this.signInExpired(message);
     } finally {
       this.turnReadOnly = false;
@@ -1128,7 +1170,107 @@ export class KiroSession {
   }
 
   /**
-   * Kiro refused a turn because the login is stale.
+   * Send a turn, waiting out an access token Kiro cannot refresh yet.
+   *
+   * The step row is how the wait is said: the header already names the newest
+   * unfinished step, and two silent minutes would look like a hang. It is only
+   * ever sent again while nothing suggests Kiro started on it.
+   */
+  private async promptRetryingToken(
+    client: AcpClient,
+    sessionId: string,
+    blocks: ContentBlock[]
+  ): Promise<any> {
+    const step = {
+      id: `token-retry-${Date.now()}`,
+      title: "Waiting for Kiro to refresh its login",
+    };
+    let waited = false;
+    const report = (status: string) => {
+      if (waited) this.events.onTool({ ...step, status });
+    };
+    try {
+      const result = await retryExpiredToken(
+        () => {
+          this.turnBegan = false;
+          return client.request("session/prompt", {
+            sessionId,
+            prompt: blocks,
+            content: blocks,
+          });
+        },
+        {
+          wait: (ms) => this.waitForTokenRetry(ms),
+          shouldStop: () =>
+            this.turnCancelled ||
+            this.turnBegan ||
+            this.client !== client ||
+            !client.isRunning ||
+            this.sessionId !== sessionId,
+          onWaiting: (attempt, total) => {
+            this.output.appendLine(`Kiro's access token was refused; retry ${attempt} of ${total}.`);
+            if (!waited) {
+              waited = true;
+              report("in_progress");
+            }
+          },
+        }
+      );
+      report("completed");
+      return result;
+    } catch (err) {
+      report("failed");
+      throw err;
+    }
+  }
+
+  private waitForTokenRetry(ms: number): Promise<void> {
+    return new Promise((resolve) => {
+      const wake = () => {
+        clearTimeout(timer);
+        this.wakeTokenRetry = undefined;
+        resolve();
+      };
+      const timer = setTimeout(wake, ms);
+      this.wakeTokenRetry = wake;
+    });
+  }
+
+  /**
+   * Send the turn Kiro refused once more. False when there is nothing to send,
+   * including when the conversation it belonged to is no longer the live one:
+   * sending it then would put the message in a different conversation.
+   */
+  async retryRefusedTurn(): Promise<boolean> {
+    const turn = this.refusedTurn;
+    if (!turn || turn.sessionId !== this.sessionId) return false;
+    await this.send(turn.blocks, turn.options);
+    return true;
+  }
+
+  /**
+   * At most once a day, and only a readable answer counts as having checked,
+   * so being offline when Kiro starts does not cost the whole day. Kiro inside
+   * WSL is left out because the update button types a Windows command.
+   */
+  private async offerCliUpdate(): Promise<void> {
+    const launch = this.launch;
+    if (!launch || !this.store || launch.command.toLowerCase() === "wsl") return;
+    if (!updateCheckDue(this.store.get<number>(CLI_UPDATE_KEY), Date.now())) return;
+    const update = await runUpdateCheck(launch);
+    if (!update) return;
+    await this.store.update(CLI_UPDATE_KEY, Date.now());
+    this.output.appendLine(
+      update.available
+        ? `A newer Kiro CLI is available${update.version ? `: ${update.version}` : "."}`
+        : "Kiro CLI is up to date."
+    );
+    if (update.available) this.events.onCliUpdate?.(update);
+  }
+
+  /**
+   * Kiro refused a turn and said to sign in, with nothing marking it as a
+   * token that merely could not be refreshed.
    *
    * The screen is asked for *before* the process goes, so the panel can still
    * read `currentSessionId` and pin the chat to it; the reconnect after
@@ -1496,6 +1638,7 @@ export class KiroSession {
 
   cancel(): void {
     this.turnCancelled = true;
+    this.wakeTokenRetry?.();
     this.changeReviewer.cancelPending();
     this.cancelQueuedPermissions();
     if (this.client?.isRunning && this.sessionId) {
@@ -1515,6 +1658,7 @@ export class KiroSession {
    */
   async newSession(options: { restart?: boolean } = {}): Promise<void> {
     this.turnCancelled = true;
+    this.wakeTokenRetry?.();
     this.changeReviewer.cancelPending();
     this.cancelQueuedPermissions();
 
@@ -1607,6 +1751,7 @@ export class KiroSession {
     this.client?.stop();
     this.client = undefined;
     this.sessionId = undefined;
+    this.wakeTokenRetry?.();
   }
 
   // ---- models ---------------------------------------------------------
@@ -1729,6 +1874,14 @@ export class KiroSession {
       this.readUsage(params);
       return;
     }
+    if (bareMethod(method) === "customAgent/config_error") {
+      const problem = readAgentConfigError(params);
+      if (problem) {
+        this.output.appendLine(`Kiro could not load the agent ${problem.path}: ${problem.reason}`);
+        this.events.onAgentConfigError?.(problem);
+      }
+      return;
+    }
     if (!isSessionUpdate(method)) {
       this.output.appendLine(`[notify] ${method}`);
       return;
@@ -1769,6 +1922,17 @@ export class KiroSession {
       update?.meteringUsage !== undefined
     ) {
       this.readUsage(update);
+    }
+
+    // Kiro is working on it, so a refusal after this is not one to resend.
+    if (
+      kind === "agent_message_chunk" ||
+      kind === "agent_thought_chunk" ||
+      kind === "tool_call_chunk" ||
+      kind === "tool_call" ||
+      kind === "tool_call_update"
+    ) {
+      this.turnBegan = true;
     }
 
     switch (kind) {

@@ -50,6 +50,12 @@ import { samePath } from "./paths";
 import { findKiro } from "./findKiro";
 import { SetupWatcher } from "./setupWatcher";
 import {
+  AGENT_WARNINGS_KEY,
+  AgentConfigError,
+  agentWarningKey,
+  rememberAgentWarning,
+} from "./agentConfig";
+import {
   ChatRecord,
   creditsSpentIn,
   forWorkspace,
@@ -219,7 +225,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         onTool: (tool) => this.post({ type: "tool", tool }),
         onTurnEnd: (reason) => this.post({ type: "turnEnd", reason }),
         onError: (message) => this.post({ type: "error", text: message }),
-        onNeedsSetup: (reason) => this.onNeedsSetup(reason),
+        onLoginRefreshFailed: () => this.post({ type: "loginRefreshFailed" }),
+        onCliUpdate: (update) => this.offerCliUpdate(update.version),
+        onAgentConfigError: (problem) => this.warnAboutAgent(problem),
+        onNeedsSetup: (reason, detail) => this.onNeedsSetup(reason, detail),
         onModels: (models, currentModelId, effort) =>
           this.post({ type: "models", models, currentModelId, effort }),
         onCommands: (commands) => this.postCommands(commands),
@@ -353,6 +362,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         case "signIn":
           this.runInTerminal("kiro-cli login");
           this.setup.signIn();
+          break;
+        case "retryRefusedTurn":
+          await this.retryRefusedTurn();
+          break;
+        case "signInKeepingChat":
+          // Not `signIn`, whose watcher belongs to the setup screen. The chat
+          // stays where it is and Try again is still there afterwards.
+          this.runInTerminal("kiro-cli login");
           break;
         case "updateKiro":
           // Typed and left for the user to run, like install and sign-in.
@@ -2092,6 +2109,43 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 
   private installCommand(): string {
     return "irm 'https://cli.kiro.dev/install.ps1' | iex";
+  }
+
+  private async retryRefusedTurn(): Promise<void> {
+    let problem = "That message can no longer be sent again. Please type it once more.";
+    try {
+      if (await this.session.retryRefusedTurn()) return;
+    } catch (err) {
+      problem = err instanceof Error ? err.message : String(err);
+    }
+    this.post({ type: "error", text: problem });
+    this.post({ type: "turnEnd", reason: "error" });
+  }
+
+  /** Typed and left for the user to run, like install and sign-in. */
+  private offerCliUpdate(version?: string): void {
+    const what = version ? `Kiro CLI ${version} is available.` : "A newer Kiro CLI is available.";
+    void vscode.window.showInformationMessage(what, "Update", "Not now").then((choice) => {
+      if (choice === "Update") this.runInTerminal("kiro-cli update");
+    });
+  }
+
+  /** Once per file and reason: Kiro repeats this every time it starts. */
+  private warnAboutAgent(problem: AgentConfigError): void {
+    const { fresh, seen } = rememberAgentWarning(
+      this.store.get(AGENT_WARNINGS_KEY),
+      agentWarningKey(problem)
+    );
+    if (!fresh) return;
+    void this.store.update(AGENT_WARNINGS_KEY, seen);
+    void vscode.window
+      .showWarningMessage(
+        `Kiro could not load the agent "${problem.name}", so it is unavailable. ${problem.reason}`,
+        "Open file"
+      )
+      .then((choice) => {
+        if (choice) void vscode.commands.executeCommand("vscode.open", vscode.Uri.file(problem.path));
+      });
   }
 
   private runInTerminal(command: string): void {

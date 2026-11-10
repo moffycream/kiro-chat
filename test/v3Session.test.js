@@ -385,3 +385,27 @@ test("a Kiro too old for the flag gets the update screen, not a chat error", asy
   assert.deepEqual(told, [["setup", "outdated"]]);
   session.dispose();
 });
+
+/*
+ * A real process, dying the way a user's did. The reason is on stderr and the
+ * request waiting on the process only learns that it stopped.
+ */
+test("a Kiro that dies starting is reported with the reason it printed", async () => {
+  const os = require("node:os");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "kiro-denied-"));
+  const fake = path.join(dir, "kiro-cli.cmd");
+  fs.writeFileSync(
+    fake,
+    "@echo off\r\necho error: 1>&2\r\necho Access is denied. (os error 5) 1>&2\r\nexit /b 1\r\n"
+  );
+  const KiroSession = loadKiroSession({ command: fake, args: [], env: {} });
+  const told = [];
+  const events = new Proxy(
+    { onNeedsSetup: (reason, detail) => told.push([reason, detail]) },
+    { get: (target, key) => target[key] ?? (() => {}) }
+  );
+  const session = new KiroSession({ appendLine() {} }, events);
+  await assert.rejects(session.ensureReady(), /Access is denied\. \(os error 5\)/);
+  assert.deepEqual(told, [["failed", "Access is denied. (os error 5)"]]);
+  session.dispose();
+});
