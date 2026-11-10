@@ -2270,9 +2270,17 @@ test("starting a new chat keeps the old one", () => {
     ["Try again on the setup screen", 'case "retry"'],
     ["a panel rebuilt blank", "if (this.everConnected) {"],
   ]) {
-    const region = provider.slice(provider.indexOf(start));
+    // To the next case or member, not a fixed number of characters: a
+    // comment or a guard added above the call says nothing about whether the
+    // path still archives the chat.
+    const region = provider.slice(provider.indexOf(start) + start.length);
+    const end = Math.min(
+      ...["\n        case ", "\n  private ", "\n  async ", "\n  public "]
+        .map((marker) => region.indexOf(marker))
+        .filter((index) => index > 0)
+    );
     assert.match(
-      region.slice(0, 500),
+      region.slice(0, end),
       /beginFreshChat\(\)/,
       `${name} must archive the chat it is replacing`
     );
@@ -4167,4 +4175,42 @@ test("the connecting spinner stands in for the empty-chat placeholder", () => {
   assert.match(css, /\.empty:has\(~ \.connecting\)\s*\{\s*display:\s*none;\s*\}/);
   const show = sliceFrom(js, "function showConnecting(");
   assert.doesNotMatch(show, /innerHTML = ""/, "the conversation is not emptied");
+});
+
+/**
+ * A login that expires under a conversation. Both halves have to exist: the
+ * provider pins the chat and asks the screen to say the chat is coming back,
+ * and the webview reads that flag — a posted field no case reads is silent.
+ * Once Kiro is up again, the chat on screen is reopened rather than filed
+ * away, from the watcher's "connected" and from the Connect button alike.
+ */
+test("an expired login brings the interrupted chat back after sign-in", () => {
+  const gate = sliceFrom(provider, "private onNeedsSetup(");
+  assert.match(gate, /reason === "signin" && this\.everConnected && this\.transcript\.length > 0/);
+  assert.match(gate, /this\.chatSessionId = this\.chatSessionId \?\? this\.session\.currentSessionId/);
+  assert.match(gate, /this\.resumeChatAfterSetup = this\.chatId/);
+  assert.match(gate, /type: "needsSetup", reason, detail, resume/);
+
+  const connected = sliceFrom(provider, "private onSetupState(");
+  assert.match(connected, /if \(this\.resumeChatAfterSetup\) void this\.resumeInterruptedChat\(\)/);
+
+  const retry = sliceFrom(provider, 'case "retry"');
+  assert.ok(
+    retry.indexOf("resumeInterruptedChat") < retry.indexOf("beginFreshChat"),
+    "Connect must bring the chat back before it would start a fresh one"
+  );
+
+  const resume = sliceFrom(provider, "private async resumeInterruptedChat(");
+  assert.match(resume, /this\.flushChats\(\)/, "openChat reads the record from storage");
+  assert.match(resume, /await this\.openChat\(id\)/);
+
+  const fresh = sliceFrom(provider, "private beginFreshChat(");
+  assert.match(fresh, /this\.resumeChatAfterSetup = undefined/);
+
+  const handler = sliceFrom(js, 'case "needsSetup"');
+  assert.match(handler, /showSetup\(message\.reason, message\.detail, message\.resume\)/);
+  const show = sliceFrom(js, "function showSetup(");
+  assert.match(show, /resume: resume === true/);
+  const render = sliceFrom(js, "function renderSetup()");
+  assert.match(render, /setup\.resume/, "the screen says the chat is kept");
 });

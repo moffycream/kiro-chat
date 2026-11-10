@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.39.3
+
+- **An expired login now asks you to sign in, instead of telling you to retry.**
+  When Kiro’s sign-in ran out during a chat, the panel showed Kiro’s own
+  “please sign in and retry” as an error, and retrying failed the same way every
+  time. It now shows the sign-in screen with the login command ready to run, and
+  once you are signed in your chat comes back where it left off.
+
 ## 0.39.2
 
 - **Autopilot no longer stops at shell commands.** It promised to approve every

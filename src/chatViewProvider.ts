@@ -134,6 +134,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
   private readonly watchers: vscode.Disposable[] = [];
   private attachments: Attachment[] = [];
   private everConnected = false;
+  /**
+   * The chat that was on screen when the login expired mid-conversation, to
+   * be reopened once Kiro is back. The setup screen empties the transcript,
+   * and without this the user came back to an empty panel with their
+   * conversation filed under past chats.
+   */
+  private resumeChatAfterSetup: string | undefined;
   /** Whether the webview has reported ready since it was last built. */
   private webviewReady = false;
   private readyWaiters: Array<() => void> = [];
@@ -360,6 +367,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         case "retry":
           this.setup.stop();
           this.setupActive = false;
+          // A login that expired mid-chat is the exception: the conversation
+          // on screen is the one to carry on with, not file away.
+          if (this.resumeChatAfterSetup) {
+            await this.resumeInterruptedChat();
+            break;
+          }
           // A fresh connection is a fresh chat. Without this the conversation
           // that follows was written into the previous chat's record, which
           // upsert then replaced — the old chat vanished with no delete.
@@ -640,6 +653,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
   private beginFreshChat(): void {
     this.saveCurrentChat();
     this.flushChats();
+    // A chat put away is not one to bring back after setup.
+    this.resumeChatAfterSetup = undefined;
     this.chatId = freshId();
     // Undefined means "whatever session is live is this chat's".
     this.chatSessionId = undefined;
@@ -812,9 +827,35 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       return;
     }
 
+    // The login expired under a conversation. Kiro's process is about to go,
+    // so pin the chat to its session now, while the id can still be read:
+    // `saveCurrentChat` otherwise stamps the record with whatever session is
+    // live, which after the reconnect is a brand-new empty one.
+    const resume = reason === "signin" && this.everConnected && this.transcript.length > 0;
+    if (resume) {
+      this.chatSessionId = this.chatSessionId ?? this.session.currentSessionId;
+      this.resumeChatAfterSetup = this.chatId;
+    }
+
     this.setupActive = true;
-    this.post({ type: "needsSetup", reason, detail });
+    this.post({ type: "needsSetup", reason, detail, resume });
     if (reason === "missing") this.setup.start();
+  }
+
+  /**
+   * Put the interrupted conversation back on screen and reopen its session
+   * in the fresh process. Through `openChat`, which is the one path that
+   * already knows how to show a stored transcript and load its session — a
+   * failed load leaves it read-only rather than quietly starting a new one.
+   */
+  private async resumeInterruptedChat(): Promise<void> {
+    const id = this.resumeChatAfterSetup;
+    this.resumeChatAfterSetup = undefined;
+    if (!id || id !== this.chatId) return;
+    // `openChat` finds the record in storage, so the chat has to be there.
+    this.saveCurrentChat();
+    this.flushChats();
+    await this.openChat(id);
   }
 
   private onSetupState(state: string, detail?: string): void {
@@ -832,6 +873,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     if (state === "connected") {
       this.setupActive = false;
       this.everConnected = true;
+      if (this.resumeChatAfterSetup) void this.resumeInterruptedChat();
     }
   }
 

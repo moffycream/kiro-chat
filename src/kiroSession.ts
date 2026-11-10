@@ -1108,15 +1108,44 @@ export class KiroSession {
       // restored and reviewed instead of being left behind silently.
       await this.finishDirectFileReviews();
       this.reportTurnChanges();
-      this.events.onError(err instanceof Error ? err.message : String(err));
+      const message = err instanceof Error ? err.message : String(err);
+      const signedOut = looksLikeSignIn(message);
+      // A login that has expired is not a chat error: the handshake and
+      // `session/new` both succeed on a stale token (measured against 3.0.0),
+      // so this is the first place Kiro says so, and retrying the same turn
+      // through the same process fails identically. It gets the sign-in
+      // screen, not a bubble telling the user to retry.
+      if (!signedOut) this.events.onError(message);
       // A turn that failed part of the way through still spent what it
       // spent, and that is the turn you most want the number for.
       this.emitTurnCredits();
       this.events.onTurnEnd("error");
+      if (signedOut) this.signInExpired(message);
     } finally {
       this.turnReadOnly = false;
       if (this.status === "busy") this.setStatus("ready");
     }
+  }
+
+  /**
+   * Kiro refused a turn because the login is stale.
+   *
+   * The screen is asked for *before* the process goes, so the panel can still
+   * read `currentSessionId` and pin the chat to it; the reconnect after
+   * `kiro-cli login` then starts a fresh process, because `ensureReady`
+   * returns at once for a live client with a session, and a "connected" that
+   * never spoke to Kiro again would prove nothing about the new login. The
+   * stop also keeps `send`'s `finally` from announcing "ready", which the
+   * webview takes as its cue to leave the setup screen.
+   */
+  private signInExpired(message: string): void {
+    this.output.appendLine(`Kiro refused the turn because the login has expired: ${message}`);
+    this.events.onNeedsSetup("signin", message);
+    this.sessionId = undefined;
+    this.client?.stop();
+    this.client = undefined;
+    this.connected = undefined;
+    this.setStatus("stopped");
   }
 
   /**

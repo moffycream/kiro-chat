@@ -4153,13 +4153,19 @@
     wrap.className = "setup";
 
     const heading = document.createElement("h2");
-    heading.textContent = missing ? "Let's get Kiro installed" : "Almost there";
+    heading.textContent = missing
+      ? "Let's get Kiro installed"
+      : setup.resume
+        ? "Your Kiro login has expired"
+        : "Almost there";
     wrap.appendChild(heading);
 
     const lead = document.createElement("p");
     lead.textContent = missing
       ? "Kiro's command line tool isn't on this machine yet. That's the part this panel talks to."
-      : "Kiro is installed but wouldn't start. Nearly always that means you're not signed in yet.";
+      : setup.resume
+        ? "Kiro refused the last message because it needs you to sign in again. Your chat is kept and comes back once you have."
+        : "Kiro is installed but wouldn't start. Nearly always that means you're not signed in yet.";
     wrap.appendChild(lead);
 
     const list = document.createElement("ol");
@@ -4178,7 +4184,7 @@
         note = "Found at " + setup.foundAt;
       }
       if (step.id === "signin" && setup.error && state !== "done") {
-        note = "Kiro would not start: " + setup.error;
+        note = (setup.resume ? "Kiro said: " : "Kiro would not start: ") + setup.error;
       }
 
       // The first unfinished step is the one to shout about.
@@ -4236,7 +4242,7 @@
     messagesEl.appendChild(wrap);
   }
 
-  function showSetup(reason, detail) {
+  function showSetup(reason, detail, resume) {
     // The setup screen replaces the history list as well as the transcript.
     // Left marked open, the composer stayed hidden after setup finished, and
     // leaveSetup handed back a panel with no message box.
@@ -4249,6 +4255,10 @@
       state: reason === "missing" ? "looking" : "needs-signin",
       note: null,
       error: reason === "missing" ? null : detail,
+      // The login ran out under a conversation. The extension brings that
+      // chat back once Kiro is up, so the screen says so instead of reading
+      // as a first-run setup.
+      resume: resume === true,
     };
     renderSetup();
   }
@@ -5070,7 +5080,7 @@
         break;
 
       case "needsSetup":
-        showSetup(message.reason, message.detail);
+        showSetup(message.reason, message.detail, message.resume);
         break;
 
       case "setupState":

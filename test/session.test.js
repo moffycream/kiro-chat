@@ -585,3 +585,27 @@ test("a whole-file rejection cancels a running turn", () => {
   assert.match(body, /this\.status === "busy"/, "only while a turn is running");
   assert.match(body, /this\.cancel\(\)/, "and it interrupts the turn");
 });
+
+/**
+ * A sign-in failure from `session/prompt` is routed to the setup screen, and
+ * the screen is asked for *before* the process is torn down, so the panel can
+ * still read the session id and pin the chat to it. `test/signInExpired.test.js`
+ * drives the behaviour; this pins the order.
+ */
+test("a turn refused for an expired login goes to setup, with the session still readable", () => {
+  const send = session.slice(session.indexOf("async send(blocks"));
+  const body = send.slice(0, send.indexOf("private signInExpired"));
+  assert.match(body, /looksLikeSignIn\(message\)/);
+  assert.match(body, /if \(!signedOut\) this\.events\.onError\(message\)/);
+
+  const expired = session.slice(session.indexOf("private signInExpired("));
+  const method = expired.slice(0, expired.indexOf("private emitTurnCredits"));
+  assert.ok(
+    method.indexOf('onNeedsSetup("signin"') < method.indexOf("this.client?.stop()"),
+    "the screen is asked for before the client goes"
+  );
+  assert.ok(
+    method.indexOf('onNeedsSetup("signin"') < method.indexOf("this.sessionId = undefined"),
+    "and before the session id is cleared"
+  );
+});

@@ -1458,3 +1458,17 @@ Three things this flow gets wrong easily:
 - **`setupActive` in the provider.** Every failed handshake makes `KiroSession` fire `onNeedsSetup` again. Without the guard, each retry rebuilds the setup screen and wipes the progress the watcher just reported.
 - **`leaveSetup()` hangs off the `ready` status, not off the watcher.** Pressing Connect, or restarting from the title bar, connects without the watcher saying anything. Dismissing the screen only on the watcher's `connected` strands the user on install instructions with a dead composer while Kiro is up.
 - **`setBusy` defers to setup.** A `ready` status arriving mid-setup must not re-enable Send, so `setBusy` ORs in `setup !== null`.
+
+**A login that expires mid-chat is a setup reason, not a chat error.** Measured against
+kiro-cli 3.0.0: with a stale token `initialize` and `session/new` both succeed, and the first
+refusal is `session/prompt` with -32000 "…not signed in. Please sign in and retry." `send`
+used to hand that to `onError` like any failure, so the panel showed Kiro's own sentence in a
+bubble and Retry sent the same turn through the same process. `signInExpired` fires
+`onNeedsSetup("signin")` and then stops the client — in that order, because the provider pins
+the chat to `currentSessionId` from the callback, and because `ensureReady` returns at once for
+a live client with a session, so a reconnect that reused it would prove nothing about the new
+login. `resumeChatAfterSetup` is what brings the conversation back: the setup screen empties
+the transcript, and `openChat` is the one path that already shows a stored transcript and
+loads its session. `kiro-cli acp --auth-method` defaults to `cli`, so the token is Kiro's own
+store and the panel owes it nothing; `kiro-cli whoami` still says "Logged in" on an expired
+token, so it is no proof either way. `test/signInExpired.test.js` drives the real class.

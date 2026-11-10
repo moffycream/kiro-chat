@@ -18,6 +18,8 @@ test("the messages Kiro actually uses for a missing login are recognised", () =>
     "invalid_token",
     "Please sign in to continue",
     "Login required",
+    // What kiro-cli 3.0.0 says to `session/prompt` on an expired token.
+    "Kiro could not load the available models because you are not signed in. Please sign in and retry.",
   ]) {
     assert.equal(looksLikeSignIn(message), true, `should be a sign-in problem: ${message}`);
   }
