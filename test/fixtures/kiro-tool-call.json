@@ -1,0 +1,58 @@
+[
+  {
+    "sessionUpdate": "tool_call",
+    "toolCallId": "toolu_bdrk_01K1svYJiaPt3GLvYDxbSh85",
+    "title": "Read File",
+    "kind": "read",
+    "status": "pending",
+    "rawInput": {
+      "path": "hello.txt",
+      "offset": null,
+      "limit": null
+    },
+    "locations": [
+      {
+        "path": "C:\\p\\hello.txt"
+      }
+    ],
+    "_meta": {
+      "kiro": {
+        "toolOrigin": "default"
+      }
+    }
+  },
+  {
+    "sessionUpdate": "tool_call_update",
+    "toolCallId": "toolu_bdrk_01K1svYJiaPt3GLvYDxbSh85",
+    "status": "in_progress",
+    "rawInput": {
+      "path": "hello.txt",
+      "offset": null,
+      "limit": null
+    },
+    "locations": [
+      {
+        "path": "C:\\p\\hello.txt"
+      }
+    ],
+    "_meta": {
+      "kiro": {
+        "toolOrigin": "default"
+      }
+    }
+  },
+  {
+    "sessionUpdate": "tool_call_update",
+    "toolCallId": "toolu_bdrk_01K1svYJiaPt3GLvYDxbSh85",
+    "status": "failed",
+    "rawInput": {
+      "path": "hello.txt",
+      "offset": null,
+      "limit": null
+    },
+    "rawOutput": "This tool was interrupted before it reported a result, so it may or may not have taken effect.",
+    "_meta": {
+      "kiro": {}
+    }
+  }
+]

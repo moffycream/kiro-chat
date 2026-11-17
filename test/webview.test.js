@@ -2020,6 +2020,52 @@ test("a skill can be removed, and only one Kiro is reporting", () => {
 });
 
 /*
+ * A step says what it is and, behind a click, what it was given and what
+ * came back. The row named the step and threw the payload away, so "Read
+ * File" was all the panel would ever tell you.
+ */
+test("a step's input and output are shown behind a click", () => {
+  const session = fs.readFileSync(path.join(root, "src", "kiroSession.ts"), "utf8");
+  const describe = sliceFrom(session, "export function describeTool(update: any)");
+  assert.match(describe, /input: formatToolValue\(update\?\.rawInput\)/);
+  assert.match(describe, /output: formatToolValue\(update\?\.rawOutput\)/);
+
+  /*
+   * Measured: the input is on every notification about a step, the output
+   * only on the terminal one — so a later message carrying neither must not
+   * wipe what the row was already told.
+   */
+  const merge = sliceFrom(js, "function mergeToolStep(previous, incoming)");
+  assert.match(merge, /input: incoming\.input \|\| \(previous && previous\.input\)/);
+  assert.match(merge, /output: incoming\.output \|\| \(previous && previous\.output\)/);
+
+  const render = sliceFrom(js, "function renderToolRow(row, tool, phase");
+  assert.match(render, /tool\.input &&/);
+  assert.match(render, /tool\.output &&/);
+  // No payload, no disclosure: a row that opens onto nothing is worse than a
+  // row with nothing to open.
+  assert.match(render, /if \(details\.length\)/);
+  // The open state lives on the row, because the row is rebuilt on every
+  // notification and would otherwise fold up under the pointer mid-turn.
+  assert.match(render, /row\.dataset\.open === "true"/);
+  assert.match(render, /clipped \? `\$\{part\.label\} \(first 4000 characters\)`/, "and says when it is cut");
+
+  /*
+   * Delegated from the transcript for the reason the copy button is: the row
+   * is replaced several times a second while the step runs.
+   */
+  const handler = js.slice(js.indexOf('messagesEl.addEventListener("click"'));
+  const body = handler.slice(0, handler.indexOf("\n  });"));
+  assert.match(body, /closest\(["']\.tool-more["']\)/);
+  assert.match(body, /row\.dataset\.open = open \? "true" : "false"/);
+
+  assert.match(css, /^\.tool-detail-text \{/m, "the block needs a rule of its own");
+  // A plain-looking button must cancel `button:hover`, or it sits transparent
+  // and then paints solid primary blue under the pointer.
+  assert.match(css, /^\.tool-more:hover \{/m);
+});
+
+/*
  * `/ponytail` is what a skill's own documentation tells you to type, so the
  * command menu answers it. The first version showed an empty box there: the
  * menu listed commands only, nothing matched, and a menu with no rows hides

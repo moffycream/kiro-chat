@@ -811,6 +811,62 @@ body.vscode-high-contrast-light .tok-fn {
 }
 
 /*
+ * What the step was given and what came back.
+ *
+ * `.tool-more` is a plain-looking button inside a list of plain rows, so it
+ * cancels `button:hover` with a bare `.tool-more:hover` — `background: none`
+ * on a class loses to a type-plus-pseudo-class, and without this it sits
+ * transparent and then paints solid primary blue under the pointer. That has
+ * shipped four times in this panel already.
+ */
+.tool-more {
+  display: block;
+  margin-top: 3px;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--vscode-textLink-foreground);
+  font-size: 0.85em;
+  text-align: left;
+  cursor: pointer;
+}
+
+.tool-more:hover {
+  background: none;
+  text-decoration: underline;
+}
+
+.tool-detail {
+  margin-top: 4px;
+  border-left: 2px solid var(--menu-separator);
+  padding-left: 8px;
+}
+
+.tool-detail-head {
+  font-size: 0.78em;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  opacity: 0.6;
+}
+
+/*
+ * Preformatted, and scrolling on its own rather than widening the panel:
+ * this is JSON and file text, where the line breaks and the indentation are
+ * the content. A sidebar is three inches wide and the alternative is a
+ * horizontal scrollbar across the whole conversation, which is the reason
+ * `.table-wrap` exists too.
+ */
+.tool-detail-text {
+  margin: 2px 0 6px;
+  max-height: 220px;
+  overflow: auto;
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 0.85em;
+  white-space: pre;
+  tab-size: 2;
+}
+
+/*
  * A reserved slot rather than a mark.
  *
  * Only the step still running gets anything in it — the spinner — so the rows

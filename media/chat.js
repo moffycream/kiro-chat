@@ -642,7 +642,35 @@
     }
   }
 
+  /*
+   * Opening a step's details, delegated for the reason the copy button is.
+   *
+   * `renderToolRow` rebuilds the row on every notification about that step —
+   * several times a second during a turn — so a listener bound to the toggle
+   * is discarded almost immediately. The open state lives on the row's own
+   * dataset rather than in a variable here, so a rebuild mid-turn redraws it
+   * open instead of folding it up under the pointer.
+   */
   messagesEl.addEventListener("click", async (event) => {
+    // A step's details. Same listener as the copy button below, for the same
+    // reason it is delegated at all — `renderToolRow` rebuilds the row on
+    // every notification about that step, several times a second during a
+    // turn, so anything bound to the toggle is discarded almost at once. The
+    // open state lives on the row's dataset, so a rebuild redraws it open
+    // rather than folding it up under the pointer.
+    const more = event.target.closest && event.target.closest(".tool-more");
+    if (more) {
+      const row = more.closest(".tool");
+      if (!row) return;
+      const open = row.dataset.open !== "true";
+      row.dataset.open = open ? "true" : "false";
+      const body = row.querySelector(".tool-detail");
+      if (body) body.hidden = !open;
+      more.textContent = open ? "Hide details" : "Details";
+      more.setAttribute("aria-expanded", open ? "true" : "false");
+      return;
+    }
+
     const button = event.target.closest && event.target.closest(".code-copy");
     if (!button) return;
     event.preventDefault();
@@ -1259,6 +1287,11 @@
       ...incoming,
       title: named ? incoming.title : (previous && previous.title) || "Working",
       purpose: incoming.purpose || (previous && previous.purpose),
+      // Measured: the input rides on every notification about a step, the
+      // output only on the terminal one. So a later message that carries
+      // neither must not wipe what the row was already told.
+      input: incoming.input || (previous && previous.input),
+      output: incoming.output || (previous && previous.output),
     };
   }
 
@@ -1298,6 +1331,46 @@
       why.textContent = tool.purpose;
       text.appendChild(why);
     }
+    /*
+     * What it was given and what came back, behind a click.
+     *
+     * The row says what the step is; this is the only place the panel can
+     * answer "which file" or "what did that return". It waits for a click,
+     * because everything else in this list does — two things in one list
+     * behaving differently is worse than either rule on its own — and the
+     * block is only built when there is something in it, so a row with no
+     * payload stays exactly as it was.
+     */
+    const details = [
+      tool.input && { label: "Input", value: tool.input },
+      tool.output && { label: "Output", value: tool.output },
+    ].filter(Boolean);
+    if (details.length) {
+      const toggle = document.createElement("button");
+      toggle.type = "button";
+      toggle.className = "tool-more";
+      const open = row.dataset.open === "true";
+      toggle.textContent = open ? "Hide details" : "Details";
+      toggle.setAttribute("aria-expanded", open ? "true" : "false");
+      text.appendChild(toggle);
+
+      const body = document.createElement("div");
+      body.className = "tool-detail";
+      body.hidden = !open;
+      for (const part of details) {
+        const head = document.createElement("div");
+        head.className = "tool-detail-head";
+        // Said on the heading rather than at the end of the text, where a
+        // long output would scroll the note out of sight.
+        head.textContent = part.value.clipped ? `${part.label} (first 4000 characters)` : part.label;
+        const pre = document.createElement("pre");
+        pre.className = "tool-detail-text";
+        pre.textContent = part.value.text;
+        body.append(head, pre);
+      }
+      text.appendChild(body);
+    }
+
     row.append(icon, text);
     // The state is a glyph, so say it in words for a screen reader.
     row.setAttribute("aria-label", `${tool.title} — ${tool.status}`);

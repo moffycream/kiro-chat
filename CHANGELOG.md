@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.40.5
+
+- **A step can show what it ran.** Each step in the list gets a **Details** link
+  when there is something behind it: the input Kiro sent the tool, and the output
+  it got back. So "Read File" now tells you *which* file, and what came back.
+  Empty arguments are left out, long output is cut at 4000 characters and says
+  so, and a step with no payload has no link.
+
 ## 0.40.4
 
 - **Removing a skill is a × on its row.** Hover a skill in **Memory, skills and

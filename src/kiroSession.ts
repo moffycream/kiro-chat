@@ -23,6 +23,7 @@ import { isExpiredToken, retryExpiredToken } from "./tokenRetry";
 import { CLI_UPDATE_KEY, CliUpdate, runUpdateCheck, updateCheckDue } from "./cliUpdate";
 import { AgentConfigError, readAgentConfigError } from "./agentConfig";
 import { KiroSkill, readProgressiveContext } from "./progressiveContext";
+import { formatToolValue, ToolValue } from "./toolDetails";
 import { EffortState, readSessionConfig, SessionConfig } from "./configOptions";
 import { fetchAccountUsage } from "./accountUsage";
 import { LaunchInputs, launchInputsChanged, snapshotLaunchInputs } from "./launchInputs";
@@ -226,6 +227,15 @@ export interface ToolStep {
   status: string;
   /** Kiro's own note on why it is doing this, when it sends one. */
   purpose?: string;
+  /**
+   * What the step was given and what it gave back, formatted and capped.
+   *
+   * Measured: the input is on every notification about a step and the output
+   * only on the terminal one, so a row keeps whichever it has already been
+   * told — `mergeToolStep` in the webview is what makes that true.
+   */
+  input?: ToolValue;
+  output?: ToolValue;
 }
 
 export function describeTool(update: any): ToolStep {
@@ -260,6 +270,10 @@ export function describeTool(update: any): ToolStep {
     // Only `tool_call_update` carries a status; the earlier two are underway.
     status: String(update?.status ?? "running"),
     purpose: purpose || undefined,
+    // `rawOutput` arrives only on the terminal update, so most notifications
+    // about a step carry an input and no output. The row keeps what it has.
+    input: formatToolValue(update?.rawInput),
+    output: formatToolValue(update?.rawOutput),
   };
 }
 

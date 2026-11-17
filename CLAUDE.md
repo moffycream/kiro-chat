@@ -750,10 +750,18 @@ link fetched 3496 bytes from the raw host, came out named `ponytail` from its ow
 and Kiro reported the written file back with its folded `description: >` flattened into one
 line. The proxy case is unhandled and says so.
 
-**Whether loading one asks permission is not measured.** The binary carries
-"Skills will ask for approval on V3: read restrictions aren't applied to skill loading yet.",
-which is a lead and not a finding — confirming it costs a turn in which Kiro actually reaches
-for a skill. Nothing in the panel or the README claims it either way until someone does that.
+**Loading one is a visible step, and the permission question is still open.** Observed in the
+panel on 3.1.0: a turn that reached for a skill reported `Loaded skill: ponytail` as a tool
+step, so the steps list is where you see it happen — and a bare `/ponytail` typed into the
+composer does trigger it, because the name is not a known command and goes to the model as
+text, where the skill's own description matches it.
+
+What that run does *not* settle is whether Kiro asks first: the panel it came from had
+`autoApproveTools: true` (Autopilot), which answers every card without showing one. The
+binary's "Skills will ask for approval on V3: read restrictions aren't applied to skill
+loading yet." is therefore still a lead rather than a finding, and the test that would settle
+it is one turn under Manual or Review. Nothing in the panel or the README claims it either
+way until someone runs that.
 
 ## Slash commands
 
@@ -960,7 +968,22 @@ These are the things that were expensive to discover; the comments in `kiroSessi
   `TOOL_VERBS`, and a real title always wins. `rawInput.__tool_use_purpose` is Kiro's own
   note on *why*, and is the reason the steps list is worth unfolding.
   `test/toolSteps.test.js` pins all of this to the captured payloads.
-- **The usage meter has moved** to `session_info_update` on v3 (see "The v3 engine"). The `_kiro.dev/metadata` route is still read, and is what the older fixtures exercise.
+- **A step's input and output are in the payload, and are now shown.** Measured by driving a
+real turn on 3.1.0 and capturing all three notifications about one step
+(`test/fixtures/kiro-tool-call.json`): `rawInput` rides on *every* one of them, and
+`rawOutput` arrives only on the terminal update. `describeTool` therefore reports both and
+`mergeToolStep` keeps whichever the row has already been told — a later message carrying
+neither must not wipe the input. `toolDetails.ts` (free of `vscode`) formats and caps them at
+4000 characters *before* `postMessage`, because the cost is the copy and one `read` can return
+a whole file; it also prunes the empty arguments (`{"path": "a", "offset": null, "limit":
+null}` is what a read really sends) and drops `__tool_use_purpose`, which the row already
+shows on its own line. The disclosure waits for a click, like everything else in that list,
+and its open state lives on the row's `dataset` because `renderToolRow` rebuilds the row on
+every notification — a variable here would fold it up under the pointer mid-turn. Details are
+**not** stored with the transcript: a reopened chat shows the steps without them, which is the
+trade for not writing a file's contents into `globalState` per step.
+
+**The usage meter has moved** to `session_info_update` on v3 (see "The v3 engine"). The `_kiro.dev/metadata` route is still read, and is what the older fixtures exercise.
 - `session/prompt` is sent with the payload under **both** `prompt` and `content`, because Kiro's docs and the ACP spec disagree on the field name.
 - The five composer workflows live in `chatModes.ts`. They are explicit prompt instructions,
   rather than claims that Kiro ACP natively exposes all five. Plan additionally passes
@@ -1092,7 +1115,7 @@ The viewer lives entirely in the webview and needs no extension-host message.
 
 ### Modules kept free of `vscode` on purpose
 
-`src/usage.ts`, `src/setupWatcher.ts`, `src/startupError.ts`, `src/history.ts`, `src/promptBlocks.ts`, `src/editModes.ts`, `src/sessionLocks.ts`, `src/processFacts.ts`, `src/launchInputs.ts`, `src/tokenRetry.ts`, `src/agentConfig.ts`, `src/cliUpdate.ts`, `src/progressiveContext.ts`, `src/skillFiles.ts`, `src/skillUrl.ts`, `src/skillFetch.ts` and the `needsShell`/`quote` exports of `src/acpClient.ts` have no `vscode` import so the tests can `require("../out/...")` directly. There is no VS Code test harness in this repo — that constraint is the entire testing strategy. Keep new parsing and logic modules importable without `vscode`.
+`src/usage.ts`, `src/setupWatcher.ts`, `src/startupError.ts`, `src/history.ts`, `src/promptBlocks.ts`, `src/editModes.ts`, `src/sessionLocks.ts`, `src/processFacts.ts`, `src/launchInputs.ts`, `src/tokenRetry.ts`, `src/agentConfig.ts`, `src/cliUpdate.ts`, `src/progressiveContext.ts`, `src/skillFiles.ts`, `src/skillUrl.ts`, `src/skillFetch.ts`, `src/toolDetails.ts` and the `needsShell`/`quote` exports of `src/acpClient.ts` have no `vscode` import so the tests can `require("../out/...")` directly. There is no VS Code test harness in this repo — that constraint is the entire testing strategy. Keep new parsing and logic modules importable without `vscode`.
 
 `setupWatcher.ts` additionally takes its timers through an injected `Scheduler`, so `test/setupWatcher.test.js` drives the whole state machine without waiting out a real interval. Follow that pattern for anything else that polls.
 
