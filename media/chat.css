@@ -2362,6 +2362,40 @@ button:disabled {
   outline-offset: -1px;
 }
 
+/*
+ * A skill: its name, what it is for, and a click that opens the file.
+ *
+ * `.skill-line` is the shape and nothing else, because a bundled skill is
+ * announced with no path and so has no file to open — those rows are plain
+ * divs and take the layout without taking a hover tint that would imply they
+ * do something. Only `.skill-row` is a button, and it cancels `button:hover`
+ * with a bare `.skill-row:hover`: without that it sits transparent at rest
+ * and paints solid primary blue under the pointer, the way four other
+ * plain-looking buttons in this panel already have.
+ */
+.skill-line {
+  display: block;
+  width: 100%;
+  padding: 8px 10px;
+  border-radius: 3px;
+  text-align: left;
+}
+
+.skill-row {
+  border: none;
+  background: none;
+  color: var(--vscode-dropdown-foreground);
+}
+
+.skill-row:hover {
+  background: var(--vscode-list-hoverBackground);
+}
+
+.skill-row:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: -1px;
+}
+
 .mode-name {
   font-size: 0.92em;
   font-weight: 600;
@@ -3298,6 +3332,27 @@ button.change-summary:hover {
   white-space: nowrap;
   font-size: 0.9em;
   opacity: 0.75;
+}
+
+/*
+ * A skill row in the command menu, marked as one.
+ *
+ * It sits among commands and does something different when picked — it
+ * finishes the word rather than running anything, because nothing can be
+ * sent to Kiro to run a skill. The tag is the only thing saying so, so it
+ * holds its place at the end of the row rather than being squeezed out by a
+ * long description.
+ */
+.slash-tag {
+  flex: 0 0 auto;
+  margin-left: auto;
+  padding: 0 5px;
+  border: 1px solid var(--menu-separator);
+  border-radius: 8px;
+  font-size: 0.75em;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  opacity: 0.7;
 }
 
 /* --- command results ----------------------------------------------- */

@@ -91,6 +91,33 @@
    */
   let memory = { files: [], add: [] };
   /**
+   * The skills Kiro can reach for, as it reported them.
+   *
+   * A different thing from a memory file, and the menu says so: a memory
+   * file is read on every turn whether or not it is relevant, while a skill
+   * puts only its name and description in front of Kiro and is opened when
+   * that description fits what was asked. So these rows describe what each
+   * one is *for*, which is the half that decides whether it is used.
+   */
+  let skills = [];
+  /**
+   * Whether that list is Kiro's answer or just the absence of one.
+   *
+   * The menu can be opened while the panel is still connecting, and Kiro
+   * reports an empty list for a folder with no skills — so "none" is a real
+   * answer, but only after it has been given. Before that the group says so
+   * rather than claiming there are none.
+   */
+  let skillsKnown = false;
+  /**
+   * Where a new skill could go: one entry per scope the extension will write.
+   *
+   * Unlike the memory rows these are offered whether or not any skill exists,
+   * because a skill's name is typed rather than fixed — so the row is not
+   * describing a file that might already be listed two rows above it.
+   */
+  let skillAdd = [];
+  /**
    * How you always want Kiro to work, as the extension last reported it.
    * Unlike a memory file this rides in every message, which is why the box
    * says so and the count turns red past the cap.
@@ -2228,8 +2255,8 @@
   /*
    * Which page of the mode menu is showing.
    *
-   * Memory and instructions are something you look at now and then; the
-   * workflow, supervision and toggles are set per conversation. Sharing one
+   * Memory, skills and instructions are things you look at now and then;
+   * the workflow, supervision and toggles are set per conversation. Sharing one
    * page made the menu taller than a sidebar and buried the choices you make
    * often under rows you open rarely, so the rare half is one row deep.
    */
@@ -2306,7 +2333,7 @@
 
     menuHeading("Context");
     const row = menuRow({
-      label: "Memory and instructions",
+      label: "Memory, skills and instructions",
       description: contextSummary(),
       chevron: true,
     });
@@ -2349,7 +2376,14 @@
   function contextSummary() {
     const count = memory.files.length;
     const files = count === 1 ? "1 memory file" : `${count} memory files`;
-    return `${files} · ${instructions.trim() ? "instructions set" : "no instructions"}`;
+    // Skills are counted only where there are some. "0 skills" beside a
+    // folder that has none is a fact about nothing, and the row's own label
+    // already promises they are behind it.
+    const named = skills.length
+      ? [files, skills.length === 1 ? "1 skill" : `${skills.length} skills`]
+      : [files];
+    named.push(instructions.trim() ? "instructions set" : "no instructions");
+    return named.join(" · ");
   }
 
   /*
@@ -2368,7 +2402,7 @@
     arrow.textContent = "‹";
     const label = document.createElement("span");
     label.className = "mode-name";
-    label.textContent = "Memory and instructions";
+    label.textContent = "Memory, skills and instructions";
     back.append(arrow, label);
     modeMenu.appendChild(back);
 
@@ -2401,7 +2435,146 @@
       modeMenu.appendChild(row);
     }
 
+    renderSkillsGroup();
     renderInstructionsRow();
+  }
+
+  /*
+   * What Kiro can reach for, when it fits.
+   *
+   * A group of its own rather than more rows under "What Kiro always knows",
+   * because the heading there would stop being true: a skill is *not* read
+   * every turn. Only its name and description are in front of Kiro, and the
+   * file is opened when that description matches the request — which is why
+   * every row leads with what the skill is for.
+   *
+   * Like the memory rows, these only report and open. There is nothing here
+   * for the panel to switch on: Kiro finds these itself, and the gap was
+   * that nothing on screen said they existed at all.
+   */
+  function renderSkillsGroup() {
+    /*
+     * The note says the mechanism, or says it does not know yet.
+     *
+     * Before Kiro has reported, neither an empty list nor a populated one is
+     * true. The menu opens while the panel is still connecting, and "none"
+     * there is an answer the panel would be inventing — the rule the usage
+     * strip already follows, where a reading nobody sent reads "not reported"
+     * and never zero.
+     *
+     * There is deliberately no empty state beyond that. An "Add project
+     * skill" row standing alone already says there are none, and the row
+     * names the folder it writes into, so a line of prose above it saying
+     * both would be the menu explaining itself twice — the reasoning the
+     * memory group already settled.
+     */
+    menuHeading(
+      "Skills",
+      skillsKnown
+        ? "Kiro opens one when its description fits what you asked."
+        : "Kiro has not reported these yet."
+    );
+    for (const skill of skills) modeMenu.appendChild(skillRow(skill));
+    for (const item of skillAdd) {
+      const row = menuRow({
+        label: ADD_SKILL_LABELS[item.scope] || "Add skill",
+        description: item.path,
+      });
+      row.dataset.skillScope = item.scope;
+      modeMenu.appendChild(row);
+    }
+  }
+
+  /**
+   * Named by scope, the way the memory rows are.
+   *
+   * "Add skill" alone would be the project one by implication, which is only
+   * obvious until the global row sits under it — and which of the two you
+   * want is the whole question these rows ask.
+   */
+  const ADD_SKILL_LABELS = {
+    project: "Add project skill",
+    global: "Add global skill",
+  };
+
+  /**
+   * One skill: what it is called, what it is for, and where it lives.
+   *
+   * A button when there is a file to open and a plain div when there is not —
+   * a bundled skill is announced with no path — following the `/help` card,
+   * where the rows that do nothing share the layout but not the hover tint.
+   * A tint on something unclickable implies it can be clicked.
+   */
+  function skillRow(skill) {
+    const openable = Boolean(skill.path);
+    /*
+     * A removable skill is a div holding two buttons, exactly as a memory
+     * file is — a button cannot nest inside one. Without a file there is
+     * nothing to open and nothing to remove, so that row stays the plain
+     * `div` it always was.
+     */
+    if (openable) {
+      const wrap = document.createElement("div");
+      wrap.className = "memory-row";
+      const open = document.createElement("button");
+      open.type = "button";
+      open.className = "memory-open";
+      open.dataset.openPath = skill.path;
+      open.title = skill.path;
+      open.append(...skillRowParts(skill));
+      wrap.appendChild(open);
+
+      // Revealed on hover and focus, the way forgetting a chat and removing a
+      // memory file both are: every other row here only opens something, and
+      // a column of × makes deleting look like the ordinary thing to do.
+      const remove = document.createElement("button");
+      remove.type = "button";
+      remove.className = "memory-delete";
+      remove.dataset.removeSkill = skill.path;
+      remove.textContent = "×";
+      remove.title = "Remove the " + skill.name + " skill";
+      remove.setAttribute("aria-label", "Remove the " + skill.name + " skill");
+      wrap.appendChild(remove);
+      return wrap;
+    }
+
+    const row = document.createElement("div");
+    row.className = "skill-line";
+    row.append(...skillRowParts(skill));
+    return row;
+  }
+
+  /** The name, its scope tag and what it is for — shared by both shapes. */
+  function skillRowParts(skill) {
+    const parts = [];
+
+    const name = document.createElement("div");
+    name.className = "mode-name";
+    name.textContent = skill.name;
+    /*
+     * Only a skill from somewhere other than this project is labelled.
+     * Inside a project panel, "this project" is what a row is assumed to
+     * mean, and tagging every one of them says nothing while taking the
+     * width that the description needs.
+     */
+    if (skill.scope && skill.scope !== "workspace") {
+      const tag = document.createElement("span");
+      tag.className = "mode-tag";
+      tag.textContent = "all projects";
+      name.appendChild(tag);
+    }
+    parts.push(name);
+
+    // The description is the half that decides whether the skill is used at
+    // all, so it is the line under the name rather than a tooltip.
+    if (skill.description) {
+      const desc = document.createElement("div");
+      desc.className = "mode-desc";
+      desc.textContent = skill.description;
+      parts.push(desc);
+    }
+
+    return parts;
   }
 
   /** Switch pages without closing, and keep the keyboard somewhere sensible. */
@@ -2700,6 +2873,35 @@
       return;
     }
 
+    /*
+     * A row whose whole job is to open a file. Answered before the
+     * `.mode-row` lookup, because a skill row is not one: it is clickable
+     * without being a choice, so it carries neither the selection highlight
+     * nor anything the handlers below would try to set.
+     */
+    /*
+     * Removing a skill. Answered before the open below, because the × sits
+     * inside the row that opens the file — and the panel does not decide
+     * this: the extension confirms it, checks the path really is one of the
+     * skills it just listed, and sends the folder to the recycle bin. The
+     * row then goes because Kiro notices the folder change and re-reports,
+     * which is measured at about 700ms.
+     */
+    const removeSkill = event.target.closest("[data-remove-skill]");
+    if (removeSkill) {
+      vscode.postMessage({ type: "removeSkill", path: removeSkill.dataset.removeSkill });
+      return;
+    }
+
+    const openRow = event.target.closest("[data-open-path]");
+    if (openRow) {
+      vscode.postMessage({ type: "openFile", path: openRow.dataset.openPath });
+      // The answer to the click is an editor tab, so the menu gets out of
+      // the way of the thing that was asked for — as a memory row does.
+      setMenu(modeMenu, modeBtn, false);
+      return;
+    }
+
     const row = event.target.closest(".mode-row");
     if (!row) return;
 
@@ -2724,6 +2926,18 @@
      */
     if (row.dataset.memoryScope) {
       vscode.postMessage({ type: "openMemory", scope: row.dataset.memoryScope });
+      setMenu(modeMenu, modeBtn, false);
+      return;
+    }
+
+    /*
+     * Adding a skill asks for its name first, so the menu has to be out of
+     * the way: an input box opens over it, and an editor tab after that.
+     * Nothing is drawn here in reply — the row appears when Kiro notices the
+     * file, which it does within about a second.
+     */
+    if (row.dataset.skillScope) {
+      vscode.postMessage({ type: "addSkill", scope: row.dataset.skillScope });
       setMenu(modeMenu, modeBtn, false);
       return;
     }
@@ -3749,6 +3963,24 @@
     return starts.concat(contains, described);
   }
 
+  /**
+   * The skills whose name the typed text is reaching for.
+   *
+   * Kept apart from `matchSlash`, which is about commands and is the one
+   * parser the composer has. A skill is not a command — nothing can be sent
+   * to Kiro to run one — so these entries are marked and `acceptSlash`
+   * completes them into the message instead of executing anything.
+   */
+  function matchSkills(query) {
+    const q = String(query || "").toLowerCase();
+    return skills
+      .filter((skill) => {
+        const name = String(skill.name || "").toLowerCase();
+        return !q || name.includes(q);
+      })
+      .map((skill) => ({ name: skill.name, description: skill.description || "", skill: true }));
+  }
+
   function closeSlashMenu() {
     slashMenu.hidden = true;
     slashMenu.innerHTML = "";
@@ -3778,7 +4010,24 @@
       desc.className = "slash-desc";
       desc.textContent = command.description || "";
       row.append(name, desc);
-      row.title = command.hint ? `/${command.name} ${command.hint}` : `/${command.name}`;
+      /*
+       * A skill row says it is one. Without the tag it reads as a command
+       * that will run when picked, and what it actually does is finish the
+       * word so you can type the rest of the message — the panel cannot make
+       * Kiro open a skill, only your wording does.
+       */
+      if (command.skill) {
+        row.classList.add("slash-skill");
+        const tag = document.createElement("span");
+        tag.className = "slash-tag";
+        tag.textContent = "skill";
+        row.append(tag);
+      }
+      row.title = command.skill
+        ? `${command.name} — a skill. Picking it writes it into your message.`
+        : command.hint
+          ? `/${command.name} ${command.hint}`
+          : `/${command.name}`;
       // `mousedown`, not `click`: the textarea loses focus first otherwise,
       // and the blur handler closes the menu out from under the click.
       row.addEventListener("mousedown", (event) => {
@@ -3812,11 +4061,15 @@
      * reach by accident.
      */
     if (busy) return closeSlashMenu();
-    if (!slashCommands.length) return closeSlashMenu();
+    if (!slashCommands.length && !skills.length) return closeSlashMenu();
     const value = inputEl.value;
     const match = /^\/([A-Za-z0-9_-]*)$/.exec(value);
     if (!match) return closeSlashMenu();
-    slashMatches = matchSlash(match[1]);
+    // Commands first, then skills. `/ponytail` is what a skill's own
+    // documentation tells you to type, so an empty menu there is the panel
+    // failing to answer the obvious question rather than there being nothing
+    // to say.
+    slashMatches = matchSlash(match[1]).concat(matchSkills(match[1]));
     slashIndex = 0;
     renderSlashMenu();
   }
@@ -3832,6 +4085,19 @@
    */
   function acceptSlash(command) {
     closeSlashMenu();
+    /*
+     * A skill is completed, never run. There is no endpoint to run one:
+     * Kiro opens a skill when its description fits the message, so the most
+     * the panel can do is write the name and leave the cursor after it. The
+     * slash stays because that is what the skill's own documentation says to
+     * type, and a leading slash that names no command is sent as text.
+     */
+    if (command.skill) {
+      inputEl.value = "/" + command.name + " ";
+      inputEl.focus();
+      resize();
+      return;
+    }
     const takesArgument = Boolean(command.hint) || (command.subcommands || []).length > 0;
     if (takesArgument) {
       inputEl.value = "/" + command.name + " ";
@@ -4857,6 +5123,16 @@
         memory = { files: message.files || [], add: message.add || [] };
         // Only redraw what is on screen. The counts arrive just after the
         // menu opens, so the rows fill in rather than appearing empty.
+        if (!modeMenu.hidden) renderModeMenu();
+        break;
+
+      case "skills":
+        skills = message.skills || [];
+        skillsKnown = message.known === true;
+        skillAdd = message.add || [];
+        // Same rule as the memory counts: this arrives just behind the click
+        // that opened the menu, and can also arrive mid-session when Kiro
+        // notices a SKILL.md appear.
         if (!modeMenu.hidden) renderModeMenu();
         break;
 

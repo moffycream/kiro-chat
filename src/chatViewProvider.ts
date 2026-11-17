@@ -45,6 +45,22 @@ import {
   targetPath,
   targetScope,
 } from "./memory";
+import {
+  SkillScope,
+  skillFilePath,
+  skillNameProblem,
+  skillScope,
+  skillScopeDir,
+  skillTemplate,
+} from "./skillFiles";
+import {
+  looksLikeUrl,
+  rawSkillUrl,
+  skillNameFromFrontmatter,
+  skillNameFromUrl,
+  skillUrlProblem,
+} from "./skillUrl";
+import { fetchSkillText, hostOf, httpsGetText } from "./skillFetch";
 import { addExcludeEntry, excludeEntryFor, excludeFileIn } from "./gitExclude";
 import { samePath } from "./paths";
 import { findKiro } from "./findKiro";
@@ -232,6 +248,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         onModels: (models, currentModelId, effort) =>
           this.post({ type: "models", models, currentModelId, effort }),
         onCommands: (commands) => this.postCommands(commands),
+        onSkills: () => this.postSkills(),
         onUsage: (usage) => this.post({ type: "usage", usage }),
         // The cost of the turn, for the bubble it paid for. The strip above
         // carries the running total for the chat, which answers how much has
@@ -410,7 +427,30 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
          */
         case "requestMemory":
           await this.postMemory();
+          /*
+           * The skills ride along with the count that opens the menu.
+           *
+           * They are announced once per session, and the panel is thrown
+           * away and rebuilt every time it is dragged to another view
+           * container — so a webview that came back afterwards has never
+           * heard the announcement. Answering the menu from what the session
+           * still holds costs nothing and cannot go stale: Kiro re-announces
+           * whenever the set really changes.
+           */
+          this.postSkills();
           break;
+        case "addSkill": {
+          // Refused rather than rounded to a default, the way `memoryTarget`
+          // is: a substituted scope writes the file somewhere the row did not
+          // say, and nothing reports that anything went wrong.
+          const scope = skillScope(message.scope);
+          if (!scope) {
+            this.output.appendLine(`Ignored addSkill for unknown scope ${message.scope}.`);
+            break;
+          }
+          await this.addSkill(scope);
+          break;
+        }
         case "openMemory": {
           // Never narrowed by hand: the two-way conditional that used to be
           // here turned "private" into "project" the moment a third target
@@ -441,6 +481,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
           break;
         case "removeMemory":
           await this.removeMemory(String(message.path ?? ""));
+          break;
+        case "removeSkill":
+          await this.removeSkill(String(message.path ?? ""));
           break;
         case "showLog":
           this.output.show(true);
@@ -1178,6 +1221,262 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     // whether the project row is offered at all, and the panel has nothing
     // left to say about it once that decision is made.
     this.post({ type: "memory", files, add });
+  }
+
+  /**
+   * What Kiro can reach for, as Kiro reports it.
+   *
+   * Not a folder walk, unlike the memory rows above. A skill may come from
+   * the workspace, from the user's own `.kiro`, or from nowhere on disk at
+   * all, and only Kiro knows which it actually loaded — so the panel shows
+   * its report and nothing else.
+   */
+  private postSkills(): void {
+    const root = this.workspaceCwd();
+    /*
+     * Where a new one would go, which is also the whole empty state.
+     *
+     * Unlike the memory rows, an "add" row is offered whether or not anything
+     * is there: a skill's name is typed, so there is no fixed file for the row
+     * to be describing twice. The project row needs a project — without a
+     * folder open `.kiro/skills` has no meaning — and `skillScopeDir` is sent
+     * rather than the panel guessing, because the global one lives in a home
+     * directory the webview cannot see.
+     */
+    const add: Array<{ scope: SkillScope; path: string }> = [];
+    for (const scope of ["project", "global"] as SkillScope[]) {
+      if (scope === "project" && !root) continue;
+      add.push({ scope, path: skillScopeDir(scope, root) });
+    }
+
+    // `known` is the difference between Kiro saying there are none and Kiro
+    // not having said anything yet — the menu can be opened while the panel
+    // is still connecting, and "none" is an answer the panel would be making
+    // up. Measured: a folder without skills is reported as an empty list, so
+    // once the report has landed an empty list really does mean none.
+    this.post({
+      type: "skills",
+      skills: this.session.availableSkills,
+      known: this.session.skillsKnown,
+      add,
+    });
+  }
+
+  /**
+   * Make a skill and open it.
+   *
+   * The name is asked for because it *is* the folder — unlike a memory file,
+   * whose path is fixed, so its row needs nothing from the user. Validation
+   * is `skillNameProblem`, which returns the sentence to show rather than a
+   * boolean, because every rule it holds is a way the folder created would
+   * not be the folder asked for.
+   *
+   * Nothing here tells the panel to refresh, and that is measured rather than
+   * forgotten: Kiro watches the folder and re-announced a `SKILL.md` about
+   * 600ms after it appeared, so the row arrives by the same route every other
+   * skill does. Posting a list of our own would be a second source for it.
+   */
+  private async addSkill(scope: SkillScope): Promise<void> {
+    const root = this.workspaceCwd();
+    if (scope === "project" && !root) {
+      vscode.window.showWarningMessage(
+        "Open a folder first — a project skill lives in .kiro/skills inside it."
+      );
+      return;
+    }
+
+    const typed = await vscode.window.showInputBox({
+      title: scope === "global" ? "New global skill" : "New skill",
+      prompt: "A name, or a link to someone else's SKILL.md.",
+      placeHolder: "release-notes — or https://github.com/…/SKILL.md",
+      /*
+       * One box, two kinds of answer. Pasting the URL is what people do, and
+       * the first version met it with "a skill name is one folder" — true,
+       * and no help at all. `looksLikeUrl` is generous on purpose: anything
+       * with a scheme is a link *attempt*, and gets an answer about links.
+       */
+      validateInput: (value) =>
+        (looksLikeUrl(value) ? skillUrlProblem(value) : skillNameProblem(value)) ?? null,
+    });
+    // Escape, rather than an empty answer: `validateInput` has already
+    // refused that one, so there is nothing to report here.
+    if (typed === undefined) return;
+    const answer = typed.trim();
+
+    const fetched = looksLikeUrl(answer) ? await this.downloadSkill(answer) : undefined;
+    if (looksLikeUrl(answer) && !fetched) return;
+
+    /*
+     * A downloaded skill is called whatever its own frontmatter says.
+     * Preferred over the folder in the URL because the frontmatter `name` is
+     * what Kiro uses — filing it under the other one would have the panel
+     * report a name Kiro never sees. A link with neither is the one case
+     * where the name has to be asked for after all.
+     */
+    const name = fetched
+      ? skillNameFromFrontmatter(fetched.text) ?? skillNameFromUrl(answer) ?? ""
+      : answer;
+    if (!name || skillNameProblem(name)) {
+      if (fetched) {
+        vscode.window.showErrorMessage(
+          "That file does not say what the skill is called. Add it by name and paste the contents in."
+        );
+      }
+      return;
+    }
+
+    const target = vscode.Uri.file(skillFilePath(scope, name, root));
+    let exists = false;
+    try {
+      await vscode.workspace.fs.stat(target);
+      exists = true;
+    } catch {
+      // Not there, which is the ordinary case.
+    }
+
+    /*
+     * An existing skill is opened, never written over — the name is the only
+     * thing identifying one, so a second "release-notes" is the same skill
+     * and the file it would replace is work the user wrote.
+     *
+     * A link is the exception, and only after being asked: pasting one for a
+     * skill you already have is how you update it, and refusing would leave
+     * the download with nowhere to go.
+     */
+    if (exists && fetched) {
+      const replace = await vscode.window.showWarningMessage(
+        `You already have a skill called "${name}".`,
+        { modal: true, detail: `Replace it with the file from ${hostOf(fetched.url)}?` },
+        "Replace"
+      );
+      if (replace !== "Replace") {
+        await this.openPath(target.fsPath);
+        return;
+      }
+      exists = false;
+    }
+
+    if (!exists) {
+      const contents = fetched ? fetched.text : skillTemplate(name, scope);
+      try {
+        await vscode.workspace.fs.createDirectory(
+          vscode.Uri.file(path.dirname(target.fsPath))
+        );
+        await vscode.workspace.fs.writeFile(target, Buffer.from(contents, "utf8"));
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        vscode.window.showErrorMessage(`Could not create the skill: ${message}`);
+        return;
+      }
+      this.output.appendLine(
+        fetched
+          ? `Added the skill ${name} from ${fetched.url} at ${target.fsPath}.`
+          : `Created the skill ${name} at ${target.fsPath}.`
+      );
+    } else {
+      vscode.window.showInformationMessage(
+        `There is already a skill called "${name}". Opening it instead.`
+      );
+    }
+
+    /*
+     * Opened either way, and that is the whole review step for a download.
+     * Nothing has run: Kiro keeps the name and description in context and
+     * reads the body only when that description fits what was asked, so the
+     * file is on screen well before it can act. The toast names the host
+     * because the editor tab does not.
+     */
+    await this.openPath(target.fsPath);
+    if (fetched && !exists) {
+      vscode.window.showInformationMessage(
+        `Added the skill "${name}" from ${hostOf(fetched.url)}. It is open — read it before relying on it.`
+      );
+    }
+  }
+
+  /**
+   * Remove a skill: its whole folder, to the recycle bin.
+   *
+   * The folder and not just the `SKILL.md`, because a skill *is* the folder —
+   * leaving it behind would leave the panel reporting nothing while the
+   * directory stays, and a skill may keep other files beside the one Kiro
+   * reads. The recycle bin is what makes that safe to offer on a hover
+   * button, exactly as it does for a memory file.
+   */
+  private async removeSkill(target: string): Promise<void> {
+    if (!target) return;
+    /*
+     * A path arriving in a webview message is not a licence to delete a
+     * directory. It is re-proved against what Kiro is reporting *now*, the
+     * rule `isListedMemory` applies to the other row: a stale panel cannot
+     * name a folder that is no longer a skill, and a crafted message cannot
+     * name one that never was.
+     */
+    const skill = this.session.availableSkills.find(
+      (listed) => listed.path && samePath(listed.path, target)
+    );
+    if (!skill || !skill.path) {
+      this.output.appendLine(`Refused to remove ${target}: not a skill Kiro is reporting.`);
+      return;
+    }
+
+    const folder = path.dirname(skill.path);
+    const answer = await vscode.window.showWarningMessage(
+      `Remove the "${skill.name}" skill?`,
+      {
+        modal: true,
+        detail: `${folder}\n\nThe folder goes to the recycle bin, and Kiro stops offering the skill.`,
+      },
+      "Remove"
+    );
+    if (answer !== "Remove") return;
+
+    try {
+      await vscode.workspace.fs.delete(vscode.Uri.file(folder), {
+        recursive: true,
+        useTrash: true,
+      });
+      this.output.appendLine(`Removed the skill ${skill.name} (${folder}).`);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      vscode.window.showErrorMessage(`Could not remove ${skill.name}: ${message}`);
+    }
+    /*
+     * Nothing is posted either way. Kiro watches the folder and re-announced
+     * about 700ms after a delete when this was measured, so the row leaves by
+     * the same route it arrived — and on a failed delete it correctly stays,
+     * because the skill is still there to report.
+     */
+  }
+
+  /**
+   * Fetch a skill someone else wrote, with progress and nothing hidden.
+   *
+   * This is the extension's only network request, so the rules live in
+   * `skillFetch.ts` next to the tests that drive them: https only, the same
+   * host across redirects, a size cap, and a refusal to write a web page to
+   * disk as though it were a file. A failure is shown and answered with
+   * `undefined` — the caller then does nothing at all, rather than falling
+   * back to creating an empty skill the user did not ask for.
+   */
+  private async downloadSkill(link: string): Promise<{ text: string; url: string } | undefined> {
+    const url = rawSkillUrl(link);
+    if (!url) {
+      vscode.window.showErrorMessage(skillUrlProblem(link) ?? "That link cannot be read as a file.");
+      return undefined;
+    }
+
+    const result = await vscode.window.withProgress(
+      { location: vscode.ProgressLocation.Notification, title: `Fetching from ${hostOf(url)}…` },
+      () => fetchSkillText(url, httpsGetText())
+    );
+
+    if ("error" in result) {
+      this.output.appendLine(`Could not fetch ${url}: ${result.error}`);
+      vscode.window.showErrorMessage(result.error);
+      return undefined;
+    }
+    return result;
   }
 
   /**

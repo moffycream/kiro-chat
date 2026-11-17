@@ -291,6 +291,89 @@ committed.
 For a shared agent configuration with its own `resources` list, set
 `kiroChat.args` to `["--agent", "my-agent"]`.
 
+## Skills: what Kiro reaches for when it fits
+
+The same page lists the **skills** this conversation can reach for. A skill is a folder with
+a `SKILL.md` in it, and Kiro reads them from two places:
+
+| Where | Applies to |
+| --- | --- |
+| `.kiro/skills/<name>/SKILL.md` | this project |
+| `~/.kiro/skills/<name>/SKILL.md` | every project you open |
+
+The file is markdown with YAML frontmatter naming it and saying what it is for:
+
+```markdown
+---
+name: release
+description: Use when cutting a release — the version bump, changelog and tag steps.
+---
+
+1. Bump `package.json`.
+2. Write the `CHANGELOG.md` entry.
+```
+
+Measured against `kiro-cli acp --agent-engine v3` 3.1.0 rather than taken from documentation:
+a skill dropped into a folder is announced the moment a session opens there, and the same
+session reported the file in its own context breakdown with **zero tokens** and
+`progressivelyLoaded: true`.
+
+That is the difference from memory above, and it is the whole point. A memory file is in the
+prompt from the start of every turn whether or not it is relevant. A skill puts only its name
+and description there, and the body is read when that description fits what you asked — so the
+description is what decides whether the skill is used at all, which is why the panel shows it
+under the name rather than hiding it in a tooltip.
+
+The extension does not implement this either. Kiro finds these folders itself; the rows report
+what it found, say which of them apply beyond this project, and open the file. A skill that
+ships inside Kiro has no file to open, so its row is not clickable.
+
+### Adding one
+
+| Row | File | Available in |
+| --- | --- | --- |
+| **Add project skill** | `.kiro/skills/<name>/SKILL.md` | this project |
+| **Add global skill** | `~/.kiro/skills/<name>/SKILL.md` | every project you open |
+
+Both take **either a name or a link**. A name is what you want for a skill you are about to
+write: unlike a memory file the name *is* the folder, and it is what Kiro calls the skill, so
+one Windows could not hold (a slash, a trailing dot, `con`) is refused with the reason rather
+than quietly becoming a different folder.
+
+A link is for someone else's skill. Paste the URL of a `SKILL.md` — a GitHub **file page**
+works, and is rewritten to its raw file for you, since the page itself is HTML with the
+markdown buried in it — and the file is downloaded, named by its own frontmatter, written into
+`.kiro/skills/<name>/` and opened. A skill you already have is opened rather than written
+over, except when you paste a link for it: that is how you update one, so it asks first.
+
+Removing one is the × on its row, revealed on hover the way a memory file's is. It asks
+first, then sends the whole skill *folder* to the recycle bin — the folder, because that is
+what a skill is, and a skill may keep other files beside the `SKILL.md`. A skill that ships
+inside Kiro has no folder and so has no ×. The panel re-checks that the path really is a skill
+Kiro is reporting before deleting anything.
+
+Neither adding nor removing needs a refresh: Kiro watches both folders. Measured — a skill
+written mid-session was announced about 600ms later, and a deleted one disappeared about
+700ms after its folder went.
+
+This is the only time the extension uses the network, so the rules are worth stating. It
+fetches `https` only; it follows a redirect only to the same host; it stops at 256 KB; and it
+refuses to write a web page to disk as though it were a file, which is what a login wall or a
+mistyped link returns. The file opens in the editor because downloading someone's `SKILL.md`
+is downloading instructions for your agent — nothing has run at that point, since Kiro reads
+the body only once the description matches something you asked, so the editor tab is your
+chance to read it first. Behind an HTTP proxy the fetch fails and says so: Node's client does
+not read VS Code's `http.proxy`, so save the file by hand in that case.
+
+The file arrives with its frontmatter in place and the description left as a `TODO`. That is
+deliberate: Kiro matches on that line, so plausible filler there is a skill that fires at
+random or never, and leaving it visibly unwritten means the panel's own row says it still
+needs an answer.
+
+You do not need to restart the chat. Kiro watches the folder — measured: a `SKILL.md` written
+two seconds into a live session was re-announced about 600ms later — so a new skill appears in
+the list on its own. That holds for one you add by hand or copy in from somewhere else, too.
+
 ## If it doesn't work
 
 Open the command palette (`Ctrl+Shift+P`) and run **Kiro Chat: Show Log**. It shows exactly

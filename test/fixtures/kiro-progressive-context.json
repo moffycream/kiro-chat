@@ -1,0 +1,21 @@
+{
+  "sessionId": "sess_da29f8d2-71ea-4324-834a-b1878efe342d",
+  "status": "success",
+  "items": [
+    {
+      "name": "greet",
+      "type": "skill",
+      "description": "Use when the user asks to be greeted in the house style.",
+      "scope": "workspace",
+      "uri": "file:///C:/Users/USER/scratch/ws/.kiro/skills/greet/SKILL.md",
+      "_meta": {
+        "kiro": {
+          "resource": {
+            "resourceType": "skill",
+            "source": { "origin": "workspace", "root": "C:/Users/USER/scratch/ws" }
+          }
+        }
+      }
+    }
+  ]
+}

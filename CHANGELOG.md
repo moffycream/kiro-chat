@@ -1,5 +1,56 @@
 # Changelog
 
+## 0.40.4
+
+- **Removing a skill is a × on its row.** Hover a skill in **Memory, skills and
+  instructions** and the × appears, the way it does on a memory file. It asks
+  first, then sends the whole skill folder to the recycle bin — the folder,
+  because that is what a skill is, and a skill can keep other files beside the
+  `SKILL.md`. A skill that ships inside Kiro has no folder, so it has no ×.
+
+## 0.40.3
+
+- **Your skills are in the `/` menu.** Typing `/ponytail` used to show an empty
+  box: the menu listed commands only, and a skill is not a command. Skills now
+  appear under the commands, tagged **skill**, and matching anywhere in the name
+  (`/note` finds `release-notes`). Picking one writes it into your message and
+  leaves the cursor after it, rather than claiming to run it — nothing can be
+  sent to Kiro to run a skill, it opens one when the description fits what you
+  asked.
+
+## 0.40.2
+
+- **Paste a link and the skill is added.** The **Add skill** rows take a link to
+  someone else's `SKILL.md` as well as a name. A GitHub file page works, and is
+  turned into its raw file for you, because the page itself is HTML with the
+  markdown buried in it. The file is downloaded, named by its own frontmatter,
+  written into `.kiro/skills/<name>/` and opened so you can read what you just
+  added. A skill you already have is opened rather than overwritten — except when
+  you paste a link for it, which is how you update one, so it asks first.
+- **The only time the panel uses the network, and it is fenced.** `https` only, a
+  redirect followed only to the same host, a stop at 256 KB, and a refusal to save
+  a web page as though it were a file — which is what a login wall or a mistyped
+  link gives back. Behind an HTTP proxy it fails and says so rather than hanging.
+
+## 0.40.1
+
+- **You can add a skill from the panel.** **Add project skill** and **Add global
+  skill** ask for a name, create `.kiro/skills/<name>/SKILL.md` with the frontmatter
+  already written, and open it. The starter file explains what the description is
+  for, because that line is what decides whether Kiro ever reaches for the skill.
+  A name Windows could not hold is refused with the reason, and a skill that
+  already exists is opened rather than overwritten. Kiro notices the new file
+  within about a second, so the row appears without restarting the chat.
+
+## 0.40.0
+
+- **The panel shows the skills Kiro can reach for.** Kiro CLI 3 reads a
+  `.kiro/skills/<name>/SKILL.md` from your project and from your home folder, and
+  opens one when its description fits what you asked. Until now nothing on screen
+  said they existed. The dropdown's second page — now **Memory, skills and
+  instructions** — lists each one with what it is for, labels the ones that apply
+  to every project, and opens the file when you click it.
+
 ## 0.39.4
 
 - **A connection blip no longer sends you to sign in.** 0.39.3 treated Kiro's “not

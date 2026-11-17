@@ -22,6 +22,7 @@ import {
 import { isExpiredToken, retryExpiredToken } from "./tokenRetry";
 import { CLI_UPDATE_KEY, CliUpdate, runUpdateCheck, updateCheckDue } from "./cliUpdate";
 import { AgentConfigError, readAgentConfigError } from "./agentConfig";
+import { KiroSkill, readProgressiveContext } from "./progressiveContext";
 import { EffortState, readSessionConfig, SessionConfig } from "./configOptions";
 import { fetchAccountUsage } from "./accountUsage";
 import { LaunchInputs, launchInputsChanged, snapshotLaunchInputs } from "./launchInputs";
@@ -126,6 +127,8 @@ export interface SessionEvents {
   onCliUpdate?: (update: Extract<CliUpdate, { available: true }>) => void;
   /** Kiro refused to load an agent and carried on without it. */
   onAgentConfigError?: (problem: AgentConfigError) => void;
+  /** The skills this conversation can reach for, as Kiro reports them. */
+  onSkills?: (skills: KiroSkill[]) => void;
   /** A review is on screen, so the chat can offer to keep or undo the lot. */
   onReviewActive?: (info: ActiveReviewInfo | undefined) => void;
   /** What the turn changed on disk, so the chat can offer keep or undo. */
@@ -376,6 +379,26 @@ export class KiroSession {
   private supportsImages = false;
   private supportsLoad = false;
   private readonly commands: SlashCommand[] = PANEL_COMMANDS;
+  /**
+   * The skills Kiro reported for this conversation.
+   *
+   * Kept rather than only forwarded, because the panel is rebuilt whenever it
+   * is dragged between view containers and this is announced once per
+   * session: a webview that came back after the notification had been and
+   * gone would have nothing to draw, which is the bug `repostPermissions`
+   * already exists for.
+   */
+  private skills: KiroSkill[] = [];
+  /**
+   * Whether Kiro has reported at all yet.
+   *
+   * Measured against 3.1.0: a folder with no skills is reported as
+   * `items: []` rather than not reported, so an empty list really does mean
+   * none — but only once the report has arrived. Before that the panel knows
+   * nothing, and saying "none" then is the same invention as a credit figure
+   * nobody sent.
+   */
+  private skillsReported = false;
   /** Effort for the current model; undefined when the model takes none. */
   private effort: EffortState | undefined;
   /** `kiroChat.model`, waiting for Kiro to finish listing what it offers. */
@@ -571,6 +594,16 @@ export class KiroSession {
   /** What the composer can run. */
   get availableCommands(): SlashCommand[] {
     return this.commands;
+  }
+
+  /** The skills Kiro may reach for in this conversation. */
+  get availableSkills(): KiroSkill[] {
+    return this.skills;
+  }
+
+  /** Whether the list above is Kiro's answer or merely the absence of one. */
+  get skillsKnown(): boolean {
+    return this.skillsReported;
   }
 
   /** The turns `/rewind` will offer, newest first. */
@@ -1872,6 +1905,38 @@ export class KiroSession {
       const expected = this.loadingSessionId ?? this.sessionId;
       if (params?.sessionId && expected && params.sessionId !== expected) return;
       this.readUsage(params);
+      return;
+    }
+    /*
+     * Which skills this conversation can reach for.
+     *
+     * Sent once a session exists and again whenever the set changes, so the
+     * panel listens rather than walking `.kiro/skills` itself: Kiro reads
+     * both the workspace folder and the user's own, a bundled one has no
+     * folder at all, and the report is what Kiro actually loaded rather than
+     * what is on disk near us.
+     *
+     * Nothing clears this between conversations, deliberately. Measured
+     * against 3.1.0, the report lands *before* `session/new` answers, so a
+     * reset anywhere after that call wipes the very notification it was
+     * meant to make room for — and there is nothing to make room for anyway:
+     * the panel keeps one `cwd` for its whole life, so the skills a new chat
+     * in it can reach are the ones the last chat could. `+` on an untouched
+     * session is not even a new session, and would have had its list emptied
+     * with nothing coming to refill it.
+     */
+    if (bareMethod(method) === "progressive_context/items_changed") {
+      const skills = readProgressiveContext(params);
+      // `undefined` is a report that could not be read, which says nothing
+      // about the skills: keep the last list that could be.
+      if (skills) {
+        this.skills = skills;
+        this.skillsReported = true;
+        this.output.appendLine(
+          `[skills] ${skills.length ? skills.map((s) => s.name).join(", ") : "none"}`
+        );
+        this.events.onSkills?.(skills);
+      }
       return;
     }
     if (bareMethod(method) === "customAgent/config_error") {

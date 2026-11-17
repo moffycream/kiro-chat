@@ -655,6 +655,106 @@ so `KiroSession.replaying` alone is not enough.
 **Edits come through `fs/write_text_file` on v3**, so `ChangeReviewer` holds a real write open and
 a rejected edit never reaches the disk. The direct-write path stays for anything that bypasses it.
 
+**Skills are Kiro's, and the panel only reports them.** v3 reads
+`.kiro/skills/<name>/SKILL.md` out of the workspace and the user's own `.kiro`, and announces
+the lot on `_kiro/progressive_context/items_changed` — measured by driving
+`kiro-cli acp --agent-engine v3` (3.1.0) in a folder holding one skill, which also reported
+that file under the context breakdown's `contextFiles` with `tokens: 0` and
+`progressivelyLoaded: true`. `progressiveContext.ts` (free of `vscode`) parses it;
+`test/fixtures/kiro-progressive-context.json` is the captured payload. Four things there are
+load-bearing:
+
+- **A skill is not a memory file, and the menu must not read as though it were.** A steering
+  file is in the prompt from the start of every turn; a skill puts only its name and
+  description there and is opened when that description fits the request. So the rows sit in
+  a group of their own — under "What Kiro always knows" the heading would stop being true —
+  and each leads with what the skill is *for*, because that is the half deciding whether it
+  is used at all.
+- **Nothing clears the list between conversations.** The report lands *before* `session/new`
+  answers, so a reset after that call wipes the notification it was making room for. There is
+  nothing to make room for either: the panel keeps one `cwd` for its whole life, and `+` on an
+  untouched session is not even a new session — that path would have emptied the list with
+  nothing coming to refill it.
+- **`undefined` and `[]` are different answers.** `readProgressiveContext` returns `undefined`
+  for a report it cannot read and `[]` for one saying there are none, and the session keeps the
+  last readable list rather than emptying the menu on a malformed notification. `isStaleLock`
+  and `readFacts` refuse by default for the same reason. A folder with no skills really is
+  reported as `items: []` — measured — so an empty list means none; but only once the report
+  has arrived, which is what `skillsKnown` carries. The menu opens while the panel is still
+  connecting, and "none" there is the usage strip's invented zero in another costume.
+- **Not every skill has a file.** A bundled one is announced with a `builtin:` URI, as the
+  steering documents in the same handshake are, so `skillRow` draws a plain div rather than a
+  button — the `.help-line` rule, that a hover tint on something unclickable implies it does
+  something. `fsPathFromFileUri` is an allow-list on `file://`.
+
+**Adding one writes the file and stops there, because Kiro watches the folder.** Measured: a
+`SKILL.md` written two seconds into a live session was re-announced about 600ms later, so
+`addSkill` deliberately does *not* `postSkills()` afterwards — the row arrives by the same
+route every other skill does, and a second source for that list is how the two would drift.
+`skillFiles.ts` (free of `vscode`) holds the paths, the name rules and the starter, modelled on
+`memory.ts` because it is the same job. Three details there:
+
+- **The name is asked for; a memory file's is not.** The name *is* the folder and is what Kiro
+  calls the skill, so `showInputBox` is unavoidable here. `skillNameProblem` returns the
+  sentence to show rather than a boolean, which is what `validateInput` wants, and every rule
+  in it is a way the folder created would not be the folder asked for — a separator nesting it
+  where the glob does not look, a trailing dot Windows strips, `con`. Refusing beats creating a
+  skill the panel then reports under a name Kiro never sees. A trailing *space* is trimmed
+  instead of refused: that is the user being imprecise, not asking for the impossible.
+- **An existing skill is opened, never written over.** The name is the only thing identifying
+  one, so a second `release-notes` is the same skill, and the file it would replace is the
+  user's work.
+- **The starter's description says `TODO`, and that is not laziness.** Kiro matches on that
+  line, so filler there is a skill that fires at random or never; `TODO` makes the panel's own
+  row say out loud that it is unfinished. Verified end to end, since a template Kiro cannot
+  parse would be worse than none: the generated file was written into a scratch workspace and
+  Kiro reported it back, name and description intact.
+
+**Removing a skill removes its folder, and the guard is the point.** A path out of a webview
+message is not a licence to delete a directory, so `removeSkill` re-proves it against
+`session.availableSkills` with `samePath` — the rule `isListedMemory` applies to the memory
+row — then confirms and deletes with `useTrash`. The folder and not just the `SKILL.md`,
+because a skill *is* the folder and may hold other files; leaving it would have the panel
+report nothing while the directory stayed. Nothing is posted afterwards: measured, Kiro
+re-announced about 700ms after a delete, and on a failed delete the row correctly stays
+because the skill is still there to report.
+
+**The same box takes a link, and that is the extension's only network request.** It was
+name-only first, and pasting the skill's URL — the obvious thing to do — was met with "a skill
+name is one folder", which is true and no help. `skillUrl.ts` and `skillFetch.ts` are both free
+of `vscode`. Five things there are load-bearing:
+
+- **A GitHub `blob` URL is a web page, not a file.** Every accepted link is rewritten to
+  `raw.githubusercontent.com` *before* anything is fetched, which is also why the fetcher can
+  refuse a cross-host redirect outright: a legitimate fetch never needs one. The ref keeps its
+  slashes (`refs/heads/main`, a branch called `release/3.x`), so the segments after `blob` are
+  carried over whole rather than read positionally.
+- **The policy is separated from the socket.** `fetchSkillText` takes its `get` as an argument,
+  the way `setupWatcher` takes its `Scheduler`, so a 404, a redirect chain, a cross-host
+  redirect, an oversized body and a web-page-instead-of-a-file are all driven in
+  `test/skillFetch.test.js` with no server. `httpsGetText` is the one untested piece and holds
+  no decisions.
+- **HTML is refused rather than written.** A login wall, a mistyped link or a blob URL that
+  slipped through all answer 200 with a page, and writing it leaves a `SKILL.md` full of markup
+  that Kiro reads as instructions.
+- **`truncated` is said, not inferred.** The reader stops *at* the cap, so the text it returns
+  is always within it — measuring what came back would call an oversized file acceptable.
+- **The name comes from the downloaded frontmatter, not the URL.** `name` is what Kiro calls
+  the skill, so filing it under the folder when the two differ would have the panel report a
+  name Kiro never uses. The folder is the fallback, and a file with neither is refused rather
+  than guessed at. An existing skill is replaced only after a modal asks — pasting a link for
+  one you have is how you update it.
+
+Verified against the live URL rather than a stub: the pasted `github.com/.../blob/...` page
+link fetched 3496 bytes from the raw host, came out named `ponytail` from its own frontmatter,
+and Kiro reported the written file back with its folded `description: >` flattened into one
+line. The proxy case is unhandled and says so.
+
+**Whether loading one asks permission is not measured.** The binary carries
+"Skills will ask for approval on V3: read restrictions aren't applied to skill loading yet.",
+which is a lead and not a finding — confirming it costs a turn in which Kiro actually reaches
+for a skill. Nothing in the panel or the README claims it either way until someone does that.
+
 ## Slash commands
 
 **The list is the panel's own, because v3 has no command endpoint.**
@@ -992,7 +1092,7 @@ The viewer lives entirely in the webview and needs no extension-host message.
 
 ### Modules kept free of `vscode` on purpose
 
-`src/usage.ts`, `src/setupWatcher.ts`, `src/startupError.ts`, `src/history.ts`, `src/promptBlocks.ts`, `src/editModes.ts`, `src/sessionLocks.ts`, `src/processFacts.ts`, `src/launchInputs.ts`, `src/tokenRetry.ts`, `src/agentConfig.ts`, `src/cliUpdate.ts` and the `needsShell`/`quote` exports of `src/acpClient.ts` have no `vscode` import so the tests can `require("../out/...")` directly. There is no VS Code test harness in this repo — that constraint is the entire testing strategy. Keep new parsing and logic modules importable without `vscode`.
+`src/usage.ts`, `src/setupWatcher.ts`, `src/startupError.ts`, `src/history.ts`, `src/promptBlocks.ts`, `src/editModes.ts`, `src/sessionLocks.ts`, `src/processFacts.ts`, `src/launchInputs.ts`, `src/tokenRetry.ts`, `src/agentConfig.ts`, `src/cliUpdate.ts`, `src/progressiveContext.ts`, `src/skillFiles.ts`, `src/skillUrl.ts`, `src/skillFetch.ts` and the `needsShell`/`quote` exports of `src/acpClient.ts` have no `vscode` import so the tests can `require("../out/...")` directly. There is no VS Code test harness in this repo — that constraint is the entire testing strategy. Keep new parsing and logic modules importable without `vscode`.
 
 `setupWatcher.ts` additionally takes its timers through an injected `Scheduler`, so `test/setupWatcher.test.js` drives the whole state machine without waiting out a real interval. Follow that pattern for anything else that polls.
 

@@ -1913,6 +1913,242 @@ test("memory and instructions live on a second page of the mode menu", () => {
 });
 
 /*
+ * The skills Kiro can reach for, all three hops.
+ *
+ * Kiro announces them on `_kiro/progressive_context/items_changed`; the panel
+ * has to hear it, post it, and have a case for it. The change bar already
+ * paid for missing the last of those: the provider went on posting into a
+ * switch with no case and nothing appeared, with nothing anywhere saying why.
+ */
+test("the skills Kiro reports are heard, posted, handled and drawn", () => {
+  const session = fs.readFileSync(path.join(root, "src", "kiroSession.ts"), "utf8");
+
+  // Prefixed or not: `_kiro/` and `_kiro.dev/` both ship, so a bare compare
+  // works on one Kiro build and silently stops on the next.
+  assert.match(
+    session,
+    /bareMethod\(method\) === "progressive_context\/items_changed"/,
+    "the session must hear the notification through bareMethod"
+  );
+  assert.match(session, /readProgressiveContext\(params\)/, "and parse it rather than trust it");
+  assert.match(
+    session,
+    /if \(skills\) \{/,
+    "a report that could not be read must not empty the list"
+  );
+  assert.match(session, /onSkills\?\.\(skills\)/, "then tell the panel");
+
+  assert.match(provider, /onSkills: \(\) => this\.postSkills\(\)/, "the provider must listen");
+  assert.match(provider, /type: "skills",\s*\n\s*skills: this\.session\.availableSkills/);
+  // The panel is rebuilt whenever it is dragged to another container, long
+  // after the one announcement, so opening the menu has to ask again.
+  const request = sliceFrom(provider, 'case "requestMemory":');
+  assert.match(request, /this\.postSkills\(\)/, "opening the menu answers from what is held");
+
+  assert.match(js, /case "skills":/, "so the webview must handle skills");
+  const context = sliceFrom(js, "function renderContextView()");
+  assert.match(context, /renderSkillsGroup\(\);/, "the second page draws them");
+
+  const group = sliceFrom(js, "function renderSkillsGroup()");
+  assert.match(group, /skillRow\(skill\)/);
+  /*
+   * One note, saying whichever of the two things is worth saying. With none
+   * listed, where they go; with some, that they are not all loaded. A note
+   * about matching descriptions over an empty group explains a list that is
+   * not there.
+   */
+  /*
+   * Measured against 3.1.0: a folder with no skills is reported as an empty
+   * list, so once the report has landed an empty list really does mean none —
+   * but the menu can be opened while the panel is still connecting, and
+   * "none" there is an answer the panel would be inventing.
+   */
+  assert.match(provider, /known: this\.session\.skillsKnown/, "the provider says which it is");
+  assert.match(js, /skillsKnown = message\.known === true/, "the webview keeps it");
+  assert.match(group, /skillsKnown/, "and the note distinguishes none from not yet asked");
+
+  // The row is clickable without being a choice, so it is answered before the
+  // `.mode-row` lookup — which would otherwise find nothing and drop it.
+  const handler = js.slice(js.indexOf('modeMenu.addEventListener("click"'));
+  const openRow = handler.indexOf("[data-open-path]");
+  assert.ok(openRow > -1, "the menu opens a row that carries a path");
+  assert.ok(
+    openRow < handler.indexOf('closest(".mode-row")'),
+    "and does it before the row lookup that cannot find one"
+  );
+  assert.match(provider, /case "openFile"/, "reusing the route the provider already has");
+});
+
+/*
+ * Removing one, both halves.
+ *
+ * A skill *is* its folder, so the folder goes — leaving it would leave the
+ * panel reporting nothing while the directory stays, and a skill can keep
+ * other files beside the one Kiro reads. The recycle bin is what makes this
+ * safe to offer on a hover button, exactly as it is for a memory file.
+ */
+test("a skill can be removed, and only one Kiro is reporting", () => {
+  const handler = js.slice(js.indexOf('modeMenu.addEventListener("click"'));
+  const removeAt = handler.indexOf("[data-remove-skill]");
+  assert.ok(removeAt > -1, "the menu has a remove control");
+  assert.ok(
+    removeAt < handler.indexOf("[data-open-path]"),
+    "answered before the open, because the × sits inside the row that opens"
+  );
+  const branch = handler.slice(removeAt);
+  assert.match(branch.slice(0, branch.indexOf("return;")), /type: "removeSkill"/);
+  assert.match(provider, /case "removeSkill":/, "so the provider must handle it");
+
+  const remove = sliceFrom(provider, "private async removeSkill(");
+  /*
+   * A path arriving in a webview message is not a licence to delete a
+   * directory — the same rule `isListedMemory` applies to the other row.
+   */
+  assert.match(remove, /this\.session\.availableSkills\.find/, "re-proved against Kiro's report");
+  assert.match(remove, /samePath\(listed\.path, target\)/, "and Windows spells a path many ways");
+  assert.match(remove, /Refused to remove/, "a path that is not a skill is logged, not deleted");
+  assert.match(remove, /modal: true/, "the user confirms");
+  assert.match(remove, /path\.dirname\(skill\.path\)/, "the folder goes, not just the SKILL.md");
+  assert.match(remove, /recursive: true/);
+  assert.match(remove, /useTrash: true/, "to the recycle bin, because this is one click");
+  /*
+   * Measured: Kiro re-announced about 700ms after the folder was deleted, so
+   * the row leaves by the route it arrived — and a failed delete correctly
+   * leaves it there, because the skill still is there.
+   */
+  assert.doesNotMatch(remove, /postSkills\(\)/, "the refresh is Kiro's own report");
+});
+
+/*
+ * `/ponytail` is what a skill's own documentation tells you to type, so the
+ * command menu answers it. The first version showed an empty box there: the
+ * menu listed commands only, nothing matched, and a menu with no rows hides
+ * itself — the panel failing to answer the obvious question rather than
+ * there being nothing to say.
+ */
+test("the command menu offers skills, and completes rather than runs them", () => {
+  const update = sliceFrom(js, "function updateSlashMenu()");
+  assert.match(
+    update,
+    /matchSlash\(match\[1\]\)\.concat\(matchSkills\(match\[1\]\)\)/,
+    "commands first, then skills"
+  );
+  // The menu used to refuse to open with no commands; a workspace can have
+  // skills before Kiro has listed its commands.
+  assert.match(update, /!slashCommands\.length && !skills\.length/);
+
+  /*
+   * Run against a small list rather than matched as source: what it does
+   * with a query is the thing under test.
+   */
+  const matcher = new Function(
+    "skills",
+    `${sliceFrom(js, "function matchSkills(query)")}\nreturn matchSkills;`
+  )([
+    { name: "ponytail", description: "Lazy senior dev mode." },
+    { name: "release-notes", description: "Cut a release." },
+  ]);
+  assert.deepEqual(
+    matcher("").map((s) => s.name),
+    ["ponytail", "release-notes"],
+    "a bare slash offers them all"
+  );
+  assert.deepEqual(matcher("pony").map((s) => s.name), ["ponytail"]);
+  assert.deepEqual(matcher("note").map((s) => s.name), ["release-notes"], "not only a prefix");
+  assert.deepEqual(matcher("zz"), []);
+  assert.equal(matcher("p")[0].skill, true, "marked, so the row and the pick can tell");
+
+  /*
+   * Nothing can be sent to Kiro to run a skill — it opens one when the
+   * description fits the message — so picking a row writes the name and
+   * leaves the cursor after it. A row that ran something would be claiming a
+   * capability the panel does not have.
+   */
+  const accept = sliceFrom(js, "function acceptSlash(command)");
+  const branch = accept.slice(accept.indexOf("if (command.skill)"));
+  assert.match(branch.slice(0, branch.indexOf("return;")), /inputEl\.value = "\/" \+ command\.name \+ " "/);
+  assert.doesNotMatch(branch.slice(0, branch.indexOf("return;")), /runSlash/, "and runs nothing");
+
+  // The tag is the only thing saying the row is not a command.
+  const render = sliceFrom(js, "function renderSlashMenu()");
+  assert.match(render, /command\.skill/);
+  assert.match(render, /textContent = "skill"/);
+  assert.match(css, /\.slash-tag \{/, "and it needs a rule to hold its place");
+});
+
+/*
+ * Listing skills without being able to make one is half a feature: adding a
+ * skill meant creating a folder and a file by hand, in a place nothing on
+ * screen named. The row has the same three hops as everything else here.
+ */
+test("a skill can be added from the menu", () => {
+  // Offered whether or not any skill exists, unlike the memory rows: the
+  // name is typed, so the row is not describing a file already listed above.
+  const post = sliceFrom(provider, "private postSkills()");
+  assert.match(post, /scope === "project" && !root/, "a project skill needs a project");
+  assert.match(post, /skillScopeDir\(scope, root\)/, "the row is told where it writes");
+  assert.match(post, /\n\s*add,/, "and the rows ride along with the list");
+
+  const group = sliceFrom(js, "function renderSkillsGroup()");
+  assert.match(group, /for \(const item of skillAdd\)/, "the menu draws them");
+  assert.match(group, /row\.dataset\.skillScope = item\.scope/);
+  assert.match(js, /skillAdd = message\.add \|\| \[\]/, "the webview keeps them");
+  // Named by scope, the way the memory rows are: "Add skill" alone is the
+  // project one by implication, which stops being obvious under a global row.
+  assert.match(js, /project: "Add project skill"/);
+  assert.match(js, /global: "Add global skill"/);
+
+  const handler = js.slice(js.indexOf('modeMenu.addEventListener("click"'));
+  const branch = handler.slice(handler.indexOf("if (row.dataset.skillScope)"));
+  assert.match(branch.slice(0, branch.indexOf("return;")), /type: "addSkill"/);
+
+  assert.match(provider, /case "addSkill":/, "the provider must have a case for it");
+  // Refused rather than rounded, the way an unknown memory target is.
+  const handled = sliceFrom(provider, 'case "addSkill": {');
+  assert.match(handled, /skillScope\(message\.scope\)/);
+  assert.match(handled, /Ignored addSkill for unknown scope/);
+
+  const add = sliceFrom(provider, "private async addSkill(");
+  assert.match(add, /showInputBox/, "the name is asked for, because it is the folder");
+  assert.match(add, /validateInput/, "and validated before anything is written");
+  /*
+   * One box, two kinds of answer. Pasting the URL is what people do, and
+   * the first version met it with "a skill name is one folder" — true, and
+   * no help at all.
+   */
+  assert.match(
+    add,
+    /looksLikeUrl\(value\) \? skillUrlProblem\(value\) : skillNameProblem\(value\)/,
+    "a link is judged as a link, not as a folder name"
+  );
+  assert.match(add, /this\.downloadSkill\(answer\)/, "and fetched when it is one");
+  assert.match(
+    add,
+    /skillNameFromFrontmatter\(fetched\.text\) \?\? skillNameFromUrl\(answer\)/,
+    "a downloaded skill is called what its own frontmatter says"
+  );
+  // The one case where an existing skill may be replaced — and only after
+  // being asked, because pasting a link is how you update one.
+  assert.match(add, /if \(exists && fetched\)/);
+  assert.match(add, /"Replace"/);
+
+  const download = sliceFrom(provider, "private async downloadSkill(");
+  assert.match(download, /rawSkillUrl\(link\)/, "the blob page is rewritten before fetching");
+  assert.match(download, /withProgress/, "a download that takes a moment says so");
+  assert.match(download, /fetchSkillText\(url, httpsGetText\(\)\)/);
+  assert.match(download, /"error" in result/, "and a failure is shown, not thrown");
+  assert.match(add, /skillTemplate\(name, scope\)/, "the starter explains the mechanism");
+  assert.match(add, /Opening it instead/, "an existing skill is opened, never written over");
+  /*
+   * Nothing posts a list of its own afterwards. Measured: Kiro watches the
+   * folder and re-announced a SKILL.md about 600ms after it appeared, so the
+   * row arrives by the same route every other skill does — a second source
+   * for it is how the two would drift.
+   */
+  assert.doesNotMatch(add, /postSkills\(\)/, "the refresh is Kiro's own report");
+});
+
+/*
  * Changing page replaces the row that was clicked, so when the click reaches
  * the document its target is detached and `modeMenu.contains` answers false.
  * The outside-click handler took that as a click outside and closed the menu
