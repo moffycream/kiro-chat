@@ -2040,15 +2040,22 @@ test("a step's input and output are shown behind a click", () => {
   assert.match(merge, /output: incoming\.output \|\| \(previous && previous\.output\)/);
 
   const render = sliceFrom(js, "function renderToolRow(row, tool, phase");
-  assert.match(render, /tool\.input &&/);
-  assert.match(render, /tool\.output &&/);
   // No payload, no disclosure: a row that opens onto nothing is worse than a
   // row with nothing to open.
-  assert.match(render, /if \(details\.length\)/);
+  assert.match(render, /const hasDetail = Boolean\(tool\.input \|\| tool\.output\)/);
   // The open state lives on the row, because the row is rebuilt on every
   // notification and would otherwise fold up under the pointer mid-turn.
   assert.match(render, /row\.dataset\.open === "true"/);
-  assert.match(render, /clipped \? `\$\{part\.label\} \(first 4000 characters\)`/, "and says when it is cut");
+  // The title is the toggle; there is no separate "Details" line per row.
+  assert.match(render, /head\.className = "tool-head"/);
+  assert.doesNotMatch(render, /"Details"/);
+  // A folded row never builds its payload.
+  assert.match(render, /if \(open\) \{\s*const body = buildToolDetail\(tool\)/);
+
+  const detail = sliceFrom(js, "function buildToolDetail(tool)");
+  assert.match(detail, /tool\.input &&/);
+  assert.match(detail, /tool\.output &&/);
+  assert.match(detail, /clipped \? `\$\{part\.label\} \(first 4000 characters\)`/, "and says when it is cut");
 
   /*
    * Delegated from the transcript for the reason the copy button is: the row
@@ -2056,13 +2063,14 @@ test("a step's input and output are shown behind a click", () => {
    */
   const handler = js.slice(js.indexOf('messagesEl.addEventListener("click"'));
   const body = handler.slice(0, handler.indexOf("\n  });"));
-  assert.match(body, /closest\(["']\.tool-more["']\)/);
+  assert.match(body, /closest\(["']\.tool-head["']\)/);
   assert.match(body, /row\.dataset\.open = open \? "true" : "false"/);
+  assert.match(body, /buildToolDetail\(row\._tool\)/);
 
   assert.match(css, /^\.tool-detail-text \{/m, "the block needs a rule of its own");
   // A plain-looking button must cancel `button:hover`, or it sits transparent
   // and then paints solid primary blue under the pointer.
-  assert.match(css, /^\.tool-more:hover \{/m);
+  assert.match(css, /^\.tool-head:hover \{/m);
 });
 
 /*

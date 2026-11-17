@@ -652,22 +652,21 @@
    * open instead of folding it up under the pointer.
    */
   messagesEl.addEventListener("click", async (event) => {
-    // A step's details. Same listener as the copy button below, for the same
-    // reason it is delegated at all — `renderToolRow` rebuilds the row on
-    // every notification about that step, several times a second during a
-    // turn, so anything bound to the toggle is discarded almost at once. The
-    // open state lives on the row's dataset, so a rebuild redraws it open
-    // rather than folding it up under the pointer.
-    const more = event.target.closest && event.target.closest(".tool-more");
+    const more = event.target.closest && event.target.closest(".tool-head");
     if (more) {
       const row = more.closest(".tool");
       if (!row) return;
       const open = row.dataset.open !== "true";
       row.dataset.open = open ? "true" : "false";
-      const body = row.querySelector(".tool-detail");
-      if (body) body.hidden = !open;
-      more.textContent = open ? "Hide details" : "Details";
       more.setAttribute("aria-expanded", open ? "true" : "false");
+      // Built on open and dropped on close, so a folded row carries no copy
+      // of a payload that can be a whole file.
+      const body = row.querySelector(".tool-detail");
+      if (body) body.remove();
+      if (open && row._tool) {
+        const built = buildToolDetail(row._tool);
+        if (built) row.querySelector(".tool-text").appendChild(built);
+      }
       return;
     }
 
@@ -1296,8 +1295,12 @@
   }
 
   function renderToolRow(row, tool, phase = "live") {
+    // The row is rebuilt on every notification about its step, which would
+    // jump an open payload back to its top while it is being read.
+    const scrolled = [...row.querySelectorAll(".tool-detail-text")].map((pre) => pre.scrollTop);
     row.dataset.status = tool.status;
     row.textContent = "";
+    row._tool = tool;
     const icon = document.createElement("span");
     icon.className = "tool-icon";
     icon.setAttribute("aria-hidden", "true");
@@ -1322,7 +1325,30 @@
     const title = document.createElement("span");
     title.className = "tool-title";
     title.textContent = tool.title;
-    text.appendChild(title);
+    /*
+     * What it was given and what came back, behind a click on the title.
+     *
+     * A separate details link under every row doubled the height of the list and
+     * read as a column of identical buttons. The title is the toggle now,
+     * with a chevron after it, so a row costs no extra line until opened.
+     * A row with no payload keeps a plain title: nothing to open, no button.
+     */
+    const hasDetail = Boolean(tool.input || tool.output);
+    const open = hasDetail && row.dataset.open === "true";
+    if (hasDetail) {
+      const head = document.createElement("button");
+      head.type = "button";
+      head.className = "tool-head";
+      head.setAttribute("aria-expanded", open ? "true" : "false");
+      head.title = "Show what this step was given and what came back";
+      const chevron = document.createElement("span");
+      chevron.className = "tool-chevron";
+      chevron.setAttribute("aria-hidden", "true");
+      head.append(title, chevron);
+      text.appendChild(head);
+    } else {
+      text.appendChild(title);
+    }
     // Kiro says why it is doing each step. That is the part worth unfolding
     // for — the title alone only says what, not what for.
     if (tool.purpose) {
@@ -1331,50 +1357,44 @@
       why.textContent = tool.purpose;
       text.appendChild(why);
     }
-    /*
-     * What it was given and what came back, behind a click.
-     *
-     * The row says what the step is; this is the only place the panel can
-     * answer "which file" or "what did that return". It waits for a click,
-     * because everything else in this list does — two things in one list
-     * behaving differently is worse than either rule on its own — and the
-     * block is only built when there is something in it, so a row with no
-     * payload stays exactly as it was.
-     */
-    const details = [
-      tool.input && { label: "Input", value: tool.input },
-      tool.output && { label: "Output", value: tool.output },
-    ].filter(Boolean);
-    if (details.length) {
-      const toggle = document.createElement("button");
-      toggle.type = "button";
-      toggle.className = "tool-more";
-      const open = row.dataset.open === "true";
-      toggle.textContent = open ? "Hide details" : "Details";
-      toggle.setAttribute("aria-expanded", open ? "true" : "false");
-      text.appendChild(toggle);
-
-      const body = document.createElement("div");
-      body.className = "tool-detail";
-      body.hidden = !open;
-      for (const part of details) {
-        const head = document.createElement("div");
-        head.className = "tool-detail-head";
-        // Said on the heading rather than at the end of the text, where a
-        // long output would scroll the note out of sight.
-        head.textContent = part.value.clipped ? `${part.label} (first 4000 characters)` : part.label;
-        const pre = document.createElement("pre");
-        pre.className = "tool-detail-text";
-        pre.textContent = part.value.text;
-        body.append(head, pre);
+    // Only an open row builds its payload; a folded one is never filled in.
+    if (open) {
+      const body = buildToolDetail(tool);
+      if (body) {
+        text.appendChild(body);
+        body.querySelectorAll(".tool-detail-text").forEach((pre, i) => {
+          if (scrolled[i]) pre.scrollTop = scrolled[i];
+        });
       }
-      text.appendChild(body);
     }
 
     row.append(icon, text);
     // The state is a glyph, so say it in words for a screen reader.
     row.setAttribute("aria-label", `${tool.title} — ${tool.status}`);
     return row;
+  }
+
+  /** A step's input and output, or null when it reported neither. */
+  function buildToolDetail(tool) {
+    const details = [
+      tool.input && { label: "Input", value: tool.input },
+      tool.output && { label: "Output", value: tool.output },
+    ].filter(Boolean);
+    if (!details.length) return null;
+    const body = document.createElement("div");
+    body.className = "tool-detail";
+    for (const part of details) {
+      const head = document.createElement("div");
+      head.className = "tool-detail-head";
+      // Said on the heading rather than at the end of the text, where a
+      // long output would scroll the note out of sight.
+      head.textContent = part.value.clipped ? `${part.label} (first 4000 characters)` : part.label;
+      const pre = document.createElement("pre");
+      pre.className = "tool-detail-text";
+      pre.textContent = part.value.text;
+      body.append(head, pre);
+    }
+    return body;
   }
 
   /**
