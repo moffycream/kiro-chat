@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.41.7
+
+- **Qoder can read the files you attach.** Every attached or focused file was
+  refused with "Path not in workspace", because Qoder reads a file link
+  without decoding it and ended up looking for `c:\c%3A\Users\...`. Qoder is
+  now sent links in the plain form it understands, including paths with
+  spaces. Kiro gets the same links as before.
+
 ## 0.41.6
 
 - **Saving a chat no longer rewrites every chat you have.** All past chats were

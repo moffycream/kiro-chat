@@ -1,5 +1,6 @@
 import * as vscode from "vscode";
 import { ContentBlock } from "./kiroSession";
+import { AgentId, fileLinkFor } from "./agents";
 import {
   Attachment,
   buildBlocks as buildPromptBlocks,
@@ -41,10 +42,11 @@ export function buildBlocks(
   message: string,
   attachments: Attachment[],
   selection: SelectionContext | undefined,
-  includeSelection: boolean
+  includeSelection: boolean,
+  agent: AgentId = "kiro"
 ): ContentBlock[] {
   return buildPromptBlocks(message, attachments, selection, includeSelection, (fsPath) =>
-    vscode.Uri.file(fsPath).toString()
+    fileLinkFor(agent, fsPath, (p) => vscode.Uri.file(p).toString())
   ) as ContentBlock[];
 }
 

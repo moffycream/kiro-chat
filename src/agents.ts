@@ -93,6 +93,26 @@ export function agentArgs(agent: AgentId, launch: string[], user: string[]): str
   return [...(launch ?? []), ...(own.includes("--acp") ? [] : ["--acp"]), ...own];
 }
 
+/**
+ * The `file://` link an attached file is sent as.
+ *
+ * Kiro takes the standard form VS Code writes, `file:///c%3A/Users/...`. Qoder
+ * does not decode a link: measured against 1.1.91, it turns a `resource_link`
+ * into a path by dropping the first seven characters, `file://`, and resolving
+ * what is left against the workspace — so the standard form arrived as
+ * `/c%3A/Users/...`, resolved to `c:\c%3A\Users\...`, and every attached file
+ * was refused as outside the workspace. It is given `file://C:/Users/...`,
+ * whose remainder is the plain path, spaces and all.
+ */
+export function fileLinkFor(
+  agent: AgentId,
+  fsPath: string,
+  standard: (fsPath: string) => string
+): string {
+  if (agent === "qoder") return `file://${fsPath.replace(/\\/g, "/")}`;
+  return standard(fsPath);
+}
+
 function run(command: string, args: string[]): Promise<string | undefined> {
   return new Promise((resolve) => {
     execFile(command, args, { timeout: 5000 }, (err, stdout) => {

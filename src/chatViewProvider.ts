@@ -2060,7 +2060,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
      * outside, the workflow still sits against the request it introduces.
      */
     const blocks = applyInstructions(
-      applyChatMode(buildBlocks(trimmed, attached, this.selection, includeSelection), mode),
+      applyChatMode(
+        buildBlocks(trimmed, attached, this.selection, includeSelection, this.session.agentId),
+        mode
+      ),
       vscode.workspace.getConfiguration("kiroChat").get<string>("instructions", "")
     );
 

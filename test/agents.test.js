@@ -21,6 +21,19 @@ test("Qoder starts with --acp as an option, never `acp` as a subcommand or Kiro'
   assert.deepEqual(agentArgs("kiro", [], []), ["acp", "--agent-engine", "v3"]);
 });
 
+test("attached files are linked in the form each agent can read", () => {
+  const { fileLinkFor } = require("../out/agents");
+  const standard = () => "file:///c%3A/w/sub%20dir/a.css";
+  // Qoder drops "file://" and resolves the rest as a path, undecoded — the
+  // standard form became c:\c%3A\w\... and was refused (qodercli 1.1.91).
+  assert.equal(fileLinkFor("qoder", "C:\\w\\sub dir\\a.css", standard), "file://C:/w/sub dir/a.css");
+  assert.equal("file://C:/w/sub dir/a.css".slice(7), "C:/w/sub dir/a.css");
+  // Kiro keeps the form it has always been sent.
+  assert.equal(fileLinkFor("kiro", "C:\\w\\sub dir\\a.css", standard), standard());
+  const provider = fs.readFileSync(path.join(__dirname, "..", "src", "chatViewProvider.ts"), "utf8");
+  assert.match(provider, /buildBlocks\(trimmed, attached, this\.selection, includeSelection, this\.session\.agentId\)/);
+});
+
 test("only Kiro carries the Kiro-only extras", () => {
   assert.equal(AGENTS.kiro.kiroExtras, true);
   assert.equal(AGENTS.qoder.kiroExtras, false);
