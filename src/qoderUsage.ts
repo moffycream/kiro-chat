@@ -179,3 +179,47 @@ export async function fetchQoderUsage(options: {
   }
   return usage;
 }
+
+function figure(value: unknown): string | undefined {
+  if (typeof value !== "number" || !Number.isFinite(value)) return undefined;
+  return String(Math.round(value * 100) / 100);
+}
+
+function bucket(used: unknown, total: unknown): string {
+  const spent = figure(used);
+  const cap = figure(total);
+  if (spent === undefined) return "N/A";
+  return cap === undefined ? spent : `${spent}/${cap}`;
+}
+
+/**
+ * The same rows, from the SDK's `getUsageInfo` rather than from the screen.
+ *
+ * The SDK answers this directly, so the ConPTY capture is only the fallback
+ * for when the SDK cannot be reached. The labels match the screen's, and an
+ * absent figure reads "N/A" as Qoder itself prints it — never a zero, which
+ * would be a claim about the account nobody made.
+ */
+export function qoderUsageFromInfo(info: any): QoderUsage | undefined {
+  if (!info || typeof info !== "object") return undefined;
+  const rows: QoderUsageRow[] = [];
+  const plan = typeof info.userType === "string" && info.userType.trim()
+    ? info.userType.trim()[0].toUpperCase() + info.userType.trim().slice(1)
+    : undefined;
+  if (plan) rows.push({ label: "Plan", value: plan });
+  let expiresOn: string | undefined;
+  if (typeof info.expiresAt === "number" && Number.isFinite(info.expiresAt) && info.expiresAt > 0) {
+    expiresOn = new Date(info.expiresAt).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+    rows.push({ label: "Plan Expires At", value: expiresOn });
+  }
+  rows.push({ label: "Plan Credits Used", value: bucket(info.userQuota?.used, info.userQuota?.total) });
+  rows.push({ label: "Add-on Credits Used", value: bucket(info.addOnQuota?.used, info.addOnQuota?.total) });
+  const org = info.orgResourcePackage;
+  if (org && (org.used !== undefined || org.cap !== undefined)) {
+    rows.push({ label: "Org Resource Package", value: bucket(org.used, org.cap) });
+  }
+  const usage: QoderUsage = { rows };
+  if (plan) usage.planName = plan;
+  if (expiresOn) usage.expiresOn = expiresOn;
+  return usage;
+}

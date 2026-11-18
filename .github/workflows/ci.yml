@@ -22,7 +22,11 @@ jobs:
           node-version: 24
           cache: npm
 
+      # The Qoder SDK's install script downloads a Qoder CLI the bundle never
+      # uses: the user's own qodercli is always passed to it.
       - run: npm ci
+        env:
+          QODER_SKIP_DOWNLOAD: "1"
 
       - name: Test
         shell: bash

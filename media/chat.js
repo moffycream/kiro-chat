@@ -3249,10 +3249,11 @@
     }
 
     /*
-     * Qoder's account, as its own `/usage` screen shows it. The extension runs
-     * that screen where nobody sees it and reads the rows back, so these are
-     * Qoder's labels and values as drawn — not Kiro's three figures, which
-     * Qoder does not have in that shape.
+     * Qoder's account, under the labels its own `/usage` screen uses. The
+     * figures come from the SDK's `getUsageInfo`, and from that screen, run
+     * where nobody sees it, only when the SDK cannot be reached — so these
+     * are Qoder's rows, not Kiro's three figures, which Qoder does not have
+     * in that shape.
      */
     if (currentAgent !== "kiro") {
       const account = document.createElement("section");
@@ -3395,6 +3396,12 @@
     // account report is the one that costs a round trip and stays behind its
     // button. A breakdown from two turns ago is not this conversation's.
     vscode.postMessage({ type: "refreshContext" });
+    // Qoder's account answers in about a second through the SDK, and billing
+    // nothing, so it is fetched the first time rather than behind a button.
+    // Kiro's borrows a whole agent and stays behind its button.
+    if (currentAgent !== "kiro" && !usageReport && !usageLoading) {
+      vscode.postMessage({ type: "refreshUsage" });
+    }
   }
 
   function toggleUsagePanel() {

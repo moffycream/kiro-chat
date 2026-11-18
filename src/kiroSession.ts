@@ -26,7 +26,20 @@ import { KiroSkill, readProgressiveContext } from "./progressiveContext";
 import { formatToolValue, ToolValue } from "./toolDetails";
 import { EffortState, readSessionConfig, SessionConfig } from "./configOptions";
 import { fetchAccountUsage } from "./accountUsage";
-import { fetchQoderUsage } from "./qoderUsage";
+import { fetchQoderUsage, qoderUsageFromInfo, QoderUsage } from "./qoderUsage";
+import { QoderSdkClient } from "./qoderSdkClient";
+import { pathToFileURL } from "node:url";
+
+/**
+ * The bundled SDK is an ES module and this file compiles to CommonJS, where
+ * tsc rewrites `import()` into `require()` — which cannot load it on the
+ * Node an older VS Code carries. Going through `Function` keeps it a real
+ * dynamic import. `scripts/bundle-qoder-sdk.js` writes the file.
+ */
+const importModule = new Function("specifier", "return import(specifier)") as (s: string) => Promise<any>;
+function loadQoderSdk(): Promise<any> {
+  return importModule(pathToFileURL(path.join(__dirname, "vendor", "qoder-agent-sdk.mjs")).href);
+}
 import { LaunchInputs, launchInputsChanged, snapshotLaunchInputs } from "./launchInputs";
 import {
   DeleteOutcome,
@@ -335,9 +348,9 @@ function normaliseKind(kind: unknown): string {
 }
 
 export class KiroSession {
-  private client: AcpClient | undefined;
+  private client: AcpClient | QoderSdkClient | undefined;
   /** The client that finished `initialize`, so a half-started one is not reused. */
-  private connected: AcpClient | undefined;
+  private connected: AcpClient | QoderSdkClient | undefined;
   private sessionId: string | undefined;
   private starting: Promise<void> | undefined;
   private connecting: Promise<void> | undefined;
@@ -770,7 +783,16 @@ export class KiroSession {
       const load = () =>
         this.client!.request(
           "session/load",
-          { sessionId, cwd: this.workspaceRoot(), mcpServers: [] },
+          {
+            sessionId,
+            cwd: this.workspaceRoot(),
+            mcpServers: [],
+            // Qoder's SDK reports a running total, so a reopened chat's first
+            // turn is priced against what its stored turns already cost.
+            ...(this.client instanceof QoderSdkClient && priorCredits !== undefined
+              ? { _meta: { qoder: { priorCredits } } }
+              : {}),
+          },
           30000
         );
 
@@ -1044,18 +1066,14 @@ export class KiroSession {
     this.client?.stop();
     let tooOld = false;
     this.startupLog = [];
-    this.client = new AcpClient({
-      command,
-      args: agentArgs(this.agent, launchArgs, userArgs),
-      cwd: this.workspaceRoot(),
-      env,
-      onLog: (line) => {
+    const callbacks = {
+      onLog: (line: string) => {
         tooOld ||= needsNewerKiro(line);
         this.startupLog = [...this.startupLog, line].slice(-40);
         this.output.appendLine(line);
       },
-      onNotification: (method, params) => this.handleNotification(method, params),
-      onRequest: (method, params) => this.handleRequest(method, params),
+      onNotification: (method: string, params: any) => this.handleNotification(method, params),
+      onRequest: (method: string, params: any) => this.handleRequest(method, params),
       onExit: () => {
         // Only for the client still in service. A stopped one exits after its
         // replacement has been built, and used to clear the new session's id.
@@ -1064,7 +1082,28 @@ export class KiroSession {
         this.connected = undefined;
         this.setStatus("stopped");
       },
-    });
+    };
+    /*
+     * Qoder goes through its Agent SDK unless that is switched off: over ACP
+     * it reports no credits at all, and its stream-json mode, which does,
+     * refuses every edit because it cannot ask. See `qoderSdkClient.ts`.
+     */
+    const useSdk = this.agent === "qoder" && config.get<boolean>("qoderUseSdk", true);
+    this.client = useSdk
+      ? new QoderSdkClient({
+          cliPath: command,
+          cwd: this.workspaceRoot(),
+          env,
+          loadSdk: loadQoderSdk,
+          ...callbacks,
+        })
+      : new AcpClient({
+          command,
+          args: agentArgs(this.agent, launchArgs, userArgs),
+          cwd: this.workspaceRoot(),
+          env,
+          ...callbacks,
+        });
     const client = this.client;
     client.start();
 
@@ -1270,7 +1309,7 @@ export class KiroSession {
    * ever sent again while nothing suggests Kiro started on it.
    */
   private async promptRetryingToken(
-    client: AcpClient,
+    client: AcpClient | QoderSdkClient,
     sessionId: string,
     blocks: ContentBlock[]
   ): Promise<any> {
@@ -1487,7 +1526,9 @@ export class KiroSession {
         ok: false,
         text: this.profile.kiroExtras
           ? `${this.profile.label} has not reported its context yet.`
-          : `${this.profile.label} does not report its context to the panel.`,
+          : this.usage.contextPercent !== undefined
+            ? `${this.profile.label} reports how full the context is, not what fills it.`
+            : `${this.profile.label} has not reported its context yet.`,
       };
     }
     const lines = breakdown.categories.map(
@@ -1497,12 +1538,23 @@ export class KiroSession {
     return { ok: true, data: { ...data, model: this.currentModelId }, text: lines.join("\n") };
   }
 
+  /** The account figures straight from the SDK; `undefined` sends the caller to the screen capture. */
+  private async qoderUsageFromSdk(): Promise<QoderUsage | undefined> {
+    if (!(this.client instanceof QoderSdkClient) || !this.client.isRunning) return undefined;
+    try {
+      return qoderUsageFromInfo(await this.client.request("_qoder/usage", {}, 20000));
+    } catch (err) {
+      this.output.appendLine(`[usage] Qoder SDK usage failed, reading the screen instead: ${String(err)}`);
+      return undefined;
+    }
+  }
+
   private async accountUsage(): Promise<CommandResult> {
     // Kiro's borrows a v2 agent. Qoder reports nothing over ACP, so its own
     // `/usage` screen is run invisibly and read — see `qoderUsage.ts`.
     if (this.agent === "qoder") {
       if (!this.launch) throw new Error("Qoder is not connected.");
-      const usage = await fetchQoderUsage({
+      const usage = (await this.qoderUsageFromSdk()) ?? await fetchQoderUsage({
         command: this.launch.command,
         script: path.join(__dirname, "..", "resources", "conpty-capture.ps1"),
       });

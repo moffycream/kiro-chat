@@ -771,7 +771,52 @@ the door.** Measured against qodercli 1.1.91 by driving `qodercli --acp` and the
 answers "Not logged in". The model list arrives in `configOptions` (category `model`, no effort
 option) with the credit rate only in the description, which `readModel` falls back to through
 `findCreditRate`. Its edit tool writes the file itself with `kind: "edit"` and `locations`, so the
-direct-write review path is the one that runs. No credits and no context figure are reported.
+direct-write review path is the one that runs. Over ACP no credits and no context figure are
+reported, which is why the default route is now the SDK (below).
+
+### Qoder runs through its Agent SDK, dressed as ACP
+
+**`qoderSdkClient.ts` (free of `vscode`) has `AcpClient`'s surface and speaks the ACP shapes
+`KiroSession` already reads.** Measured against qodercli 1.1.91 with `@qoder-ai/qoder-agent-sdk`
+1.0.59, under VS Code's own Node (24.18): `qodercli --acp` reports every token count as 0;
+stream-json reports `total_credits` but auto-denies every edit, and the flag that would let it ask
+is refused alongside `--input-format stream-json`. The SDK is the one route with both — it runs
+`qodercli --sdk` as a daemon, asks through `canUseTool`, and reports credits, context and the
+account. Translating at the client keeps the review, the one-gate skip, Plan's restore and the
+permission queue in one place. `kiroChat.qoderUseSdk: false` falls back to `--acp`.
+
+- **The SDK is a dev dependency, bundled.** `scripts/bundle-qoder-sdk.js` (run by `compile`)
+  writes `out/vendor/qoder-agent-sdk.mjs` (~585 KB) and copies its LICENSE beside it; the
+  .vsix ships no `node_modules`. It is ESM and reads `import.meta.url`, so it is not a
+  CommonJS bundle, and `loadQoderSdk` imports it through `new Function` because tsc turns a
+  bare `import()` into `require()` — which only loads ESM on newer Node. Its postinstall
+  downloads a Qoder CLI nobody uses (the user's own is always passed), so CI sets
+  `QODER_SKIP_DOWNLOAD=1`. **The SDK is not open source**: its LICENSE points at Qoder's
+  Product Service Terms, and shipping the bundle is redistributing it.
+- **`total_credits` is the session's running total and survives a resume** (0.065 → 0.078 across
+  a close and reload), so a turn's cost is the difference. A new chat starts at 0; a reopened
+  one starts at the `priorCredits` `loadSession` already has, passed as
+  `_meta.qoder.priorCredits`. Without it the first turn after reopening gets no figure, never a
+  guessed one. Both `turn_completion` and `session_usage` are emitted, in that order.
+- **With `includePartialMessages`, `context_usage_ratio` is only on the `result`**; without it,
+  only on the assistant message. Both are read. Text and reasoning come as deltas; the full
+  assistant copy is skipped for a message already streamed, and tool uses come only from it.
+- **The bridge names a new session's id itself** (`sessionId: randomUUID()`); a message carrying
+  any `session_id` but the daemon's is refused, so `userMessageOf` sends none.
+- **A close is asynchronous and the daemon refuses an id it still holds** ("already open"), so
+  `open` awaits `closing` — reopening a chat straight after `session/close` failed without it.
+- **`canUseTool` fires before the assistant message names the step**, so it announces a step it
+  has not seen, and never re-announces one already running (that walked the row backwards).
+  `Bash` carries `_meta.kiro.consent.capability: "shell"` so `isShellRequest` and Plan's forced
+  card see it. A request the panel could not answer is a deny. `AskUserQuestion` is disallowed:
+  the panel has nothing to answer it with.
+- **Signed out surfaces at `session/new`**: `initializationResult()` throws "Authentication
+  required. Log in with qodercli login…", which `looksLikeSignIn` matches. A missing binary is
+  `spawn … ENOENT` from `startDaemon`. Both were measured, the first with `QODER_CONFIG_DIR`
+  pointed at an empty folder rather than by logging anyone out.
+- **The SDK takes Windows paths as they are.** A scratch test once "showed" it stripping
+  backslashes; that was bash collapsing `\` in the test script. Pass a path through
+  PowerShell or `path.join` before believing a path bug.
 
 - **`kiroExtras: false` switches off what reads Kiro's files or calls Kiro's methods**: tidying
   (`canTidySessions`), the saved context, the update check, `/usage` and `/compact`.
@@ -782,9 +827,11 @@ direct-write review path is the one that runs. No credits and no context figure 
   (`model` / `qoderModel`) because the ids are each CLI's own.
 - **Switching is the configuration watcher's job**, so the menu and a hand-edited setting switch
   the same way: `switchAgent` puts the chat away and starts a fresh one with `restart: true`.
-- **Qoder's account usage is read off its own `/usage` screen**, because nothing else carries
-  it: ACP token counts are all 0, the SDK mode has no account request, the CLI's account calls
-  are encrypted, and the screen draws nothing on plain pipes. `resources/conpty-capture.ps1`
+- **Qoder's account usage comes from the SDK daemon's `getUsageInfo`** (`_qoder/usage` on the
+  bridge, mapped by `qoderUsageFromInfo` onto the screen's labels, absent figures as "N/A"),
+  and the panel fetches it on first open because it answers in about a second. **The screen
+  capture is the fallback** for when the SDK is off or unreachable: ACP token counts are all 0,
+  the CLI's account calls are encrypted, and the screen draws nothing on plain pipes. `resources/conpty-capture.ps1`
   runs `qodercli` in a Windows pseudo-console nobody sees, and `qoderUsage.ts` (free of
   `vscode`) drives it with steps that wait for Qoder's screens and parses the rows;
   `test/fixtures/qoder-usage-screen.raw` is the captured stream. Two ConPTY traps: without
@@ -1159,7 +1206,7 @@ The viewer lives entirely in the webview and needs no extension-host message.
 
 ### Modules kept free of `vscode` on purpose
 
-`src/usage.ts`, `src/setupWatcher.ts`, `src/startupError.ts`, `src/history.ts`, `src/promptBlocks.ts`, `src/editModes.ts`, `src/sessionLocks.ts`, `src/processFacts.ts`, `src/launchInputs.ts`, `src/tokenRetry.ts`, `src/agentConfig.ts`, `src/cliUpdate.ts`, `src/progressiveContext.ts`, `src/skillFiles.ts`, `src/skillUrl.ts`, `src/skillFetch.ts`, `src/toolDetails.ts`, `src/agents.ts`, `src/qoderUsage.ts`, `src/chatStore.ts` and the `needsShell`/`quote` exports of `src/acpClient.ts` have no `vscode` import so the tests can `require("../out/...")` directly. There is no VS Code test harness in this repo — that constraint is the entire testing strategy. Keep new parsing and logic modules importable without `vscode`.
+`src/usage.ts`, `src/setupWatcher.ts`, `src/startupError.ts`, `src/history.ts`, `src/promptBlocks.ts`, `src/editModes.ts`, `src/sessionLocks.ts`, `src/processFacts.ts`, `src/launchInputs.ts`, `src/tokenRetry.ts`, `src/agentConfig.ts`, `src/cliUpdate.ts`, `src/progressiveContext.ts`, `src/skillFiles.ts`, `src/skillUrl.ts`, `src/skillFetch.ts`, `src/toolDetails.ts`, `src/agents.ts`, `src/qoderUsage.ts`, `src/qoderSdkClient.ts`, `src/chatStore.ts` and the `needsShell`/`quote` exports of `src/acpClient.ts` have no `vscode` import so the tests can `require("../out/...")` directly. There is no VS Code test harness in this repo — that constraint is the entire testing strategy. Keep new parsing and logic modules importable without `vscode`.
 
 `setupWatcher.ts` additionally takes its timers through an injected `Scheduler`, so `test/setupWatcher.test.js` drives the whole state machine without waiting out a real interval. Follow that pattern for anything else that polls.
 

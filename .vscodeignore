@@ -11,3 +11,4 @@ install-windows.bat
 *.vsix
 CLAUDE.md
 docs/**
+scripts/**

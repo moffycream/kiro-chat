@@ -2,7 +2,7 @@
   "name": "kiro-agent-chat",
   "displayName": "Kiro Agent Chat (Unofficial)",
   "description": "Chat with the Kiro agent inside VS Code, like Copilot Chat.",
-  "version": "0.41.7",
+  "version": "0.42.0",
   "publisher": "moffycream",
   "license": "MIT",
   "engines": {
@@ -90,7 +90,6 @@
         "title": "Kiro Chat: Past Chats",
         "icon": "$(history)"
       },
-
       {
         "command": "kiroChat.openMemory",
         "title": "Kiro Chat: Edit Project Memory"
@@ -176,8 +175,14 @@
         },
         "kiroChat.agent": {
           "type": "string",
-          "enum": ["kiro", "qoder"],
-          "enumDescriptions": ["Kiro CLI (`kiro-cli acp`)", "Qoder CLI (`qodercli --acp`)"],
+          "enum": [
+            "kiro",
+            "qoder"
+          ],
+          "enumDescriptions": [
+            "Kiro CLI (`kiro-cli acp`)",
+            "Qoder CLI (through the Qoder Agent SDK)"
+          ],
           "default": "kiro",
           "markdownDescription": "Which agent CLI the chat panel drives. Switch from the workflow menu under the message box. Switching starts a new chat; each agent's chats stay in the history and reopen when you switch back. Plan usage (`/usage`), `/compact`, Kiro skills, session tidying and the CLI update check are Kiro-only."
         },
@@ -248,6 +253,11 @@
           "default": "",
           "description": "The model Qoder uses. Leave empty for Qoder's default. The dropdown in the chat panel sets this for you when Qoder is the agent."
         },
+        "kiroChat.qoderUseSdk": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Run Qoder through its Agent SDK, which reports what each prompt cost and your account's credits. Turn off to use `qodercli --acp` instead, which reports no credits. Takes effect on the next restart of the agent."
+        },
         "kiroChat.sendSelection": {
           "type": "boolean",
           "default": true,
@@ -257,7 +267,7 @@
     }
   },
   "scripts": {
-    "compile": "tsc -p ./",
+    "compile": "tsc -p ./ && node scripts/bundle-qoder-sdk.js",
     "watch": "tsc -watch -p ./",
     "vscode:prepublish": "npm run compile",
     "package": "npx --yes @vscode/vsce package --out kiro-chat.vsix",
@@ -265,8 +275,10 @@
     "test": "npm run compile && node --test \"test/*.test.js\""
   },
   "devDependencies": {
+    "@qoder-ai/qoder-agent-sdk": "1.0.59",
     "@types/node": "^20.19.43",
     "@types/vscode": "^1.85.0",
+    "esbuild": "0.25.0",
     "typescript": "^5.4.0"
   },
   "icon": "media/icon-kiro.png",

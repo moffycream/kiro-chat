@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.42.0
+
+- **Qoder now shows what each prompt cost.** Through `qodercli --acp`, Qoder reported no
+  credits at all, so every prompt read as free and the panel's figures never moved. The
+  panel now runs your own `qodercli` through Qoder's Agent SDK, which does report them: each
+  reply has its cost under it, the strip shows this chat's total and how full the context
+  is, and a reopened chat carries on from what it had already spent.
+- **Qoder's account figures come straight from Qoder**, in about a second, and appear the first
+  time you open the usage panel. They used to be read off Qoder's `/usage` screen run out of
+  sight, which took 7 to 11 seconds; that is now only the fallback.
+- Permission cards, edit reviews, Stop, reopening chats and the model picker work the same as
+  before with Qoder. `kiroChat.qoderUseSdk: false` goes back to the old route.
+- The Qoder Agent SDK is bundled into the extension (about 585 KB). It is not open source; its
+  licence (Qoder's Product Service Terms) ships beside it.
+
 ## 0.41.7
 
 - **Qoder can read the files you attach.** Every attached or focused file was

@@ -149,6 +149,19 @@ If you still see only the account report, install the updated `kiro-chat.vsix` a
 **Developer: Reload Window** from the Command Palette. Version **0.30.5** adds the session
 context panel; **Kiro Chat: About and Check Version** shows your installed version.
 
+### With Qoder
+
+Switch the agent to **Qoder** from the menu under the message box. The panel then runs your
+own `qodercli` through Qoder's Agent SDK, which reports what each prompt cost, how full the
+context is, and your account's credits (plan, add-ons and an organisation's resource
+package). The account figures appear the first time you open the strip's panel. Qoder asks
+before an edit or a shell command the same way Kiro does. If the SDK route ever misbehaves,
+`kiroChat.qoderUseSdk: false` goes back to `qodercli --acp`, which reports no credits.
+
+The SDK is bundled inside the extension. It is not open source: it is covered by Qoder's
+[Product Service Terms](https://qoder.com/product-service), and its licence file ships next to
+it in `out/vendor`.
+
 ## Changing the model
 
 There's a dropdown at the bottom of the panel, next to the Send button. Pick a model and it
@@ -502,6 +515,9 @@ tells you it did so, rather than just failing.
 ```
 npm run build
 ```
+
+Set `QODER_SKIP_DOWNLOAD=1` first: the bundled Qoder SDK's install step otherwise
+downloads a Qoder CLI the extension never uses.
 
 That installs, compiles and writes `kiro-chat.vsix` next to `install-windows.bat`. Then
 double-click `install-windows.bat` to install it, and restart VS Code.
