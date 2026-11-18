@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.42.1
+
+- **A new chat's first message uses the model you picked.** The panel switched a new chat to
+  your remembered model in the background and sent your first message without waiting, so
+  that message could go out on the agent's default — with Qoder, on Auto, which is labelled
+  and billed differently. The first message now waits for the switch (up to five seconds,
+  then sends anyway rather than holding it for good). Affects Kiro and Qoder alike.
+
 ## 0.42.0
 
 - **Qoder now shows what each prompt cost.** Through `qodercli --acp`, Qoder reported no

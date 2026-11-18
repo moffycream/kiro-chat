@@ -609,3 +609,65 @@ test("a turn refused for a sign-in goes to setup, with the session still readabl
     "and before the session id is cleared"
   );
 });
+
+/*
+ * A new chat's first message waits for the remembered model.
+ *
+ * The restore used to be fired and left, so the first `session/prompt` went
+ * out on the agent's default and the model changed partway through the turn —
+ * measured against Qoder: the reply was labelled Auto, and may have been
+ * answered and billed by it. The switch here answers slowly on purpose.
+ */
+test("the first message goes out on the remembered model, not the default", async () => {
+  const MODELS = (current) => [
+    {
+      type: "select",
+      id: "model",
+      name: "Model",
+      category: "model",
+      currentValue: current,
+      options: [
+        { value: "auto", name: "Auto", description: "0.30x Credit" },
+        { value: "qfmodel", name: "Qwen Flash", description: "0.10x Credit" },
+      ],
+    },
+  ];
+  const credits = [];
+  const session = newSession({ onTurnCredits: (turn) => credits.push(turn) }, { model: "qfmodel" });
+  const order = [];
+  let model = "auto";
+  session.client = {
+    isRunning: true,
+    async request(method, params) {
+      if (method === "session/new") return { sessionId: "s1", configOptions: MODELS(model) };
+      if (method === "session/set_config_option") {
+        await new Promise((resolve) => setTimeout(resolve, 150));
+        model = params.value;
+        order.push(`set ${model}`);
+        return { configOptions: MODELS(model) };
+      }
+      if (method === "session/prompt") {
+        order.push(`prompt on ${model}`);
+        return { stopReason: "end_turn" };
+      }
+      return {};
+    },
+    notify() {},
+  };
+  session.connected = session.client;
+  session.ensureReady = async () => {
+    if (!session.sessionId) await session.createSession();
+  };
+  await session.send([{ type: "text", text: "hi" }]);
+  assert.deepEqual(order, ["set qfmodel", "prompt on qfmodel"]);
+  assert.equal(session.currentTurnModel, "Qwen Flash");
+});
+
+test("a model list that never arrives does not hold a message for ever", () => {
+  // Sending on the default is the lesser fault; waiting without limit is the worse one.
+  assert.match(session, /const MODEL_RESTORE_WAIT_MS = \d+;/);
+  assert.match(session, /Promise\.race\(\[this\.modelRestore, limit\]\)/);
+  // A reopened chat keeps its own model, so it must not leave a wait armed.
+  const load = session.slice(session.indexOf("async loadSession("), session.indexOf("const load = () =>"));
+  assert.match(load, /this\.finishModelRestore\(\)/);
+});

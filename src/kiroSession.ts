@@ -338,6 +338,8 @@ const MAX_BASELINE_BYTES = 10 * 1024 * 1024;
  * watcher hanging behind it; every other call that can go silent has one.
  */
 const STARTUP_TIMEOUT_MS = 30000;
+/** How long a message waits for the remembered model before going out on the default. */
+const MODEL_RESTORE_WAIT_MS = 5000;
 /** Compaction runs a model over the whole conversation before it answers. */
 const COMPACT_TIMEOUT_MS = 180000;
 
@@ -435,6 +437,17 @@ export class KiroSession {
   private effort: EffortState | undefined;
   /** `kiroChat.model`, waiting for Kiro to finish listing what it offers. */
   private savedModelToRestore: string | undefined;
+  /**
+   * Settles once the remembered model is in place, or known not to be coming.
+   *
+   * The first message waits on it. The restore used to be fired and left, so a
+   * new chat's first message went out while it was still on the agent's
+   * default: measured against Qoder, `session/prompt` was sent on `auto` and
+   * the model changed partway through the turn — the reply was labelled Auto
+   * and may have been answered and billed by it.
+   */
+  private modelRestore: Promise<void> = Promise.resolve();
+  private settleModelRestore: (() => void) | undefined;
   private modelConfigId = "model";
   /**
    * The user messages of this session, oldest first, with the id `session/fork`
@@ -779,6 +792,7 @@ export class KiroSession {
     this.contextData = undefined;
     // A reopened chat keeps the model it was using.
     this.savedModelToRestore = undefined;
+    this.finishModelRestore();
     try {
       const load = () =>
         this.client!.request(
@@ -1191,6 +1205,7 @@ export class KiroSession {
           .getConfiguration("kiroChat")
           .get<string>(this.modelSettingKey(), "")
           .trim() || undefined;
+      this.armModelRestore();
       this.restoreSavedModel();
     } catch (err) {
       const failure = err instanceof Error ? err.message : String(err);
@@ -1218,6 +1233,9 @@ export class KiroSession {
       throw new Error(`${this.profile.label} is still working on the last message. Wait for it to finish.`);
     }
     await this.ensureReady();
+    if (!this.client || !this.sessionId) return;
+    // Before the label is captured and the prompt sent, so both name the model the user chose.
+    await this.awaitModelRestore();
     if (!this.client || !this.sessionId) return;
 
     const usable = this.supportsImages ? blocks : blocks.filter((b) => b.type !== "image");
@@ -1963,18 +1981,49 @@ export class KiroSession {
    */
   private restoreSavedModel(): void {
     const saved = this.savedModelToRestore;
-    if (!saved || !this.sessionId) return;
+    if (!saved || !this.sessionId) {
+      if (!saved) this.finishModelRestore();
+      return;
+    }
     const listed = this.models.some((model) => model.modelId === saved);
     if (!listed && this.models.length < 2) return;
     this.savedModelToRestore = undefined;
     if (!listed) {
       this.output.appendLine(`The remembered model "${saved}" is no longer offered.`);
+      this.finishModelRestore();
       return;
     }
-    if (saved === this.currentModelId) return;
-    this.setModel(saved, false).catch((err) =>
-      this.output.appendLine(`Could not restore model "${saved}": ${String(err)}`)
-    );
+    if (saved === this.currentModelId) {
+      this.finishModelRestore();
+      return;
+    }
+    this.setModel(saved, false)
+      .catch((err) => this.output.appendLine(`Could not restore model "${saved}": ${String(err)}`))
+      .finally(() => this.finishModelRestore());
+  }
+
+  /** A new wait for the remembered model, replacing any earlier one. */
+  private armModelRestore(): void {
+    this.finishModelRestore();
+    this.modelRestore = new Promise<void>((resolve) => (this.settleModelRestore = resolve));
+  }
+
+  private finishModelRestore(): void {
+    const settle = this.settleModelRestore;
+    this.settleModelRestore = undefined;
+    settle?.();
+  }
+
+  /**
+   * Hold a message until the remembered model is set — but not for ever. A
+   * model list that never arrives would otherwise stop every message, and
+   * sending on the default is the lesser fault.
+   */
+  private async awaitModelRestore(): Promise<void> {
+    let timer: NodeJS.Timeout | undefined;
+    const limit = new Promise<void>((resolve) => (timer = setTimeout(resolve, MODEL_RESTORE_WAIT_MS)));
+    await Promise.race([this.modelRestore, limit]);
+    clearTimeout(timer);
   }
 
   getModels(): { models: ModelInfo[]; currentModelId: string; effort?: EffortState } {
