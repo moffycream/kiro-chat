@@ -763,6 +763,28 @@ loading yet." is therefore still a lead rather than a finding, and the test that
 it is one turn under Manual or Review. Nothing in the panel or the README claims it either
 way until someone runs that.
 
+## Qoder
+
+**`kiroChat.agent` picks the CLI; `agents.ts` (free of `vscode`) is everything that differs at
+the door.** Measured against qodercli 1.1.91 by driving `qodercli --acp` and then the built
+`KiroSession` against it. `--acp` is an option, not a subcommand: `qodercli acp` is a prompt and
+answers "Not logged in". The model list arrives in `configOptions` (category `model`, no effort
+option) with the credit rate only in the description, which `readModel` falls back to through
+`findCreditRate`. Its edit tool writes the file itself with `kind: "edit"` and `locations`, so the
+direct-write review path is the one that runs. No credits and no context figure are reported.
+
+- **`kiroExtras: false` switches off what reads Kiro's files or calls Kiro's methods**: tidying
+  (`canTidySessions`), the saved context, the update check, `/usage` and `/compact`.
+- **Qoder refuses to load a session its own process has open**, which the panel's process always
+  has after `+`. `loadSession` sends `session/close` first for Qoder; an unknown id answers success.
+- **Each chat record carries `agent`** (missing means Kiro) and `forAgent` filters the history, so
+  a session id is never handed to the CLI that did not make it. The model is remembered per agent
+  (`model` / `qoderModel`) because the ids are each CLI's own.
+- **Switching is the configuration watcher's job**, so the menu and a hand-edited setting switch
+  the same way: `switchAgent` puts the chat away and starts a fresh one with `restart: true`.
+- **The webview text says "Kiro" almost everywhere.** Menu headings and the setup screen follow
+  `agentName`; the rest of the panel's wording does not yet.
+
 ## Slash commands
 
 **The list is the panel's own, because v3 has no command endpoint.**
@@ -1115,7 +1137,7 @@ The viewer lives entirely in the webview and needs no extension-host message.
 
 ### Modules kept free of `vscode` on purpose
 
-`src/usage.ts`, `src/setupWatcher.ts`, `src/startupError.ts`, `src/history.ts`, `src/promptBlocks.ts`, `src/editModes.ts`, `src/sessionLocks.ts`, `src/processFacts.ts`, `src/launchInputs.ts`, `src/tokenRetry.ts`, `src/agentConfig.ts`, `src/cliUpdate.ts`, `src/progressiveContext.ts`, `src/skillFiles.ts`, `src/skillUrl.ts`, `src/skillFetch.ts`, `src/toolDetails.ts` and the `needsShell`/`quote` exports of `src/acpClient.ts` have no `vscode` import so the tests can `require("../out/...")` directly. There is no VS Code test harness in this repo — that constraint is the entire testing strategy. Keep new parsing and logic modules importable without `vscode`.
+`src/usage.ts`, `src/setupWatcher.ts`, `src/startupError.ts`, `src/history.ts`, `src/promptBlocks.ts`, `src/editModes.ts`, `src/sessionLocks.ts`, `src/processFacts.ts`, `src/launchInputs.ts`, `src/tokenRetry.ts`, `src/agentConfig.ts`, `src/cliUpdate.ts`, `src/progressiveContext.ts`, `src/skillFiles.ts`, `src/skillUrl.ts`, `src/skillFetch.ts`, `src/toolDetails.ts`, `src/agents.ts` and the `needsShell`/`quote` exports of `src/acpClient.ts` have no `vscode` import so the tests can `require("../out/...")` directly. There is no VS Code test harness in this repo — that constraint is the entire testing strategy. Keep new parsing and logic modules importable without `vscode`.
 
 `setupWatcher.ts` additionally takes its timers through an injected `Scheduler`, so `test/setupWatcher.test.js` drives the whole state machine without waiting out a real interval. Follow that pattern for anything else that polls.
 

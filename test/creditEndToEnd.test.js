@@ -106,6 +106,7 @@ function loadPanel() {
     [
       "let current = null;",
       "let lastAgent = null;",
+      'const agentName = "Kiro";',
       js.slice(creditsFrom, creditsTo),
       js.slice(costFrom, costTo),
       "return { noteTurnCredits, setCurrent: (v) => { current = v; } };",

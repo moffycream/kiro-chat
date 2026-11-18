@@ -63,7 +63,7 @@ import {
 import { fetchSkillText, hostOf, httpsGetText } from "./skillFetch";
 import { addExcludeEntry, excludeEntryFor, excludeFileIn } from "./gitExclude";
 import { samePath } from "./paths";
-import { findKiro } from "./findKiro";
+import { agentIdOf, agentProfile, AgentId, findAgent, AGENTS } from "./agents";
 import { SetupWatcher } from "./setupWatcher";
 import {
   AGENT_WARNINGS_KEY,
@@ -82,6 +82,7 @@ import {
   removeLatestTurns,
   stableTitle,
   upsertRecord,
+  forAgent,
 } from "./history";
 import { applyChatMode, chatMode } from "./chatModes";
 import { applyInstructions, instructionsRow, normaliseInstructions } from "./instructions";
@@ -224,7 +225,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
   ) {
     this.setup = new SetupWatcher({
       probe: async () => {
-        const found = await findKiro(() => undefined);
+        const found = await findAgent(this.configuredAgent(), () => undefined);
         if (!found) return undefined;
         return found.source === "WSL" ? "inside WSL" : found.command;
       },
@@ -280,6 +281,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       vscode.workspace.onDidChangeConfiguration((event) => {
         if (!event.affectsConfiguration("kiroChat")) return;
         this.postSettings();
+        // Another CLI is another process and another set of sessions, so the
+        // chat on screen is put away and a fresh one starts on the new agent.
+        if (
+          event.affectsConfiguration("kiroChat.agent") &&
+          this.configuredAgent() !== this.session.agentId
+        ) {
+          void this.switchAgent();
+        }
         // `attachActiveFile` decides whether there is a file chip at all.
         this.refreshSelection(true);
       })
@@ -371,13 +380,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
           await this.openPath(String(message.path ?? ""));
           break;
         case "installKiro":
-          this.runInTerminal(this.installCommand());
+          this.runInTerminal(this.setupProfile().installCommand);
           // The terminal is the user's to drive, but the panel can watch for
           // the binary landing and take it from there.
           this.setup.start();
           break;
         case "signIn":
-          this.runInTerminal("kiro-cli login");
+          this.runInTerminal(this.setupProfile().loginCommand);
           this.setup.signIn();
           break;
         case "retryRefusedTurn":
@@ -386,14 +395,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         case "signInKeepingChat":
           // Not `signIn`, whose watcher belongs to the setup screen. The chat
           // stays where it is and Try again is still there afterwards.
-          this.runInTerminal("kiro-cli login");
+          this.runInTerminal(this.setupProfile().loginCommand);
           break;
         case "updateKiro":
           // Typed and left for the user to run, like install and sign-in.
-          this.runInTerminal("kiro-cli update");
+          this.runInTerminal(this.setupProfile().updateCommand);
           break;
         case "copyCommand":
-          await vscode.env.clipboard.writeText(this.installCommand());
+          await vscode.env.clipboard.writeText(this.setupProfile().installCommand);
           vscode.window.showInformationMessage(
             "Install command copied. Paste it into any PowerShell window."
           );
@@ -500,6 +509,49 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
           const config = vscode.workspace.getConfiguration("kiroChat");
           for (const [key, value] of Object.entries(gates)) {
             await config.update(key, value, vscode.ConfigurationTarget.Global);
+          }
+          break;
+        }
+        case "setAgent": {
+          // Only a known id, and never mid-turn: switching ends the
+          // conversation, and the turn in flight would end with it.
+          const agent = String(message.agent ?? "");
+          if (!(agent in AGENTS)) break;
+          if (this.session.currentStatus === "busy") {
+            vscode.window.showWarningMessage(
+              "Wait for the current reply to finish before switching agent."
+            );
+            this.postSettings();
+            break;
+          }
+          // The configuration watcher does the switching, so editing the
+          // setting by hand switches exactly the same way.
+          try {
+            await vscode.workspace
+              .getConfiguration("kiroChat")
+              .update("agent", agent, vscode.ConfigurationTarget.Global);
+          } catch (err) {
+            /*
+             * Seen right after installing the version that added the
+             * setting: the extension host restarts onto the new code, but the
+             * window keeps the old list of settings until it reloads, so the
+             * write is refused with "not a registered configuration". The
+             * rejection used to vanish into this async handler and the click
+             * simply did nothing.
+             */
+            const reason = err instanceof Error ? err.message : String(err);
+            this.output.appendLine(`Could not switch agent: ${reason}`);
+            this.postSettings();
+            const unregistered = /not a registered configuration/i.test(reason);
+            const choice = await vscode.window.showErrorMessage(
+              unregistered
+                ? "VS Code needs a window reload before the agent can be switched."
+                : `Could not switch agent: ${reason}`,
+              ...(unregistered ? ["Reload Window"] : [])
+            );
+            if (choice === "Reload Window") {
+              await vscode.commands.executeCommand("workbench.action.reloadWindow");
+            }
           }
           break;
         }
@@ -690,6 +742,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       // *previous* chat's session onto this record — after which reopening it
       // resumed the wrong conversation.
       sessionId: this.chatSessionId ?? this.session.currentSessionId,
+      // The agent that owns the session; a chat started on one is never
+      // resumed through the other.
+      agent: existing?.agent ?? this.session.agentId,
       cwd,
       title: stableTitle(existing?.title, this.transcript),
       updatedAt: Date.now(),
@@ -739,7 +794,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     // The chat on screen may still be waiting on the debounce, and a list
     // that leaves out the conversation you are in reads as a bug.
     this.flushChats();
-    const mine = forWorkspace(this.allChats(), this.workspaceCwd());
+    const mine = forAgent(forWorkspace(this.allChats(), this.workspaceCwd()), this.configuredAgent());
     this.post({
       type: "history",
       canResume: this.session.canLoadSessions,
@@ -774,13 +829,19 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       // A load mid-turn swallows the running turn's notifications and swaps
       // the session id under it, so its ending lands in the opened chat.
       vscode.window.showWarningMessage(
-        "Wait for Kiro to finish the current reply before opening another chat."
+        `Wait for ${this.agentLabel} to finish the current reply before opening another chat.`
       );
       return;
     }
     const record = this.allChats().find((r) => r.id === id);
     if (!record) {
       vscode.window.showWarningMessage("That chat is no longer stored.");
+      return;
+    }
+    if (agentIdOf(record.agent) !== this.configuredAgent()) {
+      vscode.window.showWarningMessage(
+        `That chat was with ${agentProfile(record.agent).label}. Switch to it to reopen the chat.`
+      );
       return;
     }
 
@@ -805,7 +866,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     });
 
     if (!record.sessionId) {
-      this.post({ type: "chatReadOnly", why: "This chat was never given a Kiro session." });
+      this.post({ type: "chatReadOnly", why: `This chat was never given a ${this.agentLabel} session.` });
       return;
     }
 
@@ -822,7 +883,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       this.output.appendLine(`Could not reopen chat ${id}: ${message}`);
       this.post({
         type: "chatReadOnly",
-        why: `Kiro could not reopen this conversation: ${message}`,
+        why: `${this.agentLabel} could not reopen this conversation: ${message}`,
       });
     }
   }
@@ -898,7 +959,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     }
 
     this.setupActive = true;
-    this.post({ type: "needsSetup", reason, detail, resume });
+    this.post({ type: "needsSetup", reason, detail, resume, agent: this.setupProfile().label });
     if (reason === "missing") this.setup.start();
   }
 
@@ -985,7 +1046,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
        * continuing in a session that never saw it.
        */
       const record = pageChatId
-        ? this.allChats().find((r) => r.id === pageChatId)
+        ? this.allChats().find(
+            (r) => r.id === pageChatId && agentIdOf(r.agent) === this.configuredAgent()
+          )
         : undefined;
       if (record) {
         await this.openChat(record.id);
@@ -1035,9 +1098,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     // Derived here rather than stored, so it cannot disagree with the settings
     // it describes — and reported as `custom` when it matches no mode.
     const instructions = config.get<string>("instructions", "");
+    const agent = this.configuredAgent();
+    // The view's own title, so the tab says which agent is answering.
+    if (this.view) this.view.title = `${AGENTS[agent].label} Chat`;
     this.post({
       type: "settings",
       settings,
+      agent,
+      agentLabel: AGENTS[agent].label,
+      agents: Object.values(AGENTS).map((profile) => ({ id: profile.id, label: profile.label })),
       editMode: editModeOf(settings as unknown as EditGates),
       // The text itself, so the box opens with what is actually in force,
       // plus the two slots the menu row draws — worked out here so the panel
@@ -1416,7 +1485,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       (listed) => listed.path && samePath(listed.path, target)
     );
     if (!skill || !skill.path) {
-      this.output.appendLine(`Refused to remove ${target}: not a skill Kiro is reporting.`);
+      this.output.appendLine(`Refused to remove ${target}: not a skill ${this.agentLabel} is reporting.`);
       return;
     }
 
@@ -1425,7 +1494,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       `Remove the "${skill.name}" skill?`,
       {
         modal: true,
-        detail: `${folder}\n\nThe folder goes to the recycle bin, and Kiro stops offering the skill.`,
+        detail: `${folder}\n\nThe folder goes to the recycle bin, and ${this.agentLabel} stops offering the skill.`,
       },
       "Remove"
     );
@@ -1531,10 +1600,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     const file = files.find((f) => samePath(f.path, target));
     const name = file?.label ?? target;
     const answer = await vscode.window.showWarningMessage(
-      `Remove ${name} from Kiro's memory?`,
+      `Remove ${name} from ${this.agentLabel}'s memory?`,
       {
         modal: true,
-        detail: `${target}\n\nIt goes to the recycle bin, and Kiro stops reading it from your next message.`,
+        detail: `${target}\n\nIt goes to the recycle bin, and ${this.agentLabel} stops reading it from your next message.`,
       },
       "Remove"
     );
@@ -1661,7 +1730,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       // Said out loud, because nobody is looking at a panel to be told.
       this.output.appendLine(
         `The chat panel closed with ${this.pendingPermissions.size} permission request(s) ` +
-          `still open. Answering Kiro "cancelled" for them.`
+          `still open. Answering ${this.agentLabel} "cancelled" for them.`
       );
       this.cancelPendingPermissions();
     }, PERMISSION_GRACE_MS);
@@ -1752,7 +1821,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     if (!data) return;
     if (!this.session.canSendImages) {
       vscode.window.showWarningMessage(
-        "This version of Kiro does not accept images in chat."
+        `This version of ${this.agentLabel} does not accept images in chat.`
       );
       return;
     }
@@ -1900,7 +1969,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
      */
     if (this.session.currentStatus === "busy") {
       vscode.window.showWarningMessage(
-        "Kiro is still working on the last message. Wait for it to finish."
+        `${this.agentLabel} is still working on the last message. Wait for it to finish.`
       );
       return;
     }
@@ -1926,7 +1995,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
           const message = err instanceof Error ? err.message : String(err);
           this.post({
             type: "error",
-            text: `Kiro could not resume this conversation (${message}). It is answering from a new session without the earlier messages.`,
+            text: `${this.agentLabel} could not resume this conversation (${message}). It is answering from a new session without the earlier messages.`,
           });
         }
       }
@@ -2099,7 +2168,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     const { models, currentModelId } = this.session.getModels();
     if (models.length === 0) {
       vscode.window.showInformationMessage(
-        "No models to choose from yet. Open the Kiro chat panel first so it can connect."
+        `No models to choose from yet. Open the ${this.agentLabel} chat panel first so it can connect.`
       );
       return;
     }
@@ -2117,7 +2186,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         detail: m.description,
         modelId: m.modelId,
       })),
-      { title: "Pick a model for Kiro", placeHolder: "Which model should Kiro use?" }
+      { title: `Pick a model for ${this.agentLabel}`, placeHolder: `Which model should ${this.agentLabel} use?` }
     );
     if (picked) await this.changeModel(picked.modelId);
   }
@@ -2241,7 +2310,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     if (!Number.isInteger(later) || later <= 0) return;
     if (this.restoringCheckpoint || this.session.currentStatus !== "ready") {
       vscode.window.showWarningMessage(
-        "Wait for Kiro to finish the current reply before restoring a checkpoint."
+        `Wait for ${this.agentLabel} to finish the current reply before restoring a checkpoint.`
       );
       return;
     }
@@ -2256,21 +2325,21 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       turns = await this.session.rewindTurns();
     } catch (error) {
       vscode.window.showWarningMessage(
-        `Kiro could not list its checkpoints: ${error instanceof Error ? error.message : String(error)}`
+        `${this.agentLabel} could not list its checkpoints: ${error instanceof Error ? error.message : String(error)}`
       );
       return;
     }
     const turn = turns[later];
     if (!turn) {
       vscode.window.showWarningMessage(
-        "That message is no longer one of Kiro's checkpoints. Use Restore Checkpoint to pick one."
+        `That message is no longer one of ${this.agentLabel}'s checkpoints. Use Restore Checkpoint to pick one.`
       );
       return;
     }
     const answer = await vscode.window.showWarningMessage(
       later === 1
-        ? "Restore to this message? The chat after it is removed from this conversation and Kiro's context."
-        : `Restore to this message? The ${later} chats after it are removed from this conversation and Kiro's context.`,
+        ? `Restore to this message? The chat after it is removed from this conversation and ${this.agentLabel}'s context.`
+        : `Restore to this message? The ${later} chats after it are removed from this conversation and ${this.agentLabel}'s context.`,
       { modal: true, detail: "File edits stay as they are." },
       "Restore"
     );
@@ -2383,7 +2452,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         this.output.appendLine(
           `context answered without a breakdown: ${JSON.stringify(result.data ?? result.text)}`
         );
-        this.post({ type: "contextBreakdown", ok: false, detail: "Kiro reported no breakdown." });
+        this.post({ type: "contextBreakdown", ok: false, detail: `${this.agentLabel} reported no breakdown.` });
         return;
       }
       // The percentage off a command result is the one figure worth folding
@@ -2406,8 +2475,33 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 
   // ---- setup helpers ---------------------------------------------------
 
-  private installCommand(): string {
-    return "irm 'https://cli.kiro.dev/install.ps1' | iex";
+  /** The agent the settings name now, which is what the next start will use. */
+  private configuredAgent(): AgentId {
+    return agentIdOf(vscode.workspace.getConfiguration("kiroChat").get<string>("agent", "kiro"));
+  }
+
+  /** What the panel calls the agent: the one configured, which the next start uses. */
+  private get agentLabel(): string {
+    return this.setupProfile().label;
+  }
+
+  /** The setup screen is always about the agent that is configured. */
+  private setupProfile() {
+    return agentProfile(this.configuredAgent());
+  }
+
+  private async switchAgent(): Promise<void> {
+    const label = this.setupProfile().label;
+    this.output.appendLine(`Switching to ${label}.`);
+    // A setup screen for the old agent describes nothing any more.
+    this.setup.stop();
+    this.setupActive = false;
+    this.everConnected = false;
+    try {
+      await this.newSession({ restart: true });
+    } catch (err) {
+      this.output.appendLine(`Could not start ${label}: ${String(err)}`);
+    }
   }
 
   private async retryRefusedTurn(): Promise<void> {

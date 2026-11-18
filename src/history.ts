@@ -56,6 +56,8 @@ export interface ChatRecord {
   history: HistoryItem[];
   /** True when the stored transcript is only the tail of a longer chat. */
   truncated?: boolean;
+  /** Which CLI owns `sessionId`. Missing on every record written before Qoder: Kiro. */
+  agent?: string;
 }
 
 const MAX_TITLE = 60;
@@ -187,6 +189,16 @@ export function forWorkspace(
   if (!cwd) return [];
   // Whole-path equality, so "kiro-chat-old" is never mistaken for "kiro-chat".
   return (records ?? []).filter((record) => samePath(record.cwd, cwd));
+}
+
+/**
+ * Chats that belong to this agent. A session id means nothing to the other
+ * CLI, so another agent's chat could only ever open read-only — and loading it
+ * would ask the wrong program about it. A record from before the agent was
+ * stored is Kiro's, since nothing else could have made it.
+ */
+export function forAgent(records: ChatRecord[], agent: string): ChatRecord[] {
+  return (records ?? []).filter((record) => (record.agent === "qoder" ? "qoder" : "kiro") === agent);
 }
 
 /**

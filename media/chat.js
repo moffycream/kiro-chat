@@ -82,6 +82,10 @@
   let includeSelection = true;
   /** The kiroChat settings the menu shows, as the extension last reported them. */
   let settings = {};
+  // Which CLI the panel drives, from the extension's `settings` message.
+  let currentAgent = "kiro";
+  let agentName = "Kiro";
+  let agents = [];
   /** Which supervision mode those settings add up to, or "custom" for none. */
   let editMode = "custom";
   /**
@@ -999,7 +1003,7 @@
     clearEmptyState();
     const root = document.createElement("div");
     root.className = "msg agent";
-    root.appendChild(roleLabel("Kiro"));
+    root.appendChild(roleLabel(`${agentName}`));
     const group = buildSteps();
     const tools = group.list;
     const body = document.createElement("div");
@@ -1590,7 +1594,7 @@
     if (blocked.length > 0) {
       const label = document.createElement("div");
       label.className = "help-heading";
-      label.textContent = "In the Kiro CLI, but not here";
+      label.textContent = `In the ${agentName} CLI, but not here`;
       card.appendChild(label);
       for (const command of blocked) {
         const row = document.createElement("div");
@@ -1631,7 +1635,7 @@
     const note = document.createElement("div");
     note.className = "command-note";
     note.textContent = turns.length
-      ? "Choose the last question and answer to keep. Later messages are removed from this chat and Kiro’s context. File edits stay as they are."
+      ? `Choose the last question and answer to keep. Later messages are removed from this chat and ${agentName}’s context. File edits stay as they are.`
       : "There are no checkpoints yet.";
     card.appendChild(note);
 
@@ -1680,7 +1684,7 @@
 
     const title = document.createElement("div");
     title.className = "permission-title";
-    title.textContent = `Kiro wants to ${permission.title}.`;
+    title.textContent = `${agentName} wants to ${permission.title}.`;
     card.appendChild(title);
 
     /*
@@ -1825,7 +1829,7 @@
 
     const title = card.querySelector(".permission-title");
     // Past tense, because it is: the thing was asked and has been answered.
-    if (title) title.textContent = `Kiro wanted to ${card.dataset.title}.`;
+    if (title) title.textContent = `${agentName} wanted to ${card.dataset.title}.`;
 
     const chosen = optionsOf(card).find(
       (option) => String(option.id) === String(outcome.optionId)
@@ -1973,7 +1977,7 @@
       name.textContent = model;
       name.title =
         model === "auto"
-          ? "Kiro chose the model for this turn by task, and does not report which"
+          ? `${agentName} chose the model for this turn by task, and does not report which`
           : "The model selected when this turn was sent";
       line.appendChild(name);
 
@@ -2006,7 +2010,7 @@
     line.appendChild(cost);
 
     line.title =
-      "What this turn cost, as Kiro metered it" +
+      `What this turn cost, as ${agentName} metered it` +
       (model ? `, on ${model}` : "");
     return line;
   }
@@ -2066,7 +2070,7 @@
       line.appendChild(amount);
       line.appendChild(document.createTextNode("."));
     } else {
-      line.textContent = "Kiro has not reported any credit use for this chat yet.";
+      line.textContent = `${agentName} has not reported any credit use for this chat yet.`;
     }
     foot.appendChild(line);
 
@@ -2085,7 +2089,7 @@
 
     if (models.length > 0 && !models.some((m) => m.creditRate)) {
       const note = document.createElement("div");
-      note.textContent = "Kiro did not report a per-model credit rate.";
+      note.textContent = `${agentName} did not report a per-model credit rate.`;
       foot.appendChild(note);
     }
 
@@ -2108,7 +2112,7 @@
       const empty = document.createElement("div");
       empty.className = "model-empty";
       empty.textContent =
-        "Kiro did not send a model list, so its own default is in use.";
+        `${agentName} did not send a model list, so its own default is in use.`;
       modelMenu.appendChild(empty);
     }
 
@@ -2375,7 +2379,13 @@
       return;
     }
 
-    menuHeading("How Kiro approaches the task");
+    // Which CLI answers. First, because everything below is about it.
+    if (agents.length > 1) {
+      menuHeading("Agent");
+      modeMenu.appendChild(agentSegments());
+    }
+
+    menuHeading(`How ${agentName} approaches the task`);
     for (const mode of CHAT_MODES) {
       const on = mode.id === currentModeId;
       // Only the chosen workflow spells itself out. Five descriptions at once
@@ -2392,7 +2402,7 @@
       modeMenu.appendChild(row);
     }
 
-    menuHeading("When Kiro edits files");
+    menuHeading(`When ${agentName} edits files`);
     modeMenu.appendChild(editModeSegments());
     const current = EDIT_MODES.find((mode) => mode.id === editMode);
     // Plan is read-only, so the group does not apply while it is selected.
@@ -2443,11 +2453,40 @@
    * `.mode-row` carrying `data-edit-mode`, so the click handler and the
    * ask-and-wait rule are unchanged.
    */
+  /*
+   * The agent as a segmented control, like supervision below it. A segment
+   * carries `data-agent`; like every setting here it asks and waits, and the
+   * row moves when the extension reports the change.
+   */
+  function agentSegments() {
+    const group = document.createElement("div");
+    group.className = "menu-segments";
+    group.setAttribute("role", "group");
+    group.setAttribute("aria-label", "Agent");
+    for (const agent of agents) {
+      const segment = document.createElement("button");
+      segment.type = "button";
+      segment.className = "mode-row segment";
+      segment.textContent = agent.label;
+      segment.title =
+        agent.id === currentAgent
+          ? `${agent.label} is answering this chat`
+          : `Start a new chat with ${agent.label}. This one stays in the history under ${agentName}.`;
+      if (agent.id === currentAgent) {
+        segment.classList.add("selected");
+        segment.setAttribute("aria-current", "true");
+      }
+      segment.dataset.agent = agent.id;
+      group.appendChild(segment);
+    }
+    return group;
+  }
+
   function editModeSegments() {
     const group = document.createElement("div");
     group.className = "menu-segments";
     group.setAttribute("role", "group");
-    group.setAttribute("aria-label", "When Kiro edits files");
+    group.setAttribute("aria-label", `When ${agentName} edits files`);
     for (const mode of EDIT_MODES) {
       const on = editMode === mode.id;
       const segment = document.createElement("button");
@@ -2511,7 +2550,7 @@
      */
     // The one thing the heading has to say that the rows cannot: an edit lands
     // on the next message, so nothing here asks you to start a new chat.
-    menuHeading("What Kiro always knows", "Read every turn. Edits apply to your next message.");
+    menuHeading(`What ${agentName} always knows`, "Read every turn. Edits apply to your next message.");
     for (const file of memory.files) modeMenu.appendChild(memoryFileRow(file));
     /*
      * No empty state. An "Add project memory" row standing alone already says
@@ -2564,8 +2603,8 @@
     menuHeading(
       "Skills",
       skillsKnown
-        ? "Kiro opens one when its description fits what you asked."
-        : "Kiro has not reported these yet."
+        ? `${agentName} opens one when its description fits what you asked.`
+        : `${agentName} has not reported these yet.`
     );
     for (const skill of skills) modeMenu.appendChild(skillRow(skill));
     for (const item of skillAdd) {
@@ -2772,8 +2811,8 @@
     remove.dataset.memoryAct = "remove";
     remove.dataset.path = file.path;
     remove.textContent = "×";
-    remove.title = "Remove " + file.label + " from Kiro's memory";
-    remove.setAttribute("aria-label", "Remove " + file.label + " from Kiro's memory");
+    remove.title = "Remove " + file.label + ` from ${agentName}'s memory`;
+    remove.setAttribute("aria-label", "Remove " + file.label + ` from ${agentName}'s memory`);
     row.appendChild(remove);
 
     return row;
@@ -3049,6 +3088,15 @@
      * they are things you might set two of, and staying put is what shows the
      * change landing.
      */
+    // Switching agent ends the conversation, so the menu closes with it, the
+    // way picking a workflow does. Choosing the one already in use does nothing.
+    if (row.dataset.agent) {
+      if (row.dataset.agent !== currentAgent) {
+        vscode.postMessage({ type: "setAgent", agent: row.dataset.agent });
+      }
+      setMenu(modeMenu, modeBtn, false);
+      return;
+    }
     if (row.dataset.editMode) {
       vscode.postMessage({ type: "setEditMode", mode: row.dataset.editMode });
       return;
@@ -3107,7 +3155,7 @@
       const spinner = document.createElement("span");
       spinner.className = "spinner";
       const label = document.createElement("span");
-      label.textContent = "Asking Kiro for your usage…";
+      label.textContent = `Asking ${agentName} for your usage…`;
       wait.appendChild(spinner);
       wait.appendChild(label);
       usagePanel.appendChild(wait);
@@ -3350,7 +3398,7 @@
       const spinner = document.createElement("span");
       spinner.className = "spinner";
       const label = document.createElement("span");
-      label.textContent = "Asking Kiro what it is holding…";
+      label.textContent = `Asking ${agentName} what it is holding…`;
       wait.append(spinner, label);
       section.appendChild(wait);
       return;
@@ -3609,7 +3657,7 @@
     } else if (activeFile && includeActiveFile && !activeAlreadyAttached) {
       const chip = document.createElement("span");
       chip.className = "chip chip-active";
-      chip.title = "Kiro can open " + activeFile.label + ". Click × to leave it out.";
+      chip.title = `${agentName} can open ` + activeFile.label + ". Click × to leave it out.";
 
       const label = document.createElement("span");
       label.className = "chip-active-label";
@@ -3657,10 +3705,10 @@
       // "Kiro gets <file> and the highlighted lines" either way, which was a
       // plain untruth once the file chip had been dismissed.
       chip.title = includeActiveFile
-        ? "Kiro gets " +
+        ? `${agentName} gets ` +
           selection.relativePath +
           " and the highlighted lines. Clear the highlight to stop sending them."
-        : "Kiro gets the highlighted lines of " +
+        : `${agentName} gets the highlighted lines of ` +
           selection.relativePath +
           ", but not the rest of the file. Clear the highlight to stop sending them.";
 
@@ -3841,7 +3889,7 @@
       event.preventDefault();
 
       if (!canSendImages) {
-        addBubble("error", "This version of Kiro does not accept images in chat.");
+        addBubble("error", `This version of ${agentName} does not accept images in chat.`);
         return;
       }
 
@@ -4224,7 +4272,7 @@
     if (busy) {
       addCommandCard(
         "/" + name,
-        "Kiro is still working on the last message. Wait for it to finish, or press Stop.",
+        `${agentName} is still working on the last message. Wait for it to finish, or press Stop.`,
         false
       );
       return;
@@ -4390,8 +4438,8 @@
     modeBtn.disabled = !on;
     formEl.classList.toggle("composer-locked", !on);
     inputEl.placeholder = on
-      ? "Ask Kiro…"
-      : why || "Finish setting Kiro up to start chatting";
+      ? `Ask ${agentName}…`
+      : why || `Finish setting ${agentName} up to start chatting`;
   }
 
   function stepNode(step, state, note, primary) {
@@ -4440,7 +4488,7 @@
    */
   function renderFailure(wrap) {
     const heading = document.createElement("h2");
-    heading.textContent = "Kiro wouldn't start";
+    heading.textContent = `${agentName} wouldn't start`;
     wrap.appendChild(heading);
 
     const lead = document.createElement("p");
@@ -4448,8 +4496,8 @@
     // and a fault that will not clear by itself, so reassurance about how long
     // it will last is untrue exactly when it matters.
     lead.textContent = setup.error
-      ? "Kiro could not connect. This is the reason it gave:"
-      : "Kiro could not connect, and it gave no reason.";
+      ? `${agentName} could not connect. This is the reason it gave:`
+      : `${agentName} could not connect, and it gave no reason.`;
     wrap.appendChild(lead);
 
     if (setup.error) {
@@ -4519,6 +4567,23 @@
     wrap.appendChild(actions);
   }
 
+  /*
+   * The setup screen's words are written about Kiro. With another agent
+   * selected the steps are the same — install, sign in, connect — and only
+   * the names differ, so the text is renamed in place rather than written
+   * twice. The extension types the right commands whatever this says.
+   */
+  function nameAgent(root) {
+    if (currentAgent === "kiro") return;
+    const binary = currentAgent === "qoder" ? "qodercli" : currentAgent;
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+      node.nodeValue = node.nodeValue
+        .replace(/kiro-cli/g, binary)
+        .replace(/\bKiro\b/g, agentName);
+    }
+  }
+
   function renderSetup() {
     if (!setup) return;
     const outdated = setup.reason === "outdated";
@@ -4527,8 +4592,8 @@
       outdated
         ? "Update Kiro CLI to start chatting"
         : setup.reason === "failed"
-          ? "Kiro isn't connected"
-          : "Finish setting Kiro up to start chatting"
+          ? `${agentName} isn't connected`
+          : `Finish setting ${agentName} up to start chatting`
     );
     messagesEl.innerHTML = "";
     current = null;
@@ -4557,6 +4622,7 @@
         vscode.postMessage({ type: target.dataset.act });
       });
 
+      nameAgent(wrap);
       messagesEl.appendChild(wrap);
       return;
     }
@@ -4569,18 +4635,18 @@
 
     const heading = document.createElement("h2");
     heading.textContent = missing
-      ? "Let's get Kiro installed"
+      ? `Let's get ${agentName} installed`
       : setup.resume
-        ? "Kiro needs you to sign in"
+        ? `${agentName} needs you to sign in`
         : "Almost there";
     wrap.appendChild(heading);
 
     const lead = document.createElement("p");
     lead.textContent = missing
-      ? "Kiro's command line tool isn't on this machine yet. That's the part this panel talks to."
+      ? `${agentName}'s command line tool isn't on this machine yet. That's the part this panel talks to.`
       : setup.resume
-        ? "Kiro refused the last message because it needs you to sign in again. Your chat is kept and comes back once you have."
-        : "Kiro is installed but wouldn't start. Nearly always that means you're not signed in yet.";
+        ? `${agentName} refused the last message because it needs you to sign in again. Your chat is kept and comes back once you have.`
+        : `${agentName} is installed but wouldn't start. Nearly always that means you're not signed in yet.`;
     wrap.appendChild(lead);
 
     const list = document.createElement("ol");
@@ -4599,7 +4665,7 @@
         note = "Found at " + setup.foundAt;
       }
       if (step.id === "signin" && setup.error && state !== "done") {
-        note = (setup.resume ? "Kiro said: " : "Kiro would not start: ") + setup.error;
+        note = (setup.resume ? `${agentName} said: ` : `${agentName} would not start: `) + setup.error;
       }
 
       // The first unfinished step is the one to shout about.
@@ -4617,7 +4683,7 @@
       const detail = document.createElement("p");
       detail.className = "setup-detail";
       detail.textContent =
-        "Stopped watching for Kiro. Press Connect once it is installed and you are signed in.";
+        `Stopped watching for ${agentName}. Press Connect once it is installed and you are signed in.`;
       wrap.appendChild(detail);
     }
 
@@ -4654,6 +4720,7 @@
       vscode.postMessage({ type: target.dataset.act });
     });
 
+    nameAgent(wrap);
     messagesEl.appendChild(wrap);
   }
 
@@ -4685,7 +4752,7 @@
    */
   function showConnecting() {
     if (setup) return; // the setup screen has more to say than a spinner
-    setComposerEnabled(false, "Connecting to Kiro…");
+    setComposerEnabled(false, `Connecting to ${agentName}…`);
     // Below the conversation, not instead of it. This used to empty the
     // transcript, and nothing put it back once Kiro was up.
     const stale = messagesEl.querySelector(".connecting");
@@ -4696,7 +4763,7 @@
     const spinner = document.createElement("span");
     spinner.className = "spinner";
     const label = document.createElement("span");
-    label.textContent = "Connecting to Kiro…";
+    label.textContent = `Connecting to ${agentName}…`;
     wrap.appendChild(spinner);
     wrap.appendChild(label);
     messagesEl.appendChild(wrap);
@@ -4985,7 +5052,7 @@
         vscode.postMessage({ type: "gotoChange" });
       });
     } else {
-      summary.textContent = changes.text || "Kiro changed some files.";
+      summary.textContent = changes.text || `${agentName} changed some files.`;
       /*
        * A single changed file names itself in the summary, so the summary is
        * the link to it — click "Kiro changed src/app.ts." and the file opens.
@@ -5092,7 +5159,10 @@
     switch (message.type) {
       case "status":
         statusEl.dataset.state = message.status;
-        statusEl.textContent = STATUS_TEXT[message.status] || message.status;
+        statusEl.textContent = (STATUS_TEXT[message.status] || message.status).replace(
+          /\bKiro\b/,
+          agentName
+        );
         // Kiro is up. However that happened, the instructions for getting it
         // up have nothing left to say.
         if (message.status === "ready") {
@@ -5147,8 +5217,8 @@
           contextError = "";
         } else {
           contextError = message.detail
-            ? `Kiro could not report its context: ${message.detail}`
-            : "Kiro could not report its context.";
+            ? `${agentName} could not report its context: ${message.detail}`
+            : `${agentName} could not report its context.`;
         }
         if (!usagePanel.hidden) renderUsagePanel();
         break;
@@ -5182,6 +5252,13 @@
        */
       case "settings":
         settings = message.settings || {};
+        if (typeof message.agent === "string") currentAgent = message.agent;
+        if (typeof message.agentLabel === "string") agentName = message.agentLabel;
+        if (Array.isArray(message.agents)) agents = message.agents;
+        // Text drawn before the agent was known says Kiro; put the name right
+        // on what is already on screen.
+        if (!inputEl.disabled) inputEl.placeholder = `Ask ${agentName}…`;
+        slashMenu.setAttribute("aria-label", `${agentName} commands`);
         // Derived by the extension from those same settings, so it can never
         // disagree with them.
         editMode = message.editMode || "custom";
@@ -5493,7 +5570,7 @@
           "note",
           before === history.length
             ? "Checkpoint restored. Continue from here."
-            : "Checkpoint restored. Later messages have been removed from this chat and Kiro’s context."
+            : `Checkpoint restored. Later messages have been removed from this chat and ${agentName}’s context.`
         );
         saveState();
         break;
@@ -5512,6 +5589,7 @@
         break;
 
       case "needsSetup":
+        if (typeof message.agent === "string") agentName = message.agent;
         showSetup(message.reason, message.detail, message.resume);
         break;
 
@@ -5610,7 +5688,7 @@
     const wrap = document.createElement("div");
     wrap.className = "empty";
     const line = document.createElement("p");
-    line.textContent = "Ask Kiro about your code.";
+    line.textContent = `Ask ${agentName} about your code.`;
     const hint = document.createElement("p");
     hint.className = "hint";
     hint.textContent = "Enter sends, Shift+Enter starts a new line. Hold Shift and drag files here to attach them, or paste a screenshot.";

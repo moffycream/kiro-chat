@@ -91,6 +91,7 @@ test("the context panel shows Kiro's own breakdown, not prose", () => {
     usage: {}, models: [{ modelId: "test", contextWindowTokens: 200000 }],
     currentModelId: "test", document: { createElement: element }, usagePanel: element(),
     contextBreakdown: null, contextLoading: false, contextError: "",
+    agentName: "Kiro",
   };
   vm.createContext(sandbox);
   for (const name of [
@@ -1729,8 +1730,8 @@ test("the mode picker carries the workflow, the supervision and what is sent", (
 
   const render = js.slice(js.indexOf("function renderModeMenu()"));
   const body = render.slice(0, render.indexOf("\n  /**"));
-  assert.match(body, /menuHeading\("How Kiro approaches the task"\)/);
-  assert.match(body, /menuHeading\("When Kiro edits files"\)/);
+  assert.match(body, /menuHeading\(`How \$\{agentName\} approaches the task`\)/);
+  assert.match(body, /menuHeading\(`When \$\{agentName\} edits files`\)/);
   assert.match(body, /menuHeading\("Include with each message"\)/);
   assert.match(css, /^\.menu-head \{/m, "the groups need to be told apart");
 
@@ -2445,7 +2446,9 @@ test("the question is a bubble, the answer is a column", () => {
 test("Kiro's messages say who wrote them", () => {
   assert.match(js, /msg-role/, "chat.js should label each message with its author");
   assert.match(css, /^\.msg-role \{/m, "the role label needs a style");
-  assert.match(js, /roleLabel\("Kiro"\)/);
+  // Named after the agent answering, which is Kiro unless Qoder is chosen.
+  assert.match(js, /roleLabel\(`\$\{agentName\}`\)/);
+  assert.match(js, /let agentName = "Kiro";/);
 });
 
 /**
@@ -4088,7 +4091,8 @@ test("an outdated Kiro gets a screen of its own", () => {
   assert.doesNotMatch(screen, /temporary/);
 
   const handler = sliceFrom(provider, 'case "updateKiro"');
-  assert.match(handler.slice(0, 200), /runInTerminal\("kiro-cli update"\)/);
+  // The command comes from the configured agent's profile (`agents.ts`).
+  assert.match(handler.slice(0, 200), /runInTerminal\(this\.setupProfile\(\)\.updateCommand\)/);
 });
 
 /**
@@ -4524,7 +4528,7 @@ test("a refused token gets a card with Try again and Sign in", () => {
 
   assert.match(sliceFrom(provider, 'case "retryRefusedTurn"'), /this\.retryRefusedTurn\(\)/);
   const signIn = sliceFrom(provider, 'case "signInKeepingChat"');
-  assert.match(signIn, /runInTerminal\("kiro-cli login"\)/);
+  assert.match(signIn, /runInTerminal\(this\.setupProfile\(\)\.loginCommand\)/);
   assert.doesNotMatch(signIn, /setup\.signIn/);
 
   assert.match(sliceFrom(js, 'case "userMessage"'), /retireLoginRefreshCards\(\)/);

@@ -4,11 +4,11 @@ import * as path from "node:path";
 import * as fsSync from "node:fs";
 import * as fs from "node:fs/promises";
 import { spawn } from "node:child_process";
-import { AcpClient, acpArgs, needsShell, quote } from "./acpClient";
+import { AcpClient, needsShell, quote } from "./acpClient";
 import { ActiveReviewInfo, ChangeReviewer } from "./changeReviewer";
 import { isReadOnlyTool, isShellRequest, isWriteLikeTool } from "./writeTools";
 import { changedSinceBaseline, describeChange, TurnChange } from "./turnChanges";
-import { findKiro } from "./findKiro";
+import { AgentId, AgentProfile, agentArgs, agentIdOf, agentProfile, findAgent } from "./agents";
 import { isInsideAnyRoot, isInsideRoot } from "./workspacePaths";
 import { isStaleLock, lockedPidFrom, parseSessionLock, sessionLockPath } from "./sessionLocks";
 import { savedContextPercent } from "./savedContext";
@@ -349,8 +349,12 @@ export class KiroSession {
    * it still matches. See `launchInputs.ts`.
    */
   private launchInputs: LaunchInputs | undefined;
-  /** False for Kiro inside WSL, whose session files this side cannot read. */
+  /** False for Kiro inside WSL, whose session files this side cannot read, and for Qoder. */
   private canTidySessions = true;
+  /** Which CLI the running process is. Read from `kiroChat.agent` at each start. */
+  private agent: AgentId = agentIdOf(
+    vscode.workspace.getConfiguration("kiroChat").get<string>("agent", "kiro")
+  );
   /**
    * Sessions this window created that nothing has been said into. In memory,
    * and only ever about the current window: it decides whether `+` can reuse
@@ -601,6 +605,20 @@ export class KiroSession {
     return this.sessionId;
   }
 
+  /** The CLI this session drives, as configured when it last started. */
+  get agentId(): AgentId {
+    return this.agent;
+  }
+
+  get profile(): AgentProfile {
+    return agentProfile(this.agent);
+  }
+
+  /** Model ids are the agent's own, so each remembers its choice apart. */
+  private modelSettingKey(): string {
+    return this.agent === "kiro" ? "model" : "qoderModel";
+  }
+
   get canLoadSessions(): boolean {
     return this.supportsLoad;
   }
@@ -643,7 +661,7 @@ export class KiroSession {
    */
   async rewindTo(logIndex: number, keptCredits?: number): Promise<string> {
     await this.ensureReady();
-    if (!this.client || !this.sessionId) throw new Error("Kiro is not connected.");
+    if (!this.client || !this.sessionId) throw new Error(`${this.profile.label} is not connected.`);
     const turn = this.turnLog[logIndex];
     if (!turn) throw new Error("This checkpoint is no longer available.");
     const result = await this.client.request(
@@ -657,7 +675,7 @@ export class KiroSession {
       30000
     );
     const forked = String(result?.sessionId ?? "").trim();
-    if (!forked) throw new Error("Kiro did not rewind the conversation.");
+    if (!forked) throw new Error(`${this.profile.label} did not rewind the conversation.`);
     this.output.appendLine(`Rewound into session ${forked}.`);
     const model = this.currentModelId;
     const level = this.effort?.current;
@@ -703,7 +721,7 @@ export class KiroSession {
     // Connect, but do not start a conversation: this one is about to be
     // loaded, and `session/new` would write an empty one to disk for nothing.
     await this.connect();
-    if (!this.client?.isRunning) throw new Error("Kiro is not connected.");
+    if (!this.client?.isRunning) throw new Error(`${this.profile.label} is not connected.`);
     const leaving = this.sessionId;
 
     /*
@@ -754,6 +772,20 @@ export class KiroSession {
           { sessionId, cwd: this.workspaceRoot(), mcpServers: [] },
           30000
         );
+
+      /*
+       * Qoder refuses to load a session its own process still has open —
+       * "session <id> is already open (state=active)", measured against
+       * qodercli 1.1.91 — and the panel's process keeps every session it has
+       * opened, so reopening the chat before last after a "+" was refused.
+       * Closing first is harmless: an unknown id answers success too. Kiro
+       * loads an open session without complaint and is not asked.
+       */
+      if (!this.profile.kiroExtras) {
+        await this.client
+          .request("session/close", { sessionId }, 10000)
+          .catch((err) => this.output.appendLine(`session/close before load: ${String(err)}`));
+      }
 
       let result: any;
       try {
@@ -864,7 +896,9 @@ export class KiroSession {
       // Exactly what `startInternal` reads. A key missing here is a change
       // "+" would never notice.
       settings: {
+        agent: agentIdOf(config.get<string>("agent", "kiro")),
         command: config.get<string>("command", "").trim(),
+        qoderCommand: config.get<string>("qoderCommand", "").trim(),
         env: config.get<Record<string, string>>("env", {}),
         args: config.get<string[]>("args", []),
         allowFileWrites: config.get<boolean>("allowFileWrites", true),
@@ -885,7 +919,7 @@ export class KiroSession {
     if (!this.launchInputs) return false;
     const reasons = launchInputsChanged(this.launchInputs, this.currentLaunchInputs());
     if (reasons.length === 0) return true;
-    this.output.appendLine(`Restarting Kiro for the new chat: ${reasons.join("; ")}.`);
+    this.output.appendLine(`Restarting ${this.profile.label} for the new chat: ${reasons.join("; ")}.`);
     return false;
   }
 
@@ -968,7 +1002,13 @@ export class KiroSession {
     this.setStatus("starting");
 
     const config = vscode.workspace.getConfiguration("kiroChat");
-    const configured = config.get<string>("command", "").trim();
+    this.agent = agentIdOf(config.get<string>("agent", "kiro"));
+    const profile = agentProfile(this.agent);
+    // `command` and `args` have always meant Kiro; Qoder has its own path and
+    // takes no extra arguments, since Kiro's would mean nothing to it.
+    const configured = config
+      .get<string>(this.agent === "kiro" ? "command" : "qoderCommand", "")
+      .trim();
     const env = config.get<Record<string, string>>("env", {});
     const allowWrites = config.get<boolean>("allowFileWrites", true);
 
@@ -977,14 +1017,14 @@ export class KiroSession {
     // reach the binary comes first, what configures the agent comes after.
     // See `acpArgs`.
     let launchArgs: string[] = [];
-    const userArgs = config.get<string[]>("args", []);
+    const userArgs = this.agent === "kiro" ? config.get<string[]>("args", []) : [];
 
     if (!command) {
-      const found = await findKiro((line) => this.output.appendLine(line));
+      const found = await findAgent(this.agent, (line) => this.output.appendLine(line));
       if (!found) {
         this.setStatus("stopped");
         this.events.onNeedsSetup("missing");
-        throw new Error("kiro-cli not found");
+        throw new Error(`${profile.binary} not found`);
       }
       command = found.command;
       launchArgs = found.extraArgs;
@@ -993,6 +1033,8 @@ export class KiroSession {
       // safe, so that install never gets one.
       this.canTidySessions = found.source !== "WSL";
     }
+    // Tidying, the saved context figure and `/usage` all read Kiro's own files.
+    if (!profile.kiroExtras) this.canTidySessions = false;
     this.launch = { command, launchArgs, env };
     // Before the spawn, not after: a file edited while Kiro is still starting
     // then reads as a change, and costs a restart rather than being missed.
@@ -1003,7 +1045,7 @@ export class KiroSession {
     this.startupLog = [];
     this.client = new AcpClient({
       command,
-      args: acpArgs(launchArgs, userArgs),
+      args: agentArgs(this.agent, launchArgs, userArgs),
       cwd: this.workspaceRoot(),
       env,
       onLog: (line) => {
@@ -1039,7 +1081,7 @@ export class KiroSession {
         STARTUP_TIMEOUT_MS
       );
       this.output.appendLine(
-        `Connected to ${init?.agentInfo?.name ?? "Kiro"} ${init?.agentInfo?.version ?? ""}`
+        `Connected to ${init?.agentInfo?.name ?? profile.label} ${init?.agentInfo?.version ?? ""}`
       );
 
       this.supportsImages = Boolean(init?.agentCapabilities?.promptCapabilities?.image);
@@ -1053,7 +1095,7 @@ export class KiroSession {
       // The empty conversations left by earlier runs, now that there is a
       // binary to ask. Never awaited: nothing here is waiting on the answer.
       void this.tidyUnusedSessions();
-      void this.offerCliUpdate().catch((err) =>
+      if (profile.kiroExtras) void this.offerCliUpdate().catch((err) =>
         this.output.appendLine(`Could not check for a Kiro CLI update: ${String(err)}`)
       );
     } catch (err) {
@@ -1087,7 +1129,7 @@ export class KiroSession {
    * message says so.
    */
   private async createSession(): Promise<void> {
-    if (!this.client?.isRunning) throw new Error("Kiro is not connected.");
+    if (!this.client?.isRunning) throw new Error(`${this.profile.label} is not connected.`);
     try {
       const session = await this.client.request(
         "session/new",
@@ -1095,7 +1137,7 @@ export class KiroSession {
         STARTUP_TIMEOUT_MS
       );
       this.sessionId = session?.sessionId ?? session?.id;
-      if (!this.sessionId) throw new Error("Kiro did not return a session id.");
+      if (!this.sessionId) throw new Error(`${this.profile.label} did not return a session id.`);
       // Nothing has been said into it yet, so it is a candidate for reuse and,
       // if the window closes first, for tidying away.
       this.noteSessionCreated(this.sessionId);
@@ -1105,7 +1147,10 @@ export class KiroSession {
       this.setStatus("ready");
 
       this.savedModelToRestore =
-        vscode.workspace.getConfiguration("kiroChat").get<string>("model", "").trim() || undefined;
+        vscode.workspace
+          .getConfiguration("kiroChat")
+          .get<string>(this.modelSettingKey(), "")
+          .trim() || undefined;
       this.restoreSavedModel();
     } catch (err) {
       const failure = err instanceof Error ? err.message : String(err);
@@ -1130,14 +1175,14 @@ export class KiroSession {
     // here narrows it for the rest of the method, and the `finally` below
     // legitimately expects it to be "busy" by then.
     if (this.currentStatus === "busy") {
-      throw new Error("Kiro is still working on the last message. Wait for it to finish.");
+      throw new Error(`${this.profile.label} is still working on the last message. Wait for it to finish.`);
     }
     await this.ensureReady();
     if (!this.client || !this.sessionId) return;
 
     const usable = this.supportsImages ? blocks : blocks.filter((b) => b.type !== "image");
     if (usable.length !== blocks.length) {
-      this.events.onError("This version of Kiro cannot take images, so they were left out.");
+      this.events.onError(`This version of ${this.profile.label} cannot take images, so they were left out.`);
     }
 
     this.turnReadOnly = options.readOnly === true;
@@ -1407,13 +1452,13 @@ export class KiroSession {
    */
   async runCommand(name: string, args: Record<string, unknown> = {}): Promise<CommandResult> {
     await this.ensureReady();
-    if (!this.client || !this.sessionId) throw new Error("Kiro is not connected.");
+    if (!this.client || !this.sessionId) throw new Error(`${this.profile.label} is not connected.`);
     const value = String(args.value ?? "").trim();
 
     if (name === "context") return this.contextAnswer();
     if (name === "usage") return this.accountUsage();
     if (this.status === "busy") {
-      throw new Error("Kiro is still working on the last message.");
+      throw new Error(`${this.profile.label} is still working on the last message.`);
     }
 
     switch (name) {
@@ -1422,6 +1467,10 @@ export class KiroSession {
       case "effort":
         return value ? this.effortCommand(value) : this.describeEffort();
       case "compact":
+        // `_kiro/session/compact` is Kiro's method.
+        if (!this.profile.kiroExtras) {
+          return { ok: false, text: `/compact is not available with ${this.profile.label}.` };
+        }
         return this.compact();
       default:
         throw new Error(`/${name} cannot be run here.`);
@@ -1431,7 +1480,7 @@ export class KiroSession {
   private contextAnswer(): CommandResult {
     const data = this.contextData;
     const breakdown = data ? readContextCommand(data) : undefined;
-    if (!data || !breakdown) return { ok: false, text: "Kiro has not reported its context yet." };
+    if (!data || !breakdown) return { ok: false, text: `${this.profile.label} has not reported its context yet.` };
     const lines = breakdown.categories.map(
       (category) =>
         `${category.label}: ${category.tokens.toLocaleString("en-US")} tokens (${category.percent}%)`
@@ -1440,6 +1489,10 @@ export class KiroSession {
   }
 
   private async accountUsage(): Promise<CommandResult> {
+    // It borrows a Kiro v2 agent; nothing like it exists for another CLI.
+    if (!this.profile.kiroExtras) {
+      return { ok: false, text: `${this.profile.label} does not report plan usage to the panel.` };
+    }
     if (!this.launch) throw new Error("Kiro is not connected.");
     const answer = await fetchAccountUsage(
       { ...this.launch, cwd: this.workspaceRoot() },
@@ -1459,7 +1512,7 @@ export class KiroSession {
           model.creditRate ? `  ${model.creditRate}` : ""
         }`
     );
-    return { ok: true, text: lines.join("\n") || "Kiro has not listed any models." };
+    return { ok: true, text: lines.join("\n") || `${this.profile.label} has not listed any models.` };
   }
 
   /** `/model haiku` works if it can only mean one model. */
@@ -1475,7 +1528,7 @@ export class KiroSession {
         ok: false,
         text: partial.length
           ? `"${wanted}" could be ${partial.map((m) => m.modelId).join(", ")}.`
-          : `Kiro has no model called "${wanted}".`,
+          : `${this.profile.label} has no model called "${wanted}".`,
       };
     }
     // Not remembered: a command typed into one conversation is not a new default.
@@ -1523,8 +1576,8 @@ export class KiroSession {
       return {
         ok,
         text: ok
-          ? "Compacted. The context reading updates with Kiro's next reply."
-          : "Kiro could not compact this conversation.",
+          ? `Compacted. The context reading updates with ${this.profile.label}'s next reply.`
+          : `${this.profile.label} could not compact this conversation.`,
       };
     } finally {
       if (this.currentStatus === "busy") this.setStatus("ready");
@@ -1807,8 +1860,8 @@ export class KiroSession {
     const config = this.applyConfig(session?.configOptions);
     this.output.appendLine(
       config
-        ? `Kiro offers ${config.models.length} model(s); current is "${config.currentModelId}".`
-        : "Kiro sent no model list."
+        ? `${this.profile.label} offers ${config.models.length} model(s); current is "${config.currentModelId}".`
+        : `${this.profile.label} sent no model list.`
     );
   }
 
@@ -1866,7 +1919,7 @@ export class KiroSession {
    */
   private async setConfigOption(configId: string, value: string): Promise<SessionConfig | undefined> {
     if (!this.client?.isRunning || !this.sessionId) {
-      throw new Error("Kiro is not connected yet.");
+      throw new Error(`${this.profile.label} is not connected yet.`);
     }
     const result = await this.client.request(
       "session/set_config_option",
@@ -1879,13 +1932,13 @@ export class KiroSession {
   async setModel(modelId: string, remember = true): Promise<void> {
     const config = await this.setConfigOption(this.modelConfigId, modelId);
     if (config?.currentModelId !== modelId) {
-      throw new Error(`Kiro did not switch to "${modelId}".`);
+      throw new Error(`${this.profile.label} did not switch to "${modelId}".`);
     }
     this.output.appendLine(`Model set to "${modelId}".`);
     if (remember) {
       await vscode.workspace
         .getConfiguration("kiroChat")
-        .update("model", modelId, vscode.ConfigurationTarget.Global);
+        .update(this.modelSettingKey(), modelId, vscode.ConfigurationTarget.Global);
     }
   }
 
@@ -1903,7 +1956,7 @@ export class KiroSession {
       throw new Error(`"${level}" is not one of ${effort.levels.map((l) => l.value).join(", ")}.`);
     }
     const config = await this.setConfigOption(effort.configId, level);
-    if (config?.effort?.current !== level) throw new Error(`Kiro did not set effort to "${level}".`);
+    if (config?.effort?.current !== level) throw new Error(`${this.profile.label} did not set effort to "${level}".`);
     this.output.appendLine(`Effort set to "${level}".`);
   }
 
@@ -2630,7 +2683,7 @@ export class KiroSession {
     const expected = this.expectedToolResult(base, raw);
     if (expected !== undefined) tracked.expected = expected;
     this.directFileChanges.set(key, tracked);
-    this.output.appendLine(`Captured Kiro's built-in write to ${this.displayPath(full)}.`);
+    this.output.appendLine(`Captured ${this.profile.label}'s built-in write to ${this.displayPath(full)}.`);
     if (toolId && raw) this.observedWriteTools.add(toolId);
   }
 
@@ -2813,7 +2866,7 @@ export class KiroSession {
      * retired here rather than left pointing at a path that no longer exists.
      */
     if (!tracked.before.exists && !current.exists) {
-      this.output.appendLine(`Kiro created and removed ${relative}; nothing to review.`);
+      this.output.appendLine(`${this.profile.label} created and removed ${relative}; nothing to review.`);
       this.directFileChanges.delete(key);
       this.reviewBaselines.delete(key);
       this.answeredPaths.add(key);
@@ -2844,7 +2897,7 @@ export class KiroSession {
      */
     if (tracked.expected !== undefined && current.content !== tracked.expected) {
       this.output.appendLine(
-        `${relative} does not match the simulated result of Kiro's edit. ` +
+        `${relative} does not match the simulated result of ${this.profile.label}'s edit. ` +
           "Reviewing what is actually on disk instead."
       );
     }
@@ -2871,13 +2924,13 @@ export class KiroSession {
     await this.restoreSnapshot(tracked.before);
 
     if (this.turnCancelled) {
-      this.output.appendLine(`Reverted Kiro's cancelled change to ${relative}.`);
+      this.output.appendLine(`Reverted ${this.profile.label}'s cancelled change to ${relative}.`);
       return;
     }
     if (!allowWrites) {
       const message = this.turnReadOnly
-        ? `Kiro tried to edit ${relative} in Plan mode. The edit was reverted.`
-        : `Kiro tried to edit ${relative}, but file writing is turned off. The edit was reverted.`;
+        ? `${this.profile.label} tried to edit ${relative} in Plan mode. The edit was reverted.`
+        : `${this.profile.label} tried to edit ${relative}, but file writing is turned off. The edit was reverted.`;
       this.output.appendLine(message);
       this.events.onError(message);
       return;
@@ -3279,7 +3332,7 @@ export class KiroSession {
     // The chat view normally owns this interaction. Keep a non-modal
     // fallback for callers that run Kiro without resolving the panel.
     const label = await vscode.window.showInformationMessage(
-      `Kiro wants to ${title}.`,
+      `${this.profile.label} wants to ${title}.`,
       ...choices.map((choice) => choice.label)
     );
     return choices.find((choice) => choice.label === label)?.id;

@@ -1,5 +1,38 @@
 # Changelog
 
+## 0.41.2
+
+- **With Qoder selected, the panel says Qoder.** The panel title, the message
+  box ("Ask Qoder…"), the name over each reply, the status line, permission
+  cards ("Qoder wants to…"), the menus, the setup screen and the error messages
+  all name the agent you picked, instead of saying Kiro everywhere. Kiro-only
+  messages (plan usage, CLI updates, sign-in refresh) still say Kiro.
+
+## 0.41.1
+
+- **Switching to Qoder no longer fails without a word.** Right after installing
+  0.41.0, VS Code runs the new extension but does not recognise its new
+  `kiroChat.agent` setting until the window reloads, so clicking **Qoder** did
+  nothing at all. The panel now tells you, with a **Reload Window** button, and
+  the switch works after the reload.
+
+## 0.41.0
+
+- **The panel can drive Qoder CLI as well as Kiro.** Open the workflow menu
+  under the message box and pick **Kiro** or **Qoder** under **Agent**, or set
+  `kiroChat.agent`. Switching starts a new chat. Each agent keeps its own chats
+  in the history, and they come back when you switch back. Qoder is found
+  automatically (`kiroChat.qoderCommand` overrides it) and runs as
+  `qodercli --acp`. Its models, with their credit rates, show in the model
+  picker, which remembers a separate choice per agent. Edits, the diff review,
+  permission cards and reopening past chats work the same way.
+- **Kiro-only parts are off under Qoder rather than broken.** `/usage`,
+  `/compact`, Kiro skills, tidying empty sessions and the CLI update check all
+  rely on Kiro's own files or methods. Qoder reports no credits or context
+  figure, so the strip shows a dash rather than a made-up zero. If Qoder isn't
+  installed or signed in, the setup screen says Qoder and types `qodercli`
+  commands.
+
 ## 0.40.5
 
 - **A step can show what it ran.** Each step in the list gets a **Details** link

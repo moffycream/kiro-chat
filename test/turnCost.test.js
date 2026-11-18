@@ -111,6 +111,7 @@ function loadCost() {
   const history = [];
   let saves = 0;
   const body = [
+    'const agentName = "Kiro";',
     "let current = null;",
     "let lastAgent = null;",
     source,

@@ -94,7 +94,7 @@ function loadCollapse() {
   const dom = fakeDom();
   const make = new Function(
     "document",
-    `${source}\nreturn { optionsOf, settlePermissionCard };`
+    `const agentName = "Kiro";\n${source}\nreturn { optionsOf, settlePermissionCard };`
   );
   return { ...make(dom.document), dom };
 }

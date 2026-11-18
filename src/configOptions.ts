@@ -12,7 +12,7 @@
  * drive it.
  */
 
-import { creditRateOf, describeContextWindow, numberFrom } from "./usage";
+import { creditRateOf, describeContextWindow, findCreditRate, numberFrom } from "./usage";
 
 export interface ConfigModel {
   modelId: string;
@@ -70,7 +70,12 @@ function readModel(option: any): ConfigModel | undefined {
     modelId,
     name: String(option?.name ?? modelId),
     description,
-    creditRate: numberFrom(kiro.rateMultiplier) !== undefined ? creditRateOf(kiro) : undefined,
+    // Qoder puts the rate in the description only ("Vision · 0.30x Credit"),
+    // and `findCreditRate` reads a multiplier only beside the word "credit".
+    creditRate:
+      numberFrom(kiro.rateMultiplier) !== undefined
+        ? creditRateOf(kiro)
+        : findCreditRate(description),
     contextWindow: describeContextWindow(tokens),
     contextWindowTokens: tokens,
   };
