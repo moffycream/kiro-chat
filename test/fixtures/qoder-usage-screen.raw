@@ -1,0 +1,97 @@
+[?9001h[?1004h[?25l[2J[m[H]0;◇ Qoder CLI | Ready                                                             [?25h[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K[?25l
+[H[?25h[?25l[?1006l[?1002l[?1004h[?2004h[?2004h[?1004h[38;2;39;189;81m[2;2H [1C██████[m[30C╭─[38;2;39;189;81m[1m[1CTips[1Cfor[1Cgetting[1Cstarted[m[1C───────────────────────────────────╮[38;2;39;189;81m[3;2H██[6C██[m[28C│[1C1.[1CUse[1CAGENTS.md[1Cfiles[1Cto[1Ccustomize[1Cinteractions[13C│[38;2;39;189;81m[4;2H██[2C██[2C██[m[1m[2CQoder[1CCLI[22m[1Cv1.1.91[9C│[1C2.[1C/help[1Cfor[1Cmore[1Cinformation[32C│[38;2;39;189;81m[5;2H██[4C██[m[30C│[1C3.[1CAsk[1Ccoding[1Cquestions,[1Cedit[1Ccode[1Cor[1Crun[1Ccommands[11C│[38;2;39;189;81m[6;2H [1C████[2C██[m[1m[2CSigned[1Cin[22m[1CBrowser[1CLogin[3C│[1C4.[1CBe[1Cspecific[1Cfor[1Cthe[1Cbest[1Cresults[26C│[7;40H╰──────────────────────────────────────────────────────────────╯[1m[10;1H Authenticating[22m
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────[13;2H⠋[1CWaiting[1Cfor[1Cauthentication...[3m[15;2HEsc[1Cback[23m[10;1H ● Warning: 256-color[1Csupport[1Cnot[1Cdetected.[1CUsing[1Ca[1Cterminal[1Cwith[1Cat[1Cleast[1C256-color[1Csupport[1Cis[1Crecommended[1Cfor[1Ca[1Cbetter    visual experience.[K[1m[13;1H Authenticating[22m[K
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────[15;2H[K
+⠋[1CWaiting[1Cfor[1Cauthentication...[3m[18;2HEsc[1Cback[>0q]7501;?\[23m[16;2H⠙⠹[1m[13;2HDo you trust the files in this folder?[22m[15;2HPlease[1Cconfirm[1Cthis[1Cis[1Cyour[1Cown[1Cproject[1Cor[1Cfrom[1Ca[1Ctrusted[1Csource.[1COnce[1Ctrusted,[1CQoder[1CCLI[1Ccan[1Cread,[1Cmodify,[1Cand[16;2Hexecu[1Ce files[1Chere, and w[1Cll load[1Clocal[1Cconfigurations[1C(commands,[1Chooks,[1CMCP[1Cservers,[1Cagents,[1Cskills,[1Csettings).[1m[18;2HC:\Users\USER\AppData\Local\Temp\claude\ef4f013d33e9e8e6\cc8fb858-27a6-4662-ad2e-48cc95bdaf2a\scratchpad\qtty[22m[20;3H>[1C1.[1CTrust[1Cfolder[21;5H2.[1CDon't[1Ctrust[1Cand[1Cexit[3m[23;2H↑/↓[1Cnavigate[1C·[1CEnter[1Cselect[1C·[1CEsc[1Cback[23m[H[K
+   [38;2;39;189;81m██████[30X[m[30C╭─ [38;2;39;189;81m[1mTips[m [38;2;39;189;81m[1mfor[m [38;2;39;189;81m[1mgetting[m [38;2;39;189;81m[1mstarted[m ───────────────────────────────────╮[K
+ [38;2;39;189;81m██      ██[28X[m[28C│ 1. Use AGENTS.md files to customize interactions             │[K
+ [38;2;39;189;81m██  ██  ██  [m[1mQoder[22m [1mCLI[22m v1.1.91         │ 2. /help for more information                                │[K
+ [38;2;39;189;81m██    ██[30X[m[30C│ 3. Ask coding questions, edit code or run commands           │[K
+   [38;2;39;189;81m████  ██  [m[1mSigned[22m [1min[22m Browser Login   │ 4. Be specific for the best results                          │[K
+                                       ╰──────────────────────────────────────────────────────────────╯[K
+[K
+[K
+ ● Warning: 256-color support not detected. Using a terminal with at least 256-color support is recommended for a better
+    visual experience.[K
+[K
+                                                                                                        ? for shortcuts [2m
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────[22m
+ [38;2;160;160;160mDefault Shift+Tab to Accept Edits[76X[m[76C21 skills [38;2;28;28;28m
+------------------------------------------------------------------------------------------------------------------------[m
+ > [7m [27m Type your message or @path/to/file[K[38;2;28;28;28m
+------------------------------------------------------------------------------------------------------------------------[m
+ Auto Model · ctx ░░░░░░░░░░ 0%[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K[120C[13;61HPlugin[1Cconfiguration[1Cupdated.[1CRun[1C/plugins[1Creload[1Cto apply.[17;4H/usag[7m[1C [27m[K[110C[19;2H> usage   Show usage statistics[1Cfor[1Cthe[1Ccurrent[1Cbilling[1Cperiod[13;2H>[1C/usage[51C[K
+[K[15;2HLoading...[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K[120C[1m[15;1H Qoder CLI[22m ·[1m[1C Usage [22m[2CStatus
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────[17;3HAPI[1Cquota[1Cand[1Csession[1Ctoken[1Cusage[1Cfor[1Cthe[1Ccurrent[1Cconversation.[19;3HQoder[1CPlan[16C:[1CEnterprise[20;3HPlan[1CExpires[1CAt[11C:[1CDec[1C1,[1C2026,[1C00:00:00[1CGMT+8[21;3HPlan[1CCredits[1CUsed[9C:[1CN/A[22;3HAdd-on[1CCredits[1CUsed[7C:[1CN/A[23;3HOrg[1CResource[1CPackage[6C:[1C0/2000[24;3HTotal[1CDuration[1C(API)[6C:[1C0.0s[25;3HTotal[1CDuration[1C(wall)[5C:[1C12.2s[26;3HTotal[1CCode[1CChanges[8C:[1C0[1Clines[1Cadded,[1C0[1Clines[1Cremoved[3m[29;2HTab/←→[1Cswitch[1C·[1CEsc[1Cback[23m[?9001l[?1004l

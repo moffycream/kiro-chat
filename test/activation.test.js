@@ -95,6 +95,7 @@ function activateWith(api) {
     const context = {
       subscriptions: [],
       extensionUri: { fsPath: root },
+      globalStorageUri: { fsPath: require("node:os").tmpdir() },
       globalState: { get: (_k, d) => d, update: () => Promise.resolve() },
       extension: { packageJSON: { version: "0.0.0-test" } },
     };

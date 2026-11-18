@@ -76,6 +76,8 @@ function draw(usage, options = {}) {
     contextBreakdown: options.breakdown || null,
     contextLoading: false,
     contextError: "",
+    currentAgent: options.agent || "kiro",
+    agentName: options.agentName || "Kiro",
   };
   vm.createContext(sandbox);
   for (const name of [
@@ -198,4 +200,36 @@ test("a chat with no reported credits shows no figure for it", () => {
   assert.match(context, /7% · 13\.8k of 256k/, "the context reading is unaffected");
   assert.doesNotMatch(context, /credits/, "nothing reported means nothing drawn");
   assert.match(flat(panel), /Credits used/, "and the account half is unaffected");
+});
+
+test("under Qoder the account offers a check, in the panel", () => {
+  const all = flat(draw({}, { agent: "qoder", agentName: "Qoder" }));
+  assert.match(all, /Not fetched yet/);
+  assert.match(all, /Check Qoder usage/);
+  assert.doesNotMatch(all, /terminal/i);
+});
+
+test("under Qoder the account shows the rows read off Qoder's usage screen", () => {
+  const report = {
+    ok: true,
+    text: "",
+    rows: [
+      { label: "Plan", value: "Enterprise" },
+      { label: "Plan Expires At", value: "Dec 1, 2026, 00:00:00 GMT+8" },
+      { label: "Org Resource Package", value: "0/2000" },
+    ],
+  };
+  const panel = draw({ planName: "Enterprise" }, { agent: "qoder", agentName: "Qoder", report });
+  const account = sections(panel).find((section) => section.startsWith("Account"));
+  assert.match(account, /Account Enterprise/);
+  assert.match(account, /Plan Expires At Dec 1, 2026/);
+  assert.match(account, /Org Resource Package 0\/2000/);
+  // The plan is the heading's figure, not a row of its own as well.
+  assert.equal(account.match(/Enterprise/g).length, 1);
+  assert.match(flat(panel), /Refresh/);
+});
+
+test("under Qoder a failed check says why", () => {
+  const report = { ok: false, text: "Qoder needs you to sign in before it can show usage." };
+  assert.match(flat(draw({}, { agent: "qoder", agentName: "Qoder", report })), /needs you to sign in/);
 });

@@ -1908,9 +1908,95 @@
       const stick = repaintSticky;
       repaintSticky = false;
       if (!current) return;
-      current.body.innerHTML = renderMarkdown(buffer);
+      paintStreaming(current, buffer);
       scroll(stick);
     });
+  }
+
+  /*
+   * A streaming reply is drawn as settled blocks plus one open tail.
+   *
+   * Each frame used to run `body.innerHTML = renderMarkdown(buffer)` over the
+   * whole reply, so the cost of a frame grew with everything already said:
+   * measured in the webview, about 40–100 ms to swap and lay out a 30 KB reply,
+   * for a few words of new text. Now a block is rendered once, when it can no
+   * longer change, and only the tail — the block still arriving — is redrawn.
+   *
+   * The split is only made where rendering the two halves apart gives the same
+   * HTML as rendering them together (`settledBoundary`), and the finished
+   * bubble is still drawn by one whole `renderMarkdown` in `finishAgentBubble`,
+   * so whatever the stream showed, the reply that stays is the exact one.
+   */
+  function paintStreaming(bubble, raw) {
+    const text = String(raw).replace(/\r\n?/g, "\n");
+    // Anything but text appended to what was settled is a fresh start: the
+    // buffer is reset between turns, and a bubble may be repainted from empty.
+    if (
+      !bubble.tail ||
+      !bubble.tail.isConnected ||
+      bubble.tail.parentNode !== bubble.body ||
+      !text.startsWith(bubble.settledText || "")
+    ) {
+      bubble.body.innerHTML = "";
+      bubble.settledText = "";
+      bubble.tail = document.createElement("div");
+      bubble.tail.className = "md-tail";
+      bubble.body.appendChild(bubble.tail);
+    }
+    const from = bubble.settledText.length;
+    const cut = settledBoundary(text, from);
+    if (cut > from) {
+      bubble.tail.insertAdjacentHTML("beforebegin", renderMarkdown(text.slice(from, cut)));
+      bubble.settledText = text.slice(0, cut);
+    }
+    bubble.tail.innerHTML = renderMarkdown(text.slice(cut > from ? cut : from));
+  }
+
+  /*
+   * Where a reply can be cut so the part before it never needs drawing again.
+   *
+   * A cut is a blank line followed by a block that renders on its own: a
+   * paragraph, a heading, a code fence. Never before a list item, table row,
+   * quote or indented line, because those carry on across blank lines — a
+   * loose list's numbering, a nested item, `<ol start>` — and rendering the
+   * halves apart would split one list into two. After one is fine: an
+   * unindented paragraph ends it. Fences must be closed before the cut, or the
+   * cut is inside code. The line after the blank has to have arrived whole, so
+   * it can be told what it is. Answers the furthest such cut after `from`, or
+   * `from` when there is none.
+   */
+  function settledBoundary(text, from) {
+    // The same pairing `renderMarkdown`'s FENCE pattern makes: ``` plus an
+    // optional info string opens, and only a bare ``` closes. Counting fence
+    // lines instead disagreed with it as soon as a block was left unclosed.
+    const opens = /^[ \t]*```[^`\n]*$/;
+    const closes = /^[ \t]*```[ \t]*$/;
+    const joined = /^[ \t]*([-*+][ \t]|\d+[.)][ \t]|\||>|[ \t])/;
+    let best = from;
+    let inFence = false;
+    let lineStart = from;
+    let previous = "";
+    while (lineStart < text.length) {
+      const end = text.indexOf("\n", lineStart);
+      if (end === -1) break; // the last line is still arriving
+      const line = text.slice(lineStart, end);
+      if (inFence ? closes.test(line) : opens.test(line)) inFence = !inFence;
+      // Only what comes *after* the blank decides: a list, table or quote is
+      // over once an unindented line that is none of those follows it.
+      if (line.trim() === "" && !inFence && previous) {
+        // Find the next non-blank line, and only cut if it has arrived whole.
+        let next = end + 1;
+        while (next < text.length && text[next] === "\n") next += 1;
+        const nextEnd = text.indexOf("\n", next);
+        if (nextEnd !== -1) {
+          const following = text.slice(next, nextEnd);
+          if (following.trim() && !joined.test(following)) best = next;
+        }
+      }
+      if (line.trim() !== "") previous = line;
+      lineStart = end + 1;
+    }
+    return best;
   }
 
   function finishAgentBubble() {
@@ -3159,6 +3245,57 @@
       wait.appendChild(spinner);
       wait.appendChild(label);
       usagePanel.appendChild(wait);
+      return;
+    }
+
+    /*
+     * Qoder's account, as its own `/usage` screen shows it. The extension runs
+     * that screen where nobody sees it and reads the rows back, so these are
+     * Qoder's labels and values as drawn — not Kiro's three figures, which
+     * Qoder does not have in that shape.
+     */
+    if (currentAgent !== "kiro") {
+      const account = document.createElement("section");
+      account.className = "context-details";
+      const head = document.createElement("div");
+      head.className = "context-head";
+      const title = document.createElement("span");
+      title.textContent = "Account";
+      const plan = document.createElement("span");
+      plan.className = "context-figure";
+      plan.textContent = usage.planName || "";
+      head.append(title, plan);
+      account.appendChild(head);
+
+      const rows = usageReport && usageReport.ok && usageReport.rows ? usageReport.rows : null;
+      if (rows) {
+        for (const item of rows) {
+          // The plan is already the heading's figure.
+          if (item.label === "Plan") continue;
+          const line = document.createElement("div");
+          line.className = "context-row";
+          const name = document.createElement("span");
+          name.textContent = item.label;
+          const amount = document.createElement("span");
+          amount.className = "context-amount";
+          amount.textContent = item.value;
+          line.append(name, amount);
+          account.appendChild(line);
+        }
+      } else {
+        const body = document.createElement("div");
+        body.className = usageReport && usageReport.ok === false ? "usage-body bad" : "usage-body";
+        body.textContent = usageReport ? usageReport.text : "Not fetched yet.";
+        account.appendChild(body);
+      }
+      usagePanel.appendChild(account);
+
+      const refresh = document.createElement("button");
+      refresh.type = "button";
+      refresh.className = "ghost usage-refresh";
+      refresh.textContent = rows ? "Refresh" : `Check ${agentName} usage`;
+      refresh.addEventListener("click", () => vscode.postMessage({ type: "refreshUsage" }));
+      usagePanel.appendChild(refresh);
       return;
     }
 
@@ -5193,7 +5330,11 @@
 
       case "usageReport":
         usageLoading = false;
-        usageReport = { text: message.text, ok: message.ok !== false };
+        usageReport = {
+          text: message.text,
+          ok: message.ok !== false,
+          rows: Array.isArray(message.rows) ? message.rows : null,
+        };
         // A refresh asked for from the model menu should show its answer.
         setUsagePanel(true);
         break;
@@ -5216,9 +5357,14 @@
           contextBreakdown = message.breakdown;
           contextError = "";
         } else {
-          contextError = message.detail
-            ? `${agentName} could not report its context: ${message.detail}`
-            : `${agentName} could not report its context.`;
+          // An agent that never reports context says so itself, and a prefix
+          // claiming it "could not" would make that read as a failure.
+          contextError =
+            currentAgent !== "kiro" && message.detail
+              ? message.detail
+              : message.detail
+                ? `${agentName} could not report its context: ${message.detail}`
+                : `${agentName} could not report its context.`;
         }
         if (!usagePanel.hidden) renderUsagePanel();
         break;

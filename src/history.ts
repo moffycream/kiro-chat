@@ -138,9 +138,12 @@ export function previewOf(history: HistoryItem[]): string {
   return "";
 }
 
-export interface DayGroup {
+/** What the list helpers need of a chat: a stored record or an index entry. */
+export type ChatLike = Pick<ChatRecord, "id" | "cwd" | "updatedAt" | "agent">;
+
+export interface DayGroup<T extends ChatLike = ChatRecord> {
   label: string;
-  records: ChatRecord[];
+  records: T[];
 }
 
 /**
@@ -148,7 +151,7 @@ export interface DayGroup {
  * not a rolling 24 hours: a chat at 11pm last night is Yesterday even though
  * it was only twelve hours ago, which is what a person means by it.
  */
-export function groupByDay(records: ChatRecord[], now: number): DayGroup[] {
+export function groupByDay<T extends ChatLike>(records: T[], now: number): DayGroup<T>[] {
   const startOfDay = (time: number) => {
     const d = new Date(time);
     return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
@@ -156,7 +159,7 @@ export function groupByDay(records: ChatRecord[], now: number): DayGroup[] {
   const today = startOfDay(now);
   const DAY = 24 * 60 * 60 * 1000;
 
-  const groups = new Map<number, ChatRecord[]>();
+  const groups = new Map<number, T[]>();
   for (const record of records ?? []) {
     const day = startOfDay(record.updatedAt);
     const bucket = groups.get(day);
@@ -182,10 +185,10 @@ export function groupByDay(records: ChatRecord[], now: number): DayGroup[] {
 }
 
 /** Chats that belong to the open folder. With no folder open, none do. */
-export function forWorkspace(
-  records: ChatRecord[],
+export function forWorkspace<T extends ChatLike>(
+  records: T[],
   cwd: string | undefined
-): ChatRecord[] {
+): T[] {
   if (!cwd) return [];
   // Whole-path equality, so "kiro-chat-old" is never mistaken for "kiro-chat".
   return (records ?? []).filter((record) => samePath(record.cwd, cwd));
@@ -197,7 +200,7 @@ export function forWorkspace(
  * would ask the wrong program about it. A record from before the agent was
  * stored is Kiro's, since nothing else could have made it.
  */
-export function forAgent(records: ChatRecord[], agent: string): ChatRecord[] {
+export function forAgent<T extends ChatLike>(records: T[], agent: string): T[] {
   return (records ?? []).filter((record) => (record.agent === "qoder" ? "qoder" : "kiro") === agent);
 }
 
@@ -209,7 +212,7 @@ export function forAgent(records: ChatRecord[], agent: string): ChatRecord[] {
  * repo they have not touched in a week because of work done somewhere else.
  * Counting per folder makes the cap mean what the list shows.
  */
-export function pruneHistory(records: ChatRecord[], max: number): ChatRecord[] {
+export function pruneHistory<T extends ChatLike>(records: T[], max: number): T[] {
   const limit = Math.max(0, max);
   const seen = new Map<string, number>();
   return [...(records ?? [])]
@@ -224,7 +227,7 @@ export function pruneHistory(records: ChatRecord[], max: number): ChatRecord[] {
 }
 
 /** Save a chat, replacing any earlier save of the same one. */
-export function upsertRecord(records: ChatRecord[], record: ChatRecord): ChatRecord[] {
+export function upsertRecord<T extends ChatLike>(records: T[], record: T): T[] {
   const rest = (records ?? []).filter((r) => r.id !== record.id);
   return [record, ...rest];
 }

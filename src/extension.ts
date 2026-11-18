@@ -15,7 +15,12 @@ export function activate(context: vscode.ExtensionContext): void {
     );
   }
 
-  const provider = new ChatViewProvider(context.extensionUri, output, context.globalState);
+  const provider = new ChatViewProvider(
+    context.extensionUri,
+    output,
+    context.globalState,
+    context.globalStorageUri.fsPath
+  );
 
   context.subscriptions.push(
     output,

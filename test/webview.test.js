@@ -2537,7 +2537,7 @@ test("an oversized image falls back to a text chip", () => {
  */
 test("past chats are stored with what is needed to reopen them", () => {
   assert.match(provider, /sessionId: this\.chatSessionId \?\? this\.session\.currentSessionId/);
-  assert.match(provider, /HISTORY_KEY/, "history has to be stored somewhere durable");
+  assert.match(provider, /this\.chats\.save\(record, MAX_CHATS\)/, "history has to be stored somewhere durable");
   assert.match(js, /case "openChat"/, "the webview must react to a chat being opened");
 });
 
@@ -2709,11 +2709,17 @@ test("saving a chat is debounced, and reads the list at write time", () => {
   const body = flush.slice(0, flush.indexOf("\n  }"));
   // Holding the whole list in memory instead would let a second VS Code
   // window's saves be overwritten by this one's stale copy.
+  assert.match(body, /this\.chats\.save\(record, MAX_CHATS\)/);
+  // The store re-reads the index as it writes (`chatStore.ts`); holding it in
+  // memory instead would let a second window's saves be overwritten.
+  const store = fs.readFileSync(path.join(root, "src", "chatStore.ts"), "utf8");
+  const save = store.slice(store.indexOf("  save(record"), store.indexOf("  remove(id"));
   assert.match(
-    body,
-    /upsertRecord\(this\.allChats\(\), record\)/,
+    save,
+    /upsertRecord\(before, indexEntryOf\(record\)\)/,
     "the stored list must be re-read when the pending chat is written"
   );
+  assert.match(save, /const before = this\.index\(\)/);
   assert.doesNotMatch(provider, /private chats: ChatRecord\[\]/, "and never cached");
 
   const dispose = provider.slice(provider.indexOf("dispose(): void {"));
@@ -2745,7 +2751,9 @@ test("the past-chats list can be searched and escaped", () => {
   );
 
   assert.match(js, /history-preview/, "identical titles need the newest line to tell them apart");
-  assert.match(provider, /preview: previewOf\(/, "which the provider has to send");
+  // Worked out when the chat is saved (`indexEntryOf`), so drawing the list
+  // reads no transcript files.
+  assert.match(provider, /preview: r\.preview/, "which the provider has to send");
   assert.match(css, /^\.history-preview \{/m);
   assert.match(css, /^\.history-search \{/m);
 

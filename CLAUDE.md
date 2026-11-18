@@ -782,6 +782,17 @@ direct-write review path is the one that runs. No credits and no context figure 
   (`model` / `qoderModel`) because the ids are each CLI's own.
 - **Switching is the configuration watcher's job**, so the menu and a hand-edited setting switch
   the same way: `switchAgent` puts the chat away and starts a fresh one with `restart: true`.
+- **Qoder's account usage is read off its own `/usage` screen**, because nothing else carries
+  it: ACP token counts are all 0, the SDK mode has no account request, the CLI's account calls
+  are encrypted, and the screen draws nothing on plain pipes. `resources/conpty-capture.ps1`
+  runs `qodercli` in a Windows pseudo-console nobody sees, and `qoderUsage.ts` (free of
+  `vscode`) drives it with steps that wait for Qoder's screens and parses the rows;
+  `test/fixtures/qoder-usage-screen.raw` is the captured stream. Two ConPTY traps: without
+  `STARTF_USESTDHANDLES` the child writes to PowerShell's own redirected stdout and the
+  pseudo-console sees nothing; and a folder Qoder has not seen asks "Do you trust…" first,
+  which `if:trust` answers only when drawn. It runs in an empty temp folder of its own, so
+  that trust exposes nothing. It is a screen meant for people: a Qoder update that renames
+  a row makes the check report "did not show its usage screen" rather than wrong figures.
 - **The webview text says "Kiro" almost everywhere.** Menu headings and the setup screen follow
   `agentName`; the rest of the panel's wording does not yet.
 
@@ -1032,7 +1043,18 @@ agentCapabilities: {
 
 ## Chat history
 
-Records live in `context.globalState` under `kiroChat.history`. The transcript itself is maintained by the **webview** (it already did, for surviving panel moves) and posted up as a `transcript` message after each turn — one source of truth rather than accumulating chunks in the extension host too.
+**Each chat is its own file; `globalState` holds only an index.** `chatStore.ts` (free of
+`vscode`) writes `<globalStorage>/chats/<id>.json` and keeps titles, dates and previews under
+`kiroChat.chatIndex`. VS Code stores an extension's whole `globalState` as one blob, so when
+every transcript lived under `kiroChat.history` each save — and any unrelated globalState
+write — rewrote all of them: 76 chats, 4.4 MB, on a real profile. `migrate()` moves the old
+entry once: every file is written and read back before the index is written, and the old
+entry is cleared only then — it cannot be kept "for safety", because leaving it costs exactly
+what the move saves. A version from before 0.41.6 therefore finds no history. `sweep()`
+deletes unlisted files only when older than a day, because another window writes its file a
+moment before its index entry.
+
+The transcript itself is maintained by the **webview** (it already did, for surviving panel moves) and posted up as a `transcript` message after each turn — one source of truth rather than accumulating chunks in the extension host too.
 
 Chats are filtered to the open folder, because Kiro binds a session to its `cwd` and a chat from another project cannot meaningfully resume. `forWorkspace` normalises Windows path spellings; comparing raw strings would silently hide the user's own chats.
 
@@ -1137,7 +1159,7 @@ The viewer lives entirely in the webview and needs no extension-host message.
 
 ### Modules kept free of `vscode` on purpose
 
-`src/usage.ts`, `src/setupWatcher.ts`, `src/startupError.ts`, `src/history.ts`, `src/promptBlocks.ts`, `src/editModes.ts`, `src/sessionLocks.ts`, `src/processFacts.ts`, `src/launchInputs.ts`, `src/tokenRetry.ts`, `src/agentConfig.ts`, `src/cliUpdate.ts`, `src/progressiveContext.ts`, `src/skillFiles.ts`, `src/skillUrl.ts`, `src/skillFetch.ts`, `src/toolDetails.ts`, `src/agents.ts` and the `needsShell`/`quote` exports of `src/acpClient.ts` have no `vscode` import so the tests can `require("../out/...")` directly. There is no VS Code test harness in this repo — that constraint is the entire testing strategy. Keep new parsing and logic modules importable without `vscode`.
+`src/usage.ts`, `src/setupWatcher.ts`, `src/startupError.ts`, `src/history.ts`, `src/promptBlocks.ts`, `src/editModes.ts`, `src/sessionLocks.ts`, `src/processFacts.ts`, `src/launchInputs.ts`, `src/tokenRetry.ts`, `src/agentConfig.ts`, `src/cliUpdate.ts`, `src/progressiveContext.ts`, `src/skillFiles.ts`, `src/skillUrl.ts`, `src/skillFetch.ts`, `src/toolDetails.ts`, `src/agents.ts`, `src/qoderUsage.ts`, `src/chatStore.ts` and the `needsShell`/`quote` exports of `src/acpClient.ts` have no `vscode` import so the tests can `require("../out/...")` directly. There is no VS Code test harness in this repo — that constraint is the entire testing strategy. Keep new parsing and logic modules importable without `vscode`.
 
 `setupWatcher.ts` additionally takes its timers through an injected `Scheduler`, so `test/setupWatcher.test.js` drives the whole state machine without waiting out a real interval. Follow that pattern for anything else that polls.
 
@@ -1482,9 +1504,21 @@ did — `slice(0, 2600)`, `slice(0, 2200)` three times, `slice(0, 1400)`, `slice
 above the line it wanted, which says nothing about whether the code is right. Slice to the
 next `case`, the next `function`, the next `private`, or the end of the block.
 
+**A streaming reply redraws only its tail.** `paintStreaming` renders a block once it can
+no longer change and puts it before `.md-tail`; only the tail is re-rendered per frame.
+Re-rendering the whole buffer cost 40–100 ms per frame at 30 KB. `settledBoundary` only
+cuts at a blank line followed by a whole line that is not a list item, table row, quote or
+indent, outside a fence — paired the way `renderMarkdown`'s FENCE pattern pairs them, ```
+plus info opening and only a bare ``` closing. `test/streamingRepaint.test.js` checks every
+prefix of a set of replies against one full render; extend its samples before loosening the
+rule. `finishAgentBubble` still does one whole render, so the stored look never depends on
+the split. The CSS lets settled blocks skip layout (`content-visibility`) only while the
+tail exists — 21.8 → 1.6 ms of layout per frame at 75 KB — so finished and restored replies
+lay out normally.
+
 **The code-block copy button is delegated, and it must stay that way.** A streaming reply
-runs `body.innerHTML = renderMarkdown(buffer)` on every frame, so a listener bound to the
-button is discarded several times a second and the control dies mid-reply. One listener
+re-renders its tail on every frame and the whole body when it finishes, so a listener bound
+to the button is discarded mid-reply and the control dies. One listener
 sits on `#messages` and resolves `closest(".code-copy")`. It copies `code.textContent` —
 the rendered element — so what reaches the clipboard is exactly what is on screen, with no
 second escaping pass to get wrong, and it re-checks `isConnected` before writing its

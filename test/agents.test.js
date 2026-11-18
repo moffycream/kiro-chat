@@ -114,6 +114,20 @@ test("the panel names the agent that is answering, not always Kiro", () => {
   assert.match(session, /`\$\{this\.profile\.label\} is not connected\.`/);
 });
 
+test("Qoder's usage is fetched into the panel, never through a visible terminal", () => {
+  const js = fs.readFileSync(path.join(__dirname, "..", "media", "chat.js"), "utf8");
+  const panel = js.slice(js.indexOf("function renderUsagePanel()"), js.indexOf("function setUsagePanel("));
+  assert.match(panel, /currentAgent !== "kiro"/);
+  assert.match(panel, /type: "refreshUsage"/);
+  assert.doesNotMatch(js, /openAgentUsage/);
+  const provider = fs.readFileSync(path.join(__dirname, "..", "src", "chatViewProvider.ts"), "utf8");
+  assert.match(provider, /rows: qoder\.rows/);
+  // The capture script ships with the extension.
+  const ignore = fs.readFileSync(path.join(__dirname, "..", ".vscodeignore"), "utf8");
+  assert.doesNotMatch(ignore, /^resources/m);
+  assert.ok(fs.existsSync(path.join(__dirname, "..", "resources", "conpty-capture.ps1")));
+});
+
 test("a refused agent switch is said out loud, not dropped", () => {
   // Right after an install the window refuses the write until it reloads, and
   // the rejection used to vanish inside the async message handler.

@@ -26,6 +26,7 @@ import { KiroSkill, readProgressiveContext } from "./progressiveContext";
 import { formatToolValue, ToolValue } from "./toolDetails";
 import { EffortState, readSessionConfig, SessionConfig } from "./configOptions";
 import { fetchAccountUsage } from "./accountUsage";
+import { fetchQoderUsage } from "./qoderUsage";
 import { LaunchInputs, launchInputsChanged, snapshotLaunchInputs } from "./launchInputs";
 import {
   DeleteOutcome,
@@ -1480,7 +1481,15 @@ export class KiroSession {
   private contextAnswer(): CommandResult {
     const data = this.contextData;
     const breakdown = data ? readContextCommand(data) : undefined;
-    if (!data || !breakdown) return { ok: false, text: `${this.profile.label} has not reported its context yet.` };
+    if (!data || !breakdown) {
+      // Kiro reports this a moment after a turn; Qoder never does.
+      return {
+        ok: false,
+        text: this.profile.kiroExtras
+          ? `${this.profile.label} has not reported its context yet.`
+          : `${this.profile.label} does not report its context to the panel.`,
+      };
+    }
     const lines = breakdown.categories.map(
       (category) =>
         `${category.label}: ${category.tokens.toLocaleString("en-US")} tokens (${category.percent}%)`
@@ -1489,7 +1498,21 @@ export class KiroSession {
   }
 
   private async accountUsage(): Promise<CommandResult> {
-    // It borrows a Kiro v2 agent; nothing like it exists for another CLI.
+    // Kiro's borrows a v2 agent. Qoder reports nothing over ACP, so its own
+    // `/usage` screen is run invisibly and read — see `qoderUsage.ts`.
+    if (this.agent === "qoder") {
+      if (!this.launch) throw new Error("Qoder is not connected.");
+      const usage = await fetchQoderUsage({
+        command: this.launch.command,
+        script: path.join(__dirname, "..", "resources", "conpty-capture.ps1"),
+      });
+      this.output.appendLine(`[usage] Qoder: ${JSON.stringify(usage)}`);
+      return {
+        ok: true,
+        data: { qoder: usage },
+        text: usage.rows.map((row) => `${row.label}: ${row.value}`).join("\n"),
+      };
+    }
     if (!this.profile.kiroExtras) {
       return { ok: false, text: `${this.profile.label} does not report plan usage to the panel.` };
     }

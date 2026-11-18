@@ -77,18 +77,14 @@ import {
   forWorkspace,
   groupByDay,
   HistoryItem,
-  previewOf,
-  pruneHistory,
   removeLatestTurns,
   stableTitle,
-  upsertRecord,
   forAgent,
 } from "./history";
+import { ChatIndexEntry, ChatStore } from "./chatStore";
 import { applyChatMode, chatMode } from "./chatModes";
 import { applyInstructions, instructionsRow, normaliseInstructions } from "./instructions";
 
-/** Past chats are kept here, across windows and restarts. */
-const HISTORY_KEY = "kiroChat.history";
 /** Enough to be useful without turning globalState into a database. */
 const MAX_CHATS = 100;
 /**
@@ -218,11 +214,29 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
   private pendingChat: ChatRecord | undefined;
   private flushTimer: NodeJS.Timeout | undefined;
 
+  /** Past chats: one file each under `storageDir`, an index in `store`. */
+  private readonly chats: ChatStore;
+
   constructor(
     private readonly extensionUri: vscode.Uri,
     private readonly output: vscode.OutputChannel,
-    private readonly store: vscode.Memento
+    private readonly store: vscode.Memento,
+    storageDir: string
   ) {
+    this.chats = new ChatStore(path.join(storageDir, "chats"), store);
+    // Once: out of the single globalState entry every chat used to share.
+    // Never awaited — a chat opened in the meantime is found either way,
+    // because nothing reads the old entry and the move only adds to the index.
+    void this.chats
+      .migrate()
+      .then((moved) => {
+        if (moved > 0) this.output.appendLine(`Moved ${moved} stored chat(s) into their own files.`);
+        const swept = this.chats.sweep(Date.now());
+        if (swept > 0) this.output.appendLine(`Removed ${swept} chat file(s) no longer listed.`);
+      })
+      .catch((err) =>
+        this.output.appendLine(`Could not move stored chats yet; will try again: ${String(err)}`)
+      );
     this.setup = new SetupWatcher({
       probe: async () => {
         const found = await findAgent(this.configuredAgent(), () => undefined);
@@ -687,18 +701,19 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     return vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? "";
   }
 
-  private allChats(): ChatRecord[] {
-    return this.store.get<ChatRecord[]>(HISTORY_KEY, []);
+  /** Every stored chat, without transcripts. `chats.load` fetches one whole. */
+  private allChats(): ChatIndexEntry[] {
+    return this.chats.index();
   }
 
   /**
    * Write the pending chat out. Debounced, because `saveCurrentChat` runs on
-   * every message and each write serialises every chat we hold — the records
-   * carry whole transcripts, so a turn was moving megabytes several times.
+   * every message. A save writes that chat's own file and the small index
+   * (`chatStore.ts`); it used to rewrite every stored transcript at once.
    *
-   * Only the one chat is held back, and the list it joins is read at write
-   * time. Caching the list instead would let a second VS Code window's saves
-   * be overwritten by this one's stale copy.
+   * Only the one chat is held back, and the index it joins is read at write
+   * time. Caching it instead would let a second VS Code window's saves be
+   * overwritten by this one's stale copy.
    */
   private scheduleFlush(): void {
     if (this.flushTimer) return;
@@ -714,8 +729,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     const record = this.pendingChat;
     if (!record) return;
     this.pendingChat = undefined;
-    const kept = pruneHistory(upsertRecord(this.allChats(), record), MAX_CHATS);
-    void this.store.update(HISTORY_KEY, kept);
+    try {
+      void this.chats.save(record, MAX_CHATS);
+    } catch (err) {
+      // The chat stays on screen; only its saved copy is behind.
+      this.output.appendLine(`Could not save chat ${record.id}: ${String(err)}`);
+    }
   }
 
   /**
@@ -806,7 +825,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
           title: r.title,
           // Titles repeat — real chats open with "fix this" — so the newest
           // line is what actually tells two rows apart.
-          preview: previewOf(r.history ?? []),
+          preview: r.preview ?? "",
           messageCount: r.messageCount,
           at: new Date(r.updatedAt).toLocaleTimeString(undefined, {
             hour: "numeric",
@@ -848,12 +867,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     // Whatever is on screen now is not lost by opening something else.
     this.saveCurrentChat();
     this.flushChats();
+    // The transcript is in its own file, read only now that it is wanted.
+    const stored = this.chats.load(id) ?? { ...record, history: [] };
 
     this.chatId = record.id;
     // Pin the session this chat belongs to before anything can report a
     // transcript back, so reading a chat cannot rebind it to another one.
     this.chatSessionId = record.sessionId;
-    this.transcript = record.history ?? [];
+    this.transcript = stored.history ?? [];
     this.transcriptTruncated = record.truncated === true;
     this.attachments = [];
     this.postAttachments();
@@ -875,7 +896,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       // carries on from there rather than counting from zero.
       await this.session.loadSession(
         record.sessionId,
-        creditsSpentIn(record.history ?? [], record.truncated === true)
+        creditsSpentIn(stored.history ?? [], record.truncated === true)
       );
       this.everConnected = true;
     } catch (err) {
@@ -892,10 +913,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     // A save still waiting on the debounce would put the record straight back.
     if (this.pendingChat?.id === id) this.pendingChat = undefined;
     this.flushChats();
-    await this.store.update(
-      HISTORY_KEY,
-      this.allChats().filter((r) => r.id !== id)
-    );
+    await this.chats.remove(id);
     // Deleting the chat you are looking at leaves you in a fresh one.
     if (id === this.chatId) {
       this.chatId = freshId();
@@ -2394,6 +2412,20 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         `usage answered: ${JSON.stringify(result.data ?? result.text)}`
       );
 
+      // Qoder's rows are its own labels, read off its usage screen, and are
+      // drawn as they are rather than forced into Kiro's three figures.
+      const qoder = (result.data as any)?.qoder;
+      if (qoder) {
+        const account: Record<string, string> = {};
+        if (qoder.planName) account.planName = qoder.planName;
+        if (qoder.expiresOn) account.accountResetsOn = qoder.expiresOn;
+        if (Object.keys(account).length > 0) {
+          this.post({ type: "usage", usage: this.session.mergeUsage(account) });
+        }
+        this.post({ type: "usageReport", ok: true, text: result.text, rows: qoder.rows });
+        return;
+      }
+
       // Kiro answers with structured data. Older builds only print prose, so
       // fall back to reading that rather than showing nothing.
       const account = result.data
@@ -2426,9 +2458,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         type: "usageReport",
         ok: false,
         text:
-          `Kiro would not report account usage: ${message}\n\n` +
-          "Run `kiro-cli` in a terminal and type `/usage` to see your plan's credit total " +
-          "and reset date. Kiro Chat: Show Log has the full exchange.",
+          this.session.agentId === "kiro"
+            ? `Kiro would not report account usage: ${message}\n\n` +
+              "Run `kiro-cli` in a terminal and type `/usage` to see your plan's credit total " +
+              "and reset date. Kiro Chat: Show Log has the full exchange."
+            : `${message} Kiro Chat: Show Log has the details.`,
       });
     }
   }
@@ -2541,9 +2575,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       });
   }
 
-  private runInTerminal(command: string): void {
+  private runInTerminal(command: string, name = `${this.agentLabel} setup`): void {
     const terminal = vscode.window.createTerminal({
-      name: "Kiro setup",
+      name,
       shellPath: "powershell.exe",
     });
     terminal.show();

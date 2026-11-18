@@ -1,5 +1,43 @@
 # Changelog
 
+## 0.41.6
+
+- **Saving a chat no longer rewrites every chat you have.** All past chats were
+  kept in one VS Code storage entry, so finishing a turn rewrote the lot: on a
+  real profile, 76 chats and 4.4 MB each time. Each chat is now its own file in
+  the extension's storage folder, with a small list of titles and dates beside
+  it, so a save writes one chat and about 25 KB of list. Your existing chats
+  are moved over automatically the first time this version starts; they are
+  each read back before the old copy is removed. An older version of the
+  extension installed afterwards will not see them.
+
+## 0.41.5
+
+- **Long replies stream smoothly.** The panel used to redraw the whole reply
+  for every few words that arrived, so the longer an answer got, the choppier
+  it streamed. Finished paragraphs, lists, tables and code blocks are now drawn
+  once and left alone, and only the part still arriving is redrawn. Measured on
+  a 30 KB reply: about 3x less work overall. Near the end of a 75 KB reply, a
+  frame went from about 60 ms to about 2 ms of layout. The finished reply is
+  still drawn in one pass, so it looks exactly as before.
+
+## 0.41.4
+
+- **Qoder usage now shows up in the panel by itself.** With Qoder selected,
+  **Check Qoder usage** in the usage panel fills in your plan, when it
+  expires, credits used and your organisation's resource package, the same
+  figures Qoder's own `/usage` screen shows. No terminal opens: the extension
+  runs that screen out of sight in an empty folder of its own and reads it back,
+  which takes about ten seconds. The terminal button from 0.41.3 is gone.
+
+## 0.41.3
+
+- **The usage panel is honest about Qoder.** Qoder sends no credit, context or
+  plan figures to editor panels, so with Qoder selected the panel says that
+  plainly instead of offering a usage check that can never return anything.
+  **Show Qoder usage** opens Qoder in a terminal: press Enter, then type
+  `/usage` to see your real figures in Qoder's own screen.
+
 ## 0.41.2
 
 - **With Qoder selected, the panel says Qoder.** The panel title, the message
