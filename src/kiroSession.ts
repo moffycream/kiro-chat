@@ -974,12 +974,12 @@ export class KiroSession {
    * `process.env.HOME` is no good here: Windows does not set it.
    */
   private workspaceRoot(): string {
-    return this.workspaceRoots()[0];
+    return this.workspaceRoots()[0] ?? os.homedir();
   }
 
+  // Only real open folders: with none open, no path is inside, not the whole home folder.
   private workspaceRoots(): string[] {
-    const roots = (vscode.workspace.workspaceFolders ?? []).map((folder) => folder.uri.fsPath);
-    return roots.length > 0 ? roots : [os.homedir()];
+    return (vscode.workspace.workspaceFolders ?? []).map((folder) => folder.uri.fsPath);
   }
 
   // One definition of containment, shared with the boundary check below, so
@@ -1119,9 +1119,9 @@ export class KiroSession {
           ...callbacks,
         });
     const client = this.client;
-    client.start();
 
     try {
+      client.start();
       const init = await this.client.request(
         "initialize",
         {
@@ -1153,6 +1153,8 @@ export class KiroSession {
         this.output.appendLine(`Could not check for a Kiro CLI update: ${String(err)}`)
       );
     } catch (err) {
+      // A start that failed or timed out must not leave the agent running.
+      client.stop();
       const failure = err instanceof Error ? err.message : String(err);
       const message = describeStartupFailure(failure, this.startupLog);
       this.setStatus("stopped");
@@ -2646,7 +2648,7 @@ export class KiroSession {
    * look. A path that is never found is a file that is never snapshotted, and
    * therefore never reviewed.
    */
-  private pathsMentionedBy(update: any): string[] {
+  private candidatePaths(update: any): string[] {
     const raw = update?.rawInput ?? update?.input ?? update?.toolCall?.rawInput;
     const locations = (value: any) =>
       Array.isArray(value) ? value.map((entry: any) => entry?.path) : [];
@@ -2659,10 +2661,24 @@ export class KiroSession {
       ...locations(update?.toolCall?.locations),
       ...locations(raw?.operations),
     ];
+    return candidates.filter((value): value is string => typeof value === "string" && !!value);
+  }
 
+  /** Whether a tool names any path outside the open folders. */
+  private mentionsOutsidePath(update: any): boolean {
+    return this.candidatePaths(update).some((value) => {
+      try {
+        this.resolveInsideWorkspace(value);
+        return false;
+      } catch {
+        return true;
+      }
+    });
+  }
+
+  private pathsMentionedBy(update: any): string[] {
     const out: string[] = [];
-    for (const value of candidates) {
-      if (typeof value !== "string" || !value) continue;
+    for (const value of this.candidatePaths(update)) {
       try {
         const full = this.resolveInsideWorkspace(value);
         if (!out.includes(full)) out.push(full);
@@ -3328,7 +3344,10 @@ export class KiroSession {
      */
     const askAnyway = config.get<boolean>("askBeforeEdits", false);
 
-    if (!askAnyway && reviewWillOpen && isWriteLikeTool(params?.toolCall ?? params)) {
+    // A path outside the open folders always gets a card: no review covers it.
+    const outside = this.mentionsOutsidePath(params?.toolCall ?? params);
+
+    if (!outside && !askAnyway && reviewWillOpen && isWriteLikeTool(params?.toolCall ?? params)) {
       const allow = allowOption();
       this.output.appendLine(
         `Letting an edit through without a prompt; the review diff is the gate: ` +
@@ -3365,7 +3384,7 @@ export class KiroSession {
      * about seeing an *edit* coming, and a read is not an edit. Autopilot
      * already returned above through the `autoApprove` branch.
      */
-    if (isReadOnlyTool(params?.toolCall ?? params)) {
+    if (!outside && isReadOnlyTool(params?.toolCall ?? params)) {
       const allow = allowOption();
       this.output.appendLine(
         `Letting a read-only tool through without a prompt: ` +

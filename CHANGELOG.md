@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.42.2
+
+- **Reading or editing a file outside your open folders now asks first**, unless auto-approve
+  is on. No review covers those files, so the permission card is the only check. With no
+  folder open, your home folder no longer counts as inside.
+- **Launch settings are read from your user settings only.** `kiroChat.command`,
+  `kiroChat.qoderCommand`, `kiroChat.args`, `kiroChat.env` and `kiroChat.autoApproveTools` are
+  now machine-scoped, so a workspace's `.vscode/settings.json` cannot change which program runs
+  or turn on auto-approve. Move any per-workspace values to your user settings.
+- **On Windows, a `.cmd` or `.bat` launch with `"` or `%` in its command or arguments is
+  refused** with an error, because cmd.exe could run part of it as a separate command.
+- **Deleting a chat asks first.**
+- **Errors are no longer silent.** A send or settings change that failed used to fail without a
+  word; it now shows an error and is logged.
+- **Agents stop cleanly.** A start that fails or times out no longer leaves the agent running,
+  stopping Qoder while it starts no longer leaves its daemon behind, and a write to an agent
+  that has just exited is logged instead of raising an error.
+- **A Qoder turn no longer hangs when its stream ends**; it fails with a reason instead.
+- **A saved Qoder path that no longer exists is cleared**, as Kiro's already was, so the panel
+  looks for `qodercli` again.
+- **Table column alignment works.** The panel's security policy was blocking it.
+- **Reduce Motion is respected in more places**: the steps spinner, the step pulse, the usage
+  bar, and the light around the message box, which was meant to stop already.
+- **Keyboard and accessibility fixes.** Closing a menu returns focus to its button, the focus
+  ring on a segmented control is no longer cut off, High Contrast outlines the selected menu
+  row, and each attachment's remove button names its file.
+- **Pressing Enter to pick an input method candidate no longer sends the message** or picks a
+  slash command, and digits typed in the instructions box no longer answer a permission card.
+- **History will not open while a reply is streaming**, where it would have replaced the reply.
+- Popup shadows follow the theme.
+
 ## 0.42.1
 
 - **A new chat's first message uses the model you picked.** The panel switched a new chat to

@@ -838,10 +838,12 @@ test("a table reads as prose, not as a spreadsheet", () => {
 
 test("column alignment markers are honoured", () => {
   const html = loadRenderer()("| L | C | R |\n|:---|:---:|---:|\n| a | b | c |");
-  assert.match(html, /<th style="text-align:center">C<\/th>/);
-  assert.match(html, /<th style="text-align:right">R<\/th>/);
-  assert.match(html, /<td style="text-align:right">c<\/td>/, "the body follows the header");
-  assert.doesNotMatch(html, /text-align:left/, "left is the default, not a style to write");
+  assert.match(html, /<th class="align-center">C<\/th>/);
+  assert.match(html, /<th class="align-right">R<\/th>/);
+  assert.match(html, /<td class="align-right">c<\/td>/, "the body follows the header");
+  assert.doesNotMatch(html, /align-left/, "left is the default, not a class to write");
+  // An inline style= would be blocked by the CSP, so alignment must be a class.
+  assert.doesNotMatch(html, /style=/);
 });
 
 /*
@@ -926,7 +928,7 @@ test("the transcript says when Kiro is working, and for how long", () => {
   // The clock has to keep running while the reply streams — that is the whole
   // point of it — so only the end of the turn stops it.
   const start = js.slice(js.indexOf("function startThinking()"));
-  assert.match(start.slice(0, 800), /setInterval\(tick, 1000\)/);
+  assert.match(start.slice(0, 1100), /setInterval\(tick, 1000\)/);
   const chunk = js.slice(js.indexOf('case "chunk": {'));
   assert.doesNotMatch(
     chunk.slice(0, 500),
@@ -1471,7 +1473,7 @@ test("asking before an edit as well as reviewing it is available", () => {
   assert.match(body, /const askAnyway = config\.get<boolean>\("askBeforeEdits", false\);/);
   assert.match(
     body,
-    /if \(!askAnyway && reviewWillOpen && isWriteLikeTool/,
+    /if \(!outside && !askAnyway && reviewWillOpen && isWriteLikeTool/,
     "and it has to actually suppress the skip"
   );
   // Reachable without the JSON editor, since that is the point — as the
@@ -1525,7 +1527,8 @@ test("the numbers on a permission card actually work", () => {
    * `setBusy` disables Send, not the textarea — so a digit while something is
    * being written is text, and the buttons are still there to click.
    */
-  assert.match(body, /el\.tagName === "TEXTAREA" && String\(el\.value \|\| ""\)\.trim\(\) !== ""/);
+  assert.match(body, /el !== inputEl \|\| String\(el\.value \|\| ""\)\.trim\(\) !== ""/);
+  // Any other textarea (the instructions box) is writing even when empty.
 });
 
 /*

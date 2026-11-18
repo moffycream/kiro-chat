@@ -321,7 +321,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     };
     view.webview.html = this.html(view.webview);
 
-    view.webview.onDidReceiveMessage(async (message) => {
+    const handle = async (message: any) => {
       if (this.restoringCheckpoint && message.type !== "ready") return;
       switch (message?.type) {
         case "ready":
@@ -671,7 +671,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
           break;
         }
       }
-    });
+    };
+    // Without this a failed settings write or send was an unhandled rejection the user never saw.
+    view.webview.onDidReceiveMessage((message) =>
+      handle(message).catch((err) => {
+        const reason = err instanceof Error ? err.message : String(err);
+        this.output.appendLine(`Could not handle "${String(message?.type)}": ${reason}`);
+        void vscode.window.showErrorMessage(`Kiro Chat: ${reason}`);
+      })
+    );
 
     view.onDidDispose(() => {
       this.view = undefined;
@@ -910,6 +918,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
   }
 
   private async deleteChat(id: string): Promise<void> {
+    const answer = await vscode.window.showWarningMessage(
+      "Delete this chat?",
+      { modal: true, detail: "It is removed from the history and cannot be reopened." },
+      "Delete"
+    );
+    if (answer !== "Delete") return;
     // A save still waiting on the debounce would put the record straight back.
     if (this.pendingChat?.id === id) this.pendingChat = undefined;
     this.flushChats();

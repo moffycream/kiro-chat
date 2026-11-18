@@ -23,29 +23,24 @@ export async function runStartupChecks(
  */
 async function repairStalePath(output: vscode.OutputChannel): Promise<void> {
   const config = vscode.workspace.getConfiguration("kiroChat");
-  const inspected = config.inspect<string>("command");
-  const saved = (inspected?.globalValue ?? "").trim();
+  // Both are machine-scoped, so the global value is the only one that applies.
+  for (const [key, name] of [["command", "Kiro"], ["qoderCommand", "Qoder"]]) {
+    const saved = (config.inspect<string>(key)?.globalValue ?? "").trim();
 
-  if (!saved) {
-    return;
-  }
-  // A bare command name or a WSL launch is resolved elsewhere, not a file path.
-  if (saved === "wsl" || !saved.includes("/") && !saved.includes("\\")) {
-    return;
-  }
-  if (existsSync(saved)) {
-    return;
-  }
+    // A bare command name or a WSL launch is resolved elsewhere, not a file path.
+    if (!saved || saved === "wsl" || (!saved.includes("/") && !saved.includes("\\"))) continue;
+    if (existsSync(saved)) continue;
 
-  output.appendLine(`Saved Kiro path no longer exists: ${saved}. Falling back to search.`);
-  await config.update("command", "", vscode.ConfigurationTarget.Global);
+    output.appendLine(`Saved ${name} path no longer exists: ${saved}. Falling back to search.`);
+    await config.update(key, "", vscode.ConfigurationTarget.Global);
 
-  const choice = await vscode.window.showWarningMessage(
-    "Your saved path to Kiro no longer exists, so Kiro Chat will look for it again. This usually happens after Kiro updates itself.",
-    "Show log"
-  );
-  if (choice === "Show log") {
-    output.show(true);
+    const choice = await vscode.window.showWarningMessage(
+      `Your saved path to ${name} no longer exists, so Kiro Chat will look for it again. This usually happens after ${name} updates itself.`,
+      "Show log"
+    );
+    if (choice === "Show log") {
+      output.show(true);
+    }
   }
 }
 

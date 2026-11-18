@@ -411,3 +411,22 @@ test("the SDK ships as a bundle loaded with a real import, and its terms ship wi
   const ignore = fs.readFileSync(path.join(root, ".vscodeignore"), "utf8");
   assert.doesNotMatch(ignore, /^out\/\*\*$|^out\/vendor/m);
 });
+
+test("a stream that ends on its own fails the turn instead of hanging it", async () => {
+  const { sdk, client } = harness();
+  await client.request("initialize", {});
+  const { sessionId } = await client.request("session/new", {});
+  const turn = client.request("session/prompt", { sessionId, prompt: [] });
+  await tick();
+  sdk.queries[0].end();
+  await assert.rejects(turn, /stream ended/);
+});
+
+test("a stop while the daemon starts leaves no daemon behind", async () => {
+  const { sdk, client } = harness();
+  const starting = client.request("initialize", {});
+  client.stop();
+  await assert.rejects(starting, /stopped/);
+  await tick();
+  assert.equal(sdk.daemonStopped, 1);
+});

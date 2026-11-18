@@ -464,3 +464,26 @@ test("a prompting tool waits for an open review to be answered", async () => {
   await settle();
   assert.equal(shown.length, 1, "and appears once the review has been answered");
 });
+
+// No review covers a file outside the open folders, so the card is the only gate.
+test("a read or edit outside the open folders still asks", async () => {
+  const { session, shown } = held();
+  session.workspaceRoots = () => [root];
+  const yes = [{ optionId: "yes", name: "Yes", kind: "allow_once" }];
+  const secret = path.join(require("node:os").homedir(), ".ssh", "id_rsa");
+
+  const inside = await session.askPermission({
+    toolCall: { title: "read", kind: "read", rawInput: { path: path.join(root, "README.md") } },
+    options: yes,
+  });
+  assert.equal(inside.outcome.optionId, "yes", "a read inside is waved through");
+
+  session.askPermission({ toolCall: { title: "read", kind: "read", rawInput: { path: secret } }, options: yes });
+  session.askPermission({ toolCall: { title: "edit", kind: "edit", locations: [{ path: secret }] }, options: yes });
+  await settle();
+  assert.equal(shown.length, 1, "the outside read asks");
+  shown[0].answer("yes");
+  await settle();
+  await settle();
+  assert.equal(shown.length, 2, "and so does the outside edit");
+});

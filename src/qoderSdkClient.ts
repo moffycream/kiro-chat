@@ -313,12 +313,18 @@ export class QoderSdkClient {
   private async initialize(): Promise<any> {
     this.sdk = await this.options.loadSdk();
     this.options.onLog(`Starting the Qoder SDK daemon with ${this.options.cliPath}`);
-    this.daemon = await this.sdk.startDaemon({
+    const daemon = await this.sdk.startDaemon({
       auth: this.sdk.qodercliAuth(),
       pathToQoderCLIExecutable: this.options.cliPath,
       env: this.options.env && Object.keys(this.options.env).length ? { ...process.env, ...this.options.env } : undefined,
       stderr: (line: string) => this.options.onLog(`[qoder stderr] ${String(line).trimEnd()}`),
     });
+    // Stopped while the daemon was starting: stop() had nothing to stop, so do it here.
+    if (!this.running) {
+      void Promise.resolve(daemon?.stop?.()).catch(() => undefined);
+      throw new Error("The Qoder agent was stopped.");
+    }
+    this.daemon = daemon;
     return {
       agentInfo: { name: "Qoder" },
       agentCapabilities: { loadSession: true, promptCapabilities: { image: true } },
@@ -424,6 +430,7 @@ export class QoderSdkClient {
   }
 
   private async pump(session: Session): Promise<void> {
+    let reason = new Error("Qoder stopped answering: its stream ended.");
     try {
       for await (const message of session.query) {
         if (session.closed) break;
@@ -431,10 +438,11 @@ export class QoderSdkClient {
       }
     } catch (err) {
       if (!session.closed) this.options.onLog(`Qoder stream ended: ${String(err)}`);
-      const turn = session.turn;
-      session.turn = undefined;
-      turn?.reject(err instanceof Error ? err : new Error(String(err)));
+      reason = err instanceof Error ? err : new Error(String(err));
     }
+    // A stream that ended without a close would leave the turn, and the panel, waiting forever.
+    if (this.session === session) this.session = undefined;
+    this.closeSession(session, reason);
   }
 
   private update(session: Session, update: any): void {

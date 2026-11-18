@@ -18,6 +18,9 @@ test("quoting protects paths the shell would otherwise split", () => {
   assert.equal(quote('"already quoted"'), '"already quoted"');
   assert.equal(quote("a&b"), '"a&b"');
   assert.equal(quote(""), "");
+  assert.throws(() => quote('x"&calc&"'));
+  assert.throws(() => quote('"a"&calc&"b"'));
+  assert.throws(() => quote("%PATH%"));
 });
 
 /*

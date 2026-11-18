@@ -59,7 +59,9 @@ export function acpArgs(launch: string[], user: string[]): string[] {
 
 /** Wrap in double quotes for cmd.exe when there is anything to protect. */
 export function quote(value: string): string {
-  if (!value || /^".*"$/.test(value)) return value;
+  if (!value || /^"[^"%]*"$/.test(value)) return value;
+  // cmd.exe cannot escape " inside quotes and expands %VAR% even there.
+  if (/["%]/.test(value)) throw new Error(`Cannot pass ${value} through cmd.exe: it contains " or %.`);
   return /[\s&|<>^()]/.test(value) ? `"${value}"` : value;
 }
 
@@ -175,6 +177,8 @@ export class AcpClient {
 
     proc.stdout?.setEncoding("utf8");
     proc.stdout?.on("data", (chunk: string) => this.consume(chunk));
+    // A write to a process that just died fails later as EPIPE; unheard, it crashes the host.
+    proc.stdin?.on("error", (err) => this.options.onLog(`Could not write to Kiro: ${err.message}`));
 
     proc.stderr?.setEncoding("utf8");
     proc.stderr?.on("data", (chunk: string) => {

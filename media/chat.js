@@ -553,7 +553,7 @@
           i -= 1;
 
           const cell = (text, align, tag) =>
-            `<${tag}${align ? ` style="text-align:${align}"` : ""}>${inline(text)}</${tag}>`;
+            `<${tag}${align ? ` class="align-${align}"` : ""}>${inline(text)}</${tag}>`;
           const out = ['<div class="table-wrap"><table><thead><tr>'];
           heads.forEach((head, n) => out.push(cell(head, aligns[n], "th")));
           out.push("</tr></thead><tbody>");
@@ -1041,6 +1041,12 @@
       bubble.group.label.textContent = "Working…";
       // A ticking second is what separates a slow turn from a stuck one.
       const tick = () => {
+        // Cleared, rewound or switched away mid-turn: nothing calls stopThinking then.
+        if (bubble.root.isConnected === false) {
+          clearInterval(bubble.timer);
+          bubble.timer = 0;
+          return;
+        }
         if (!bubble.startedAt) return;
         bubble.group.time.textContent = elapsedText(Date.now() - bubble.startedAt);
       };
@@ -2987,6 +2993,8 @@
   ];
 
   function setMenu(menu, button, open) {
+    // Hiding the focused item would drop focus to <body>; hand it back to the opener.
+    if (!open && menu.contains?.(document.activeElement)) button.focus();
     menu.hidden = !open;
     button.setAttribute("aria-expanded", open ? "true" : "false");
   }
@@ -3900,6 +3908,7 @@
       x.className = "chip-x";
       x.textContent = "\u00d7";
       x.title = "Remove";
+      x.setAttribute("aria-label", `Remove ${fileName(a.label)}`);
       x.addEventListener("click", () =>
         vscode.postMessage({ type: "removeAttachment", id: a.id })
       );
@@ -4001,7 +4010,8 @@
         el &&
         (el.tagName === "INPUT" ||
           el.isContentEditable ||
-          (el.tagName === "TEXTAREA" && String(el.value || "").trim() !== ""));
+          (el.tagName === "TEXTAREA" &&
+            (el !== inputEl || String(el.value || "").trim() !== "")));
       const card = writing ? null : livePermissionCard();
       const button =
         card && card.querySelectorAll(".permission-actions button")[Number(event.key) - 1];
@@ -4497,6 +4507,7 @@
      * command out of the list would also send whatever was in the box as a
      * message — the half-typed name.
      */
+    if (event.isComposing || event.keyCode === 229) return; // IME is confirming a candidate
     if (!slashMenu.hidden && slashMatches.length > 0) {
       if (event.key === "ArrowDown" || event.key === "ArrowUp") {
         event.preventDefault();
@@ -5123,6 +5134,8 @@
 
   function openHistory() {
     if (setup) return; // setup has more to say than an empty list
+    // Mid-reply the list would replace the live bubble and lose streamed text.
+    if (busy) return;
     historyOpen = true;
     historyQuery = "";
     setComposerEnabled(false, "Pick a chat, or go back");

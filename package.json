@@ -2,7 +2,7 @@
   "name": "kiro-agent-chat",
   "displayName": "Kiro Agent Chat (Unofficial)",
   "description": "Chat with the Kiro agent inside VS Code, like Copilot Chat.",
-  "version": "0.42.1",
+  "version": "0.42.2",
   "publisher": "moffycream",
   "license": "MIT",
   "engines": {
@@ -187,6 +187,7 @@
           "markdownDescription": "Which agent CLI the chat panel drives. Switch from the workflow menu under the message box. Switching starts a new chat; each agent's chats stay in the history and reopen when you switch back. Plan usage (`/usage`), `/compact`, Kiro skills, session tidying and the CLI update check are Kiro-only."
         },
         "kiroChat.args": {
+          "scope": "machine",
           "type": "array",
           "items": {
             "type": "string"
@@ -205,6 +206,7 @@
           "description": "Send the file you are looking at with each message, so Kiro can open it. It shows as a chip above the message box; click the chip to leave it out of one message."
         },
         "kiroChat.autoApproveTools": {
+          "scope": "machine",
           "type": "boolean",
           "default": false,
           "description": "Approve everything Kiro asks to do without asking you first, including shell commands, which can change anything your account can with no diff to review. Plan still asks before a command. Autopilot turns this on. Leave it off unless you trust the workspace."
@@ -220,11 +222,13 @@
           "description": "Open each file's review as soon as Kiro finishes editing it, rather than queueing every diff until the end of the turn. Kiro waits for your answer before starting the next edit. Turn this off to review everything together at the end."
         },
         "kiroChat.command": {
+          "scope": "machine",
           "type": "string",
           "default": "",
           "markdownDescription": "Leave empty and the extension will find `kiro-cli` for you. Only set this if it cannot. Run `which kiro-cli` in a terminal to get the full path."
         },
         "kiroChat.env": {
+          "scope": "machine",
           "type": "object",
           "default": {},
           "additionalProperties": {
@@ -244,6 +248,7 @@
           "description": "The model Kiro uses. Leave empty for Kiro's default, which picks one per task. The dropdown in the chat panel sets this for you."
         },
         "kiroChat.qoderCommand": {
+          "scope": "machine",
           "type": "string",
           "default": "",
           "markdownDescription": "Leave empty and the extension will find `qodercli` for you, in `.qoder/bin/qodercli` under your user folder and then on PATH. Only set this if it cannot."

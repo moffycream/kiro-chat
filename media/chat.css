@@ -510,6 +510,10 @@ body {
   word-break: normal;
 }
 
+/* Column alignment from the markdown delimiter row. A class, since the CSP blocks style=. */
+.table-wrap .align-center { text-align: center; }
+.table-wrap .align-right { text-align: right; }
+
 /*
  * A rule under the header and hairlines between rows — not a full grid.
  *
@@ -968,58 +972,6 @@ body.vscode-high-contrast-light .tok-fn {
   gap: 8px;
   font-size: 0.9em;
   color: var(--vscode-descriptionForeground);
-}
-
-.thinking-dots {
-  display: inline-flex;
-  gap: 3px;
-}
-
-.thinking-dots i {
-  width: 4px;
-  height: 4px;
-  border-radius: 50%;
-  background: currentColor;
-  opacity: 0.35;
-  animation: thinking-pulse 1.25s ease-in-out infinite;
-}
-
-.thinking-dots i:nth-child(2) {
-  animation-delay: 0.16s;
-}
-
-.thinking-dots i:nth-child(3) {
-  animation-delay: 0.32s;
-}
-
-@keyframes thinking-pulse {
-  30% {
-    opacity: 1;
-    transform: translateY(-2px);
-  }
-}
-
-/*
- * Motion is decoration here — the words and the glyphs already carry the
- * state — so it comes off entirely for anyone who asked for less of it.
- */
-@media (prefers-reduced-motion: reduce) {
-  .tool-icon.spinning,
-  .thinking-dots i {
-    animation: none;
-  }
-  .thinking-dots i {
-    opacity: 0.7;
-  }
-  /*
-   * The travelling light says "still working" by moving, so it has to stop —
-   * and something has to be left saying it. The arc parks itself along the
-   * top edge and stays there, lit, for as long as the turn runs.
-   */
-  .composer.working .input-wrap::before {
-    animation: none;
-    --edge-angle: 90deg;
-  }
 }
 
 .permission-card {
@@ -1660,6 +1612,31 @@ button:disabled {
   background: var(--vscode-charts-orange, #d18616);
 }
 
+/*
+ * Motion is decoration here — the words and the glyphs already carry the
+ * state — so it comes off entirely for anyone who asked for less of it.
+ * Keep this below every rule it overrides: the selectors are equal, so the later rule wins.
+ */
+@media (prefers-reduced-motion: reduce) {
+  .tool-icon.spinning,
+  .steps.running .steps-icon::before,
+  .step[data-state="active"]::before {
+    animation: none;
+  }
+  .usage-fill {
+    transition: none;
+  }
+  /*
+   * The travelling light says "still working" by moving, so it has to stop —
+   * and something has to be left saying it. The arc parks itself along the
+   * top edge and stays there, lit, for as long as the turn runs.
+   */
+  .composer.working .input-wrap::before {
+    animation: none;
+    --edge-angle: 90deg;
+  }
+}
+
 .usage-text {
   /* The reading shortens with an ellipsis before it wraps the row. */
   flex: 0 1 auto;
@@ -1911,7 +1888,7 @@ button:disabled {
   border-radius: var(--radius);
   border: 1px solid var(--menu-border);
   background: var(--vscode-dropdown-background);
-  box-shadow: 0 3px 12px rgba(0, 0, 0, 0.35);
+  box-shadow: 0 3px 12px var(--vscode-widget-shadow, rgba(0, 0, 0, 0.35));
 }
 
 .popup button {
@@ -2190,7 +2167,7 @@ button:disabled {
   border-radius: var(--radius);
   border: 1px solid var(--menu-border);
   background: var(--vscode-dropdown-background);
-  box-shadow: 0 3px 12px rgba(0, 0, 0, 0.35);
+  box-shadow: 0 3px 12px var(--vscode-widget-shadow, rgba(0, 0, 0, 0.35));
 }
 
 .mode-row {
@@ -2210,6 +2187,15 @@ button:disabled {
 .mode-row.selected {
   background: var(--vscode-list-activeSelectionBackground);
   color: var(--vscode-list-activeSelectionForeground);
+}
+
+/* High Contrast leaves the selection background unset; an outline marks it instead.
+   Not while focused, or it would replace the focus ring. */
+.mode-row.selected:not(:focus-visible),
+.model-row.selected:not(:focus-visible),
+.slash-item.active:not(:focus-visible) {
+  outline: 1px dotted var(--vscode-contrastActiveBorder, transparent);
+  outline-offset: -1px;
 }
 
 /*
@@ -2281,6 +2267,11 @@ button:disabled {
   border-left: 1px solid var(--menu-separator);
 }
 
+/* .menu-segments clips overflow, so the focus ring has to sit inside. */
+.mode-row.segment:focus-visible {
+  outline-offset: -2px;
+}
+
 .segment-note {
   padding-top: 2px;
 }
@@ -2323,7 +2314,7 @@ button:disabled {
   border-top: 1px solid var(--menu-border);
   border-bottom: 1px solid var(--menu-border);
   background: var(--vscode-dropdown-background, var(--vscode-editor-background));
-  box-shadow: 0 -4px 12px rgba(0, 0, 0, 0.35);
+  box-shadow: 0 -4px 12px var(--vscode-widget-shadow, rgba(0, 0, 0, 0.35));
 }
 
 .instructions-label {
@@ -2472,15 +2463,8 @@ button:disabled {
 }
 
 /*
- * A skill: its name, what it is for, and a click that opens the file.
- *
- * `.skill-line` is the shape and nothing else, because a bundled skill is
- * announced with no path and so has no file to open — those rows are plain
- * divs and take the layout without taking a hover tint that would imply they
- * do something. Only `.skill-row` is a button, and it cancels `button:hover`
- * with a bare `.skill-row:hover`: without that it sits transparent at rest
- * and paints solid primary blue under the pointer, the way four other
- * plain-looking buttons in this panel already have.
+ * A skill: its name and what it is for. A plain div, so it takes the layout
+ * without a hover tint that would imply it does something.
  */
 .skill-line {
   display: block;
@@ -2488,21 +2472,6 @@ button:disabled {
   padding: 8px 10px;
   border-radius: 3px;
   text-align: left;
-}
-
-.skill-row {
-  border: none;
-  background: none;
-  color: var(--vscode-dropdown-foreground);
-}
-
-.skill-row:hover {
-  background: var(--vscode-list-hoverBackground);
-}
-
-.skill-row:focus-visible {
-  outline: 1px solid var(--vscode-focusBorder);
-  outline-offset: -1px;
 }
 
 .mode-name {
@@ -2708,13 +2677,7 @@ button:disabled {
   border-radius: 50%;
   border: 1.5px solid var(--vscode-panel-border);
   border-top-color: var(--vscode-focusBorder);
-  animation: spin 0.8s linear infinite;
-}
-
-@keyframes spin {
-  to {
-    transform: rotate(360deg);
-  }
+  animation: tool-spin 0.8s linear infinite;
 }
 
 /* Respect the system setting rather than spinning regardless. */
@@ -3103,7 +3066,7 @@ button:disabled {
   padding: 10px 12px;
   border-bottom: 1px solid var(--menu-border);
   background: var(--vscode-dropdown-background, var(--vscode-editor-background));
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
+  box-shadow: 0 4px 12px var(--vscode-widget-shadow, rgba(0, 0, 0, 0.35));
 }
 
 .context-details {
@@ -3417,8 +3380,7 @@ button.change-summary:hover {
   color: var(--vscode-dropdown-foreground);
 }
 
-.slash-item:hover,
-.slash-item.active {
+.slash-item:hover {
   background: var(--vscode-list-hoverBackground);
 }
 
