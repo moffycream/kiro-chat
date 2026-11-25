@@ -1887,7 +1887,7 @@ test("the status and the context reading are one row, the reading a chip", () =>
   for (const id of ["status", "usage-bar", "usage-panel"]) {
     assert.match(row, new RegExp(`id="${id}"`), `#${id} belongs to the top row`);
   }
-  const chip = row.slice(row.indexOf('id="usage-bar"'), row.indexOf("</button>"));
+  const chip = row.slice(row.indexOf('id="usage-bar"'), row.indexOf("</button>", row.indexOf('id="usage-bar"')));
   assert.match(chip, /id="usage-fill"/, "the meter lives inside the chip");
   assert.doesNotMatch(provider, /class="usage-wrap"/, "no second row");
   assert.match(css, /^\.topbar \{[^}]*border-bottom:/m, "one divider, under the row");

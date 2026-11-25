@@ -2658,6 +2658,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
   -->
   <div class="topbar">
     <div id="status" class="status" data-state="stopped">Not connected</div>
+    <!--
+      Shown only while the panel's zoom is not 100%, the way VS Code's own
+      window-zoom indicator is: it says the text is not its usual size and is
+      the way back.
+    -->
+    <button type="button" id="zoom-reset" class="zoom-reset" hidden></button>
     <button type="button" id="usage-bar" class="usage-bar" hidden aria-expanded="false"
       title="Context and credits. Click for details.">
       <span class="usage-track" aria-hidden="true"><span id="usage-fill" class="usage-fill"></span></span>

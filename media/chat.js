@@ -185,7 +185,19 @@
     if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) return;
     currentZoom = value;
     document.documentElement.style.setProperty("--chat-zoom", String(value));
+    // Away from 100% the status row says so, and is the way back.
+    const percent = Math.round(value * 100);
+    const chip = document.getElementById("zoom-reset");
+    if (!chip) return;
+    chip.hidden = percent === 100;
+    chip.textContent = `${percent}%`;
+    chip.title = `Chat zoom ${percent}%. Click to reset to 100% (Ctrl+0). Ctrl+= and Ctrl+- change it.`;
+    chip.setAttribute("aria-label", `Chat zoom ${percent}%, reset to 100%`);
   }
+
+  document.getElementById("zoom-reset")?.addEventListener("click", () => {
+    vscode.postMessage({ type: "zoom", direction: "reset" });
+  });
 
   /*
    * Ctrl+wheel steps the zoom, like editor font zoom. A trackpad sends a

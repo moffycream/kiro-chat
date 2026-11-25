@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.43.1
+
+- **The panel shows its zoom level.** When the chat is zoomed away from 100%, the status row
+  shows the level (for example `120%`), and clicking it puts the text back to 100%. Before,
+  nothing on screen said the panel was zoomed or how to undo it.
+
 ## 0.43.0
 
 - **The chat panel can be zoomed on its own, like editor font zoom.** With the panel focused,

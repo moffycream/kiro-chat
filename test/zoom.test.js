@@ -69,3 +69,13 @@ test("both halves of the zoom contract exist", () => {
   // And the factor actually reaches the base font size every em hangs off.
   assert.match(read("media/chat.css"), /font-size: calc\(var\(--vscode-font-size\) \* var\(--chat-zoom, 1\)\)/);
 });
+
+test("away from 100% the status row shows the level, and clicking it resets", () => {
+  const chat = read("media/chat.js");
+  const provider = read("src/chatViewProvider.ts");
+  assert.match(provider, /<button type="button" id="zoom-reset" class="zoom-reset" hidden><\/button>/);
+  const apply = chat.slice(chat.indexOf("function applyZoom"), chat.indexOf("function saveState"));
+  assert.match(apply, /chip\.hidden = percent === 100;/);
+  assert.match(apply, /chip\.textContent = `\$\{percent\}%`;/);
+  assert.match(apply, /addEventListener\("click", \(\) => \{\s*vscode\.postMessage\(\{ type: "zoom", direction: "reset" \}\);/);
+});
