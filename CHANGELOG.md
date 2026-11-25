@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.43.0
+
+- **The chat panel can be zoomed on its own, like editor font zoom.** With the panel focused,
+  `Ctrl+=` / `Ctrl+-` make its text larger or smaller and `Ctrl+0` puts it back; `Ctrl`+mouse
+  wheel does the same. Elsewhere those keys still zoom the whole VS Code window. The level is
+  the new `kiroChat.zoom` setting (0.7 to 2), so it is kept across restarts, and the
+  commands *Kiro Chat: Zoom In / Zoom Out / Reset Zoom* are in the Command Palette. Only the
+  text scales; spacing and button sizes stay as they are.
+
 ## 0.42.7
 
 - **A Qoder subagent's edit is reviewed as soon as the subagent finishes.** Qoder only tells the

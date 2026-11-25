@@ -84,6 +84,7 @@ import {
 import { ChatIndexEntry, ChatStore } from "./chatStore";
 import { applyChatMode, chatMode } from "./chatModes";
 import { applyInstructions, instructionsRow, normaliseInstructions } from "./instructions";
+import { clampZoom, stepZoom } from "./zoom";
 
 /** Enough to be useful without turning globalState into a database. */
 const MAX_CHATS = 100;
@@ -566,6 +567,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
             if (choice === "Reload Window") {
               await vscode.commands.executeCommand("workbench.action.reloadWindow");
             }
+          }
+          break;
+        }
+        case "zoom": {
+          // Ctrl+wheel in the panel. The keys arrive as commands instead,
+          // because VS Code forwards a webview's keystrokes to its own
+          // keybindings — handling them here as well would step twice.
+          const direction = message.direction;
+          if (direction === "in" || direction === "out" || direction === "reset") {
+            await this.zoom(direction);
           }
           break;
         }
@@ -1145,8 +1156,30 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       // never has to decide what a preview looks like.
       instructions,
       instructionsRow: instructionsRow(instructions),
+      // Not one of PANEL_SETTINGS: those are booleans the menu may write.
+      zoom: clampZoom(config.get<number>("zoom")),
     });
   }
+
+  /**
+   * Steps the panel's text zoom. Writes are chained so a fast run of wheel
+   * ticks each step from the level the last one left, rather than all
+   * reading the same stale value and landing on one step between them. The
+   * configuration watcher posts the result, as with every other setting.
+   */
+  zoom(direction: "in" | "out" | "reset"): Promise<void> {
+    this.zoomWrites = this.zoomWrites
+      .catch(() => undefined)
+      .then(async () => {
+        const config = vscode.workspace.getConfiguration("kiroChat");
+        const next = stepZoom(config.get<number>("zoom"), direction);
+        if (next === config.get<number>("zoom")) return;
+        await config.update("zoom", next, vscode.ConfigurationTarget.Global);
+      });
+    return this.zoomWrites;
+  }
+
+  private zoomWrites: Promise<void> = Promise.resolve();
 
   /**
    * The memory files Kiro is reading, for the menu.

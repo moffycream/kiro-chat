@@ -172,6 +172,41 @@
    * jumped to Today just for being read) and re-stamped its session id while
    * `session/load` was still in flight, binding it to the previous chat.
    */
+  /*
+   * kiroChat.zoom, as a factor on the base font size. Applied, never decided
+   * here: the extension owns the setting and posts it with `settings`.
+   * Remembered in webview state so a rebuilt panel starts at the right size,
+   * but deliberately not saved on arrival — `settings` lands just ahead of the
+   * `chatId` swap, the window the `chatId` case keeps state untouched in.
+   */
+  let currentZoom = 1;
+
+  function applyZoom(value) {
+    if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) return;
+    currentZoom = value;
+    document.documentElement.style.setProperty("--chat-zoom", String(value));
+  }
+
+  /*
+   * Ctrl+wheel steps the zoom, like editor font zoom. A trackpad sends a
+   * stream of small deltas, so they are summed and a step taken per notch's
+   * worth (100) rather than one per event. preventDefault needs the listener
+   * to be non-passive, or Chromium ignores it.
+   */
+  let zoomWheel = 0;
+  document.addEventListener(
+    "wheel",
+    (event) => {
+      if (!event.ctrlKey) return;
+      event.preventDefault();
+      zoomWheel += event.deltaY;
+      if (Math.abs(zoomWheel) < 100) return;
+      vscode.postMessage({ type: "zoom", direction: zoomWheel < 0 ? "in" : "out" });
+      zoomWheel = 0;
+    },
+    { passive: false }
+  );
+
   function saveState(report) {
     historyTruncated = historyTruncated || history.length > MAX_HISTORY;
     try {
@@ -181,6 +216,7 @@
         chatId,
         includeSelection,
         mode: currentModeId,
+        zoom: currentZoom,
       });
     } catch (err) {
       // State is a convenience. Never let it break the panel.
@@ -5602,6 +5638,7 @@
         if (typeof settings.sendSelection === "boolean") {
           includeSelection = settings.sendSelection;
         }
+        applyZoom(message.zoom);
         // The mode menu carries all of this now, and the button label shows
         // supervision when it is not the default.
         modeLabel.textContent = modeButtonLabel();
@@ -6118,6 +6155,10 @@
       return {};
     }
   })();
+
+  // The setting arrives with `settings` after `ready`; the saved copy only
+  // spares a rebuilt panel a frame at 100% before it does.
+  applyZoom(saved.zoom);
 
   if (CHAT_MODES.some((mode) => mode.id === saved.mode)) {
     currentModeId = saved.mode;

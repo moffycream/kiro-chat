@@ -35,6 +35,12 @@ export function activate(context: vscode.ExtensionContext): void {
 
     vscode.commands.registerCommand("kiroChat.stop", () => provider.stop()),
 
+    vscode.commands.registerCommand("kiroChat.zoomIn", () => provider.zoom("in")),
+
+    vscode.commands.registerCommand("kiroChat.zoomOut", () => provider.zoom("out")),
+
+    vscode.commands.registerCommand("kiroChat.resetZoom", () => provider.zoom("reset")),
+
     vscode.commands.registerCommand("kiroChat.restart", async () => {
       // Says the agent was restarted, so it has to be: a new chat may reuse a
       // session nothing was said into, and that leaves the process running.

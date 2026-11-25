@@ -54,7 +54,8 @@ body {
   display: flex;
   flex-direction: column;
   font-family: var(--vscode-font-family);
-  font-size: var(--vscode-font-size);
+  /* --chat-zoom is kiroChat.zoom. Every other size is in em from here. */
+  font-size: calc(var(--vscode-font-size) * var(--chat-zoom, 1));
   color: var(--vscode-foreground);
   background: transparent;
 }

@@ -2,7 +2,7 @@
   "name": "kiro-agent-chat",
   "displayName": "Kiro Agent Chat (Unofficial)",
   "description": "Chat with the Kiro agent inside VS Code, like Copilot Chat.",
-  "version": "0.42.7",
+  "version": "0.43.0",
   "publisher": "moffycream",
   "license": "MIT",
   "engines": {
@@ -105,6 +105,18 @@
       {
         "command": "kiroChat.editInstructions",
         "title": "Kiro Chat: Your Instructions"
+      },
+      {
+        "command": "kiroChat.zoomIn",
+        "title": "Kiro Chat: Zoom In"
+      },
+      {
+        "command": "kiroChat.zoomOut",
+        "title": "Kiro Chat: Zoom Out"
+      },
+      {
+        "command": "kiroChat.resetZoom",
+        "title": "Kiro Chat: Reset Zoom"
       }
     ],
     "menus": {
@@ -163,6 +175,41 @@
         "command": "kiroChat.review.previousChange",
         "key": "shift+alt+f5",
         "when": "editorTextFocus && resourceScheme == kiro-change-review && kiroChat.hunkReviewActive"
+      },
+      {
+        "command": "kiroChat.zoomIn",
+        "key": "ctrl+=",
+        "when": "focusedView == kiroChat.view"
+      },
+      {
+        "command": "kiroChat.zoomIn",
+        "key": "ctrl+shift+=",
+        "when": "focusedView == kiroChat.view"
+      },
+      {
+        "command": "kiroChat.zoomIn",
+        "key": "ctrl+numpad_add",
+        "when": "focusedView == kiroChat.view"
+      },
+      {
+        "command": "kiroChat.zoomOut",
+        "key": "ctrl+-",
+        "when": "focusedView == kiroChat.view"
+      },
+      {
+        "command": "kiroChat.zoomOut",
+        "key": "ctrl+numpad_subtract",
+        "when": "focusedView == kiroChat.view"
+      },
+      {
+        "command": "kiroChat.resetZoom",
+        "key": "ctrl+0",
+        "when": "focusedView == kiroChat.view"
+      },
+      {
+        "command": "kiroChat.resetZoom",
+        "key": "ctrl+numpad0",
+        "when": "focusedView == kiroChat.view"
       }
     ],
     "configuration": {
@@ -275,6 +322,13 @@
           "type": "boolean",
           "default": true,
           "description": "Send the code you have highlighted along with your message. The chip above the text box shows what is going; clear the highlight in the editor to leave it out."
+        },
+        "kiroChat.zoom": {
+          "type": "number",
+          "default": 1,
+          "minimum": 0.7,
+          "maximum": 2,
+          "markdownDescription": "Text size in the chat panel, as a multiple of VS Code's own (`1` is the same size, `1.2` is 20% larger). While the panel has focus, `Ctrl+=` / `Ctrl+-` / `Ctrl+0` and `Ctrl`+mouse wheel change it; everywhere else those keys still zoom the whole window."
         }
       }
     }
