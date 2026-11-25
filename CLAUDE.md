@@ -819,6 +819,16 @@ permission queue in one place. `kiroChat.qoderUseSdk: false` falls back to `--ac
   `Bash` carries `_meta.kiro.consent.capability: "shell"` so `isShellRequest` and Plan's forced
   card see it. A request the panel could not answer is a deny. `AskUserQuestion` is disallowed:
   the panel has nothing to answer it with.
+- **A subagent is seen only through its permission requests.** Measured by driving a real turn
+  (qodercli 1.1.91) in which the main agent ran `Agent` and the subagent edited a file: no message
+  with a `parent_tool_use_id` reached the stream at all, so the `dispatch` filter is a guard, not
+  the thing hiding them. The subagent's `Edit` arrived once, through `canUseTool`, with its path —
+  enough to snapshot it before the write and for the end-of-turn sweep to review it — and nothing
+  ever reported it finished. `unseen` holds those ids, and they are closed as `completed` when an
+  `Agent`/`Task` result arrives (or at the turn's result), which is what lets `reviewFinishedTool`
+  review them live. "Completed" means over, not succeeded: with two subagents at once, one
+  returning closes the other's steps too, and the sweep still catches an edit landing after.
+  A refused step is closed as `failed` at once. A subagent's reads ask nothing and stay invisible.
 - **Signed out surfaces at `session/new`**: `initializationResult()` throws "Authentication
   required. Log in with qodercli login…", which `looksLikeSignIn` matches. A missing binary is
   `spawn … ENOENT` from `startDaemon`. Both were measured, the first with `QODER_CONFIG_DIR`

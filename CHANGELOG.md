@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.42.7
+
+- **A Qoder subagent's edit is reviewed as soon as the subagent finishes.** Qoder only tells the
+  panel about a subagent's edit when it asks permission, and never says the edit is done. The
+  step kept spinning for the rest of the turn, and its diff only opened once the whole turn was
+  over. The step now finishes, and its review opens, when the subagent returns. A step you refuse
+  is marked failed straight away.
+
 ## 0.42.6
 
 - **The context panel no longer undercounts tokens.** Kiro reports your messages' share of the

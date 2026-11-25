@@ -54,8 +54,21 @@ interface Session {
   streamed: Set<string>;
   /** Each step's tool and input, so its later updates keep the title it started with. */
   announced: Map<string, { name: string; input: any }>;
+  /**
+   * Steps known only from their permission request: a subagent's.
+   *
+   * Measured against qodercli 1.1.91: a subagent's own messages never reach
+   * the stream, so its edit is seen once, through `canUseTool`, and nothing
+   * ever reports it finished. Its row then spun for the rest of the turn and
+   * its review waited for the end. They are closed when the subagent's own
+   * step returns, which is the first moment its work is known to be over.
+   */
+  unseen: Set<string>;
   closed: boolean;
 }
+
+/** The tools that run a subagent, whose return closes the steps it asked about. */
+const SUBAGENT_TOOLS = new Set(["Agent", "Task"]);
 
 /** An async iterable the SDK reads user messages from, for as long as the session lives. */
 class Inbox {
@@ -359,6 +372,7 @@ export class QoderSdkClient {
       creditBase: !resume ? 0 : typeof priorCredits === "number" && Number.isFinite(priorCredits) ? priorCredits : undefined,
       streamed: new Set(),
       announced: new Map(),
+      unseen: new Set(),
       closed: false,
     };
     session.query = this.sdk.query({
@@ -485,6 +499,8 @@ export class QoderSdkClient {
         const ratio = message.message?.usage?.context_usage_ratio;
         for (const block of Array.isArray(message.message?.content) ? message.message.content : []) {
           if (block?.type === "tool_use" && typeof block.id === "string") {
+            // The main agent's own step, which gets a result of its own.
+            session.unseen.delete(block.id);
             this.announceTool(session, block.id, String(block.name ?? "Tool"), block.input, "in_progress");
           } else if (block?.type === "text" && block.text && !(id && session.streamed.has(id))) {
             // A build that sends no deltas still gets its reply shown, once.
@@ -500,6 +516,7 @@ export class QoderSdkClient {
         for (const block of Array.isArray(message.message?.content) ? message.message.content : []) {
           if (block?.type !== "tool_result" || typeof block.tool_use_id !== "string") continue;
           const known = session.announced.get(block.tool_use_id);
+          session.unseen.delete(block.tool_use_id);
           const status = block.is_error ? "failed" : "completed";
           this.update(session, {
             ...(known
@@ -507,6 +524,7 @@ export class QoderSdkClient {
               : { sessionUpdate: "tool_call", toolCallId: block.tool_use_id, status }),
             rawOutput: textOfToolResult(block.content),
           });
+          if (known && SUBAGENT_TOOLS.has(known.name)) this.finishUnseen(session, "completed");
         }
         return;
       }
@@ -545,6 +563,8 @@ export class QoderSdkClient {
       });
       session.creditBase = total;
     }
+    // Whatever a subagent asked about is over once the turn is.
+    this.finishUnseen(session, "completed");
     session.messageId = undefined;
     session.streamed.clear();
     const turn = session.turn;
@@ -555,12 +575,33 @@ export class QoderSdkClient {
     else turn.resolve({ stopReason: message.stop_reason ?? "end_turn" });
   }
 
+  /**
+   * Report every step only a permission request named as finished.
+   *
+   * "Completed" is a claim about the step being over, not about it having
+   * succeeded: nothing reports a subagent's results. The review that follows
+   * compares the file on disk with its snapshot, so an edit that did not
+   * land shows no diff, and one landing later — two subagents at once — is
+   * still caught by the end-of-turn sweep.
+   */
+  private finishUnseen(session: Session, status: "completed" | "failed", only?: string): void {
+    for (const id of only ? [only] : [...session.unseen]) {
+      if (!session.unseen.delete(id)) continue;
+      const known = session.announced.get(id);
+      if (!known) continue;
+      this.update(session, toolUpdateOf(id, known.name, known.input, status, false));
+    }
+  }
+
   private async canUseTool(session: Session, name: string, input: any, options: any): Promise<any> {
     const toolCallId = String(options?.toolUseID ?? randomUUID());
     const kind = toolKindOf(name);
     // Usually already announced as running from the assistant message; saying
     // "pending" again would walk the step backwards.
-    if (!session.announced.has(toolCallId)) this.announceTool(session, toolCallId, name, input, "pending");
+    if (!session.announced.has(toolCallId)) {
+      this.announceTool(session, toolCallId, name, input, "pending");
+      session.unseen.add(toolCallId);
+    }
     const path = pathOf(input);
     const suggestions = Array.isArray(options?.suggestions) ? options.suggestions : [];
     const choices = [
@@ -583,6 +624,7 @@ export class QoderSdkClient {
         ...(kind === "execute" ? { _meta: { kiro: { consent: { capability: "shell" } } } } : {}),
       });
     } catch (err) {
+      this.finishUnseen(session, "failed", toolCallId);
       return { behavior: "deny", message: `Not allowed: ${String(err)}`, toolUseID: toolCallId };
     }
     const outcome = answer?.outcome;
@@ -591,6 +633,8 @@ export class QoderSdkClient {
     if (picked === "allow_always") {
       return { behavior: "allow", updatedInput: input, updatedPermissions: suggestions, toolUseID: toolCallId };
     }
+    // A refused step will not run, so nothing else would ever close it.
+    this.finishUnseen(session, "failed", toolCallId);
     return { behavior: "deny", message: "The user declined this step.", toolUseID: toolCallId };
   }
 }

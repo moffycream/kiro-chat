@@ -337,6 +337,69 @@ test("a subagent's own messages stay out of the reply", async () => {
   assert.equal(notes.length, 0);
 });
 
+/*
+ * The order a real turn produced (qodercli 1.1.91): the main agent starts an
+ * Agent step, the subagent's Edit is seen only through `canUseTool`, and the
+ * Agent step's result is the next thing that arrives. Nothing ever reports
+ * the Edit finished, so its row spun all turn and its review waited for the end.
+ */
+const toolEvents = (notes, id) =>
+  updates(notes).filter((u) => u.toolCallId === id).map((u) => u.status);
+
+test("a subagent's edit is closed when the subagent returns, so it is reviewed then", async () => {
+  const { sdk, client, notes } = harness();
+  await client.request("initialize", {});
+  const { sessionId } = await client.request("session/new", {});
+  const q = sdk.queries[0];
+  const turn = client.request("session/prompt", { sessionId, prompt: [] });
+  await tick();
+  q.feed({ type: "assistant", message: { id: "m1", content: [{ type: "tool_use", id: "agent1", name: "Agent", input: { description: "Rename" } }] } });
+  await tick();
+  const edit = await q.options.canUseTool("Edit", { file_path: "C:\w\notes.txt" }, { toolUseID: "sub1" });
+  assert.equal(edit.behavior, "allow");
+  assert.deepEqual(toolEvents(notes, "sub1"), ["pending"], "named once, with nothing to say it finished");
+  const named = updates(notes).find((u) => u.toolCallId === "sub1");
+  assert.deepEqual(named.locations, [{ path: "C:\w\notes.txt" }], "the review learns the path here");
+
+  q.feed({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: "agent1", content: "done" }] } });
+  await tick();
+  assert.deepEqual(toolEvents(notes, "agent1"), ["in_progress", "completed"]);
+  assert.deepEqual(toolEvents(notes, "sub1"), ["pending", "completed"], "the subagent returning closes its edit");
+
+  q.feed({ type: "result", subtype: "success", total_credits: 0.1 });
+  await turn;
+  assert.deepEqual(toolEvents(notes, "sub1"), ["pending", "completed"], "and only once");
+});
+
+test("a main-agent step is never closed early, and a refused one is closed as failed", async () => {
+  const { sdk, client, notes } = harness((params) =>
+    params.toolCall.toolCallId === "no"
+      ? { outcome: { outcome: "selected", optionId: "reject_once" } }
+      : { outcome: { outcome: "selected", optionId: "allow_once" } }
+  );
+  await client.request("initialize", {});
+  const { sessionId } = await client.request("session/new", {});
+  const q = sdk.queries[0];
+  const turn = client.request("session/prompt", { sessionId, prompt: [] });
+  await tick();
+  // The permission can come before the assistant message names the step.
+  await q.options.canUseTool("Edit", { file_path: "C:\w\a.txt" }, { toolUseID: "main1" });
+  q.feed({ type: "assistant", message: { id: "m1", content: [
+    { type: "tool_use", id: "main1", name: "Edit", input: { file_path: "C:\w\a.txt" } },
+    { type: "tool_use", id: "agent1", name: "Agent", input: {} },
+  ] } });
+  await tick();
+  await q.options.canUseTool("Write", { file_path: "C:\w\b.txt" }, { toolUseID: "no" });
+  assert.deepEqual(toolEvents(notes, "no"), ["pending", "failed"], "a refusal will not run");
+  q.feed({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: "agent1", content: "done" }] } });
+  await tick();
+  assert.ok(!toolEvents(notes, "main1").includes("completed"), "the main agent's step waits for its own result");
+  q.feed({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: "main1", content: "ok" }] } });
+  q.feed({ type: "result", subtype: "success", total_credits: 0.1 });
+  await turn;
+  assert.equal(toolEvents(notes, "main1").filter((s) => s === "completed").length, 1);
+});
+
 test("steps are classified the way the review and Plan mode need", () => {
   assert.equal(toolKindOf("Read"), "read");
   assert.equal(toolKindOf("Edit"), "edit");
