@@ -27,7 +27,14 @@ function anything(settings = {}) {
       if (key === Symbol.toPrimitive) return () => "";
       if (key === "then") return undefined;
       if (key === "workspaceFolders") return [{ uri: { fsPath: root } }];
-      if (key === "getConfiguration") return () => ({ get: (k, d) => (k in settings ? settings[k] : d), update: async () => {} });
+      if (key === "getConfiguration") {
+        return () => ({
+          get: (k, d) => (k in settings ? settings[k] : d),
+          update: async (k, v) => {
+            settings[k] = v;
+          },
+        });
+      }
       return proxy;
     },
     apply: () => proxy,
@@ -271,6 +278,108 @@ test("rewinding keeps the model and effort in use", async () => {
     ["effortLevel", "low"],
   ]);
   assert.equal(session.getModels().effort.current, "low");
+});
+
+/* The effort picked in the menu is remembered per model; a typed /effort is not. */
+function effortHarness(settings, newSessionOptions = CONFIG.opus46) {
+  return harness({
+    settings,
+    onRequest: (method, params) => {
+      if (method === "session/new") return { sessionId: "sess_a", configOptions: newSessionOptions };
+      if (method === "session/load") return { configOptions: configWith("high") };
+      if (method === "session/set_config_option") {
+        // Kiro's rule: changing model puts effort back to that model's default.
+        return { configOptions: params.configId === "model" ? configWith("high") : configWith(params.value) };
+      }
+      return {};
+    },
+  });
+}
+
+const effortWrites = (requests) =>
+  requests
+    .filter((r) => r.method === "session/set_config_option")
+    .map((r) => [r.params.configId, r.params.value]);
+
+test("picking an effort remembers it for that model, and /effort does not", async () => {
+  const settings = {};
+  const { session } = effortHarness(settings);
+  session.applyConfig(CONFIG.opus46);
+  await session.runCommand("effort", { value: "medium" });
+  assert.equal(settings.effortByModel, undefined, "a typed command is not a new default");
+  await session.setEffort("low", true);
+  assert.deepEqual(settings.effortByModel, { "claude-opus-4.6": "low" });
+});
+
+test("a new chat starts on the effort remembered for its model, before the first message", async () => {
+  const { session, requests } = effortHarness({ effortByModel: { "claude-opus-4.6": "low" } });
+  session.sessionId = undefined;
+  await session.createSession();
+  await session.awaitModelRestore();
+  assert.deepEqual(effortWrites(requests), [["effortLevel", "low"]]);
+  assert.equal(session.getModels().effort.current, "low");
+});
+
+test("a remembered model and its effort are both put back once Kiro lists them", async () => {
+  const { session, requests } = effortHarness(
+    { model: "claude-opus-4.6", effortByModel: { "claude-opus-4.6": "max" } },
+    []
+  );
+  session.sessionId = undefined;
+  await session.createSession();
+  assert.deepEqual(effortWrites(requests), [], "nothing before the list");
+  session.handleNotification("session/update", {
+    sessionId: "sess_a",
+    update: { sessionUpdate: "config_option_update", configOptions: CONFIG.autoModel },
+  });
+  await session.awaitModelRestore();
+  assert.deepEqual(effortWrites(requests), [
+    ["model", "claude-opus-4.6"],
+    ["effortLevel", "max"],
+  ]);
+});
+
+test("switching to a model puts back the effort remembered for it", async () => {
+  const { session, requests } = effortHarness({ effortByModel: { "claude-opus-4.6": "medium" } });
+  session.applyConfig(CONFIG.autoModel);
+  await session.setModel("claude-opus-4.6");
+  assert.deepEqual(effortWrites(requests), [
+    ["model", "claude-opus-4.6"],
+    ["effortLevel", "medium"],
+  ]);
+});
+
+test("a remembered level the model no longer offers is skipped", async () => {
+  const { session, requests } = effortHarness({ effortByModel: { "claude-opus-4.6": "xhigh" } });
+  session.sessionId = undefined;
+  await session.createSession();
+  await session.awaitModelRestore();
+  assert.deepEqual(effortWrites(requests), []);
+  assert.equal(session.getModels().effort.current, "high");
+});
+
+test("a reopened chat and a rewind keep their own effort, not the remembered one", async () => {
+  const { session, requests, info } = effortHarness({ effortByModel: { "claude-opus-4.6": "max" } });
+  await session.loadSession("sess_a", undefined);
+  assert.deepEqual(effortWrites(requests), [], "a reload keeps its level");
+
+  requests.length = 0;
+  session.client.request = async (method, params) => {
+    requests.push({ method, params });
+    if (method === "session/fork") return { sessionId: "sess_b" };
+    if (method === "session/load") return { configOptions: CONFIG.autoModel };
+    if (method === "session/set_config_option") {
+      return { configOptions: params.configId === "model" ? configWith("high") : configWith(params.value) };
+    }
+    return {};
+  };
+  session.applyConfig(configWith("low"));
+  info({ kind: "user_message_id_assigned", userMessageId: "m1" });
+  await session.rewindTo(0);
+  assert.deepEqual(effortWrites(requests), [
+    ["model", "claude-opus-4.6"],
+    ["effortLevel", "low"],
+  ]);
 });
 
 test("a replay rebuilds the rewind points", async () => {

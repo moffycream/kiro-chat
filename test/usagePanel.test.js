@@ -61,6 +61,7 @@ function element() {
 }
 
 const MODEL = { modelId: "test", contextWindowTokens: 256000 };
+const NO_WINDOW = { modelId: "auto" };
 
 /** The real panel, both halves of it. */
 function draw(usage, options = {}) {
@@ -71,8 +72,8 @@ function draw(usage, options = {}) {
     document: { createElement: element },
     usagePanel: element(),
     vscode: { postMessage() {} },
-    models: [MODEL],
-    currentModelId: MODEL.modelId,
+    models: [options.model || MODEL],
+    currentModelId: (options.model || MODEL).modelId,
     contextBreakdown: options.breakdown || null,
     contextLoading: false,
     contextError: "",
@@ -84,6 +85,8 @@ function draw(usage, options = {}) {
     "credits",
     "contextState",
     "contextTokens",
+    "categoryTokens",
+    "breakdownTokens",
     "renderContextPanel",
     "renderContextBreakdown",
     "renderUsagePanel",
@@ -232,4 +235,36 @@ test("under Qoder the account shows the rows read off Qoder's usage screen", () 
 test("under Qoder a failed check says why", () => {
   const report = { ok: false, text: "Qoder needs you to sign in before it can show usage." };
   assert.match(flat(draw({}, { agent: "qoder", agentName: "Qoder", report })), /needs you to sign in/);
+});
+
+/*
+ * Measured on 3.1.0: `yourPrompts` arrives with `percent: 4.4` and
+ * `tokens: 0`. Read through the real parser, from the captured payload.
+ */
+const { readSessionInfo, readContextCommand } = require("../out/usage.js");
+const CAPTURED = readContextCommand(
+  readSessionInfo(require("./fixtures/kiro-session-info.json").context).context
+);
+const contextOf = (panel) => sections(panel).find((s) => s.startsWith("Context"));
+
+test("a share Kiro reported without a count is estimated, not dropped", () => {
+  assert.equal(CAPTURED.categories.find((c) => c.key === "yourPrompts").tokens, 0, "the capture still says 0");
+  const context = contextOf(draw({ contextPercent: 6.2765627 }, { breakdown: CAPTURED }));
+  // 4913 counted, plus 4.4% of 256k estimated.
+  assert.match(context, /6% · ~16\.2k of 256k/, "the header no longer undercounts");
+  assert.match(context, /Your messages ~11\.3k/, "the largest category has its row");
+  assert.match(context, /Tool definitions 4\.9k/, "a count Kiro gave is shown as given");
+});
+
+test("with no window to estimate from, the share is shown and the header names no count", () => {
+  const context = contextOf(draw({ contextPercent: 6.2765627 }, { breakdown: CAPTURED, model: NO_WINDOW }));
+  assert.match(context, /Context 6%/);
+  assert.doesNotMatch(context, /4\.9k ·|6% · 4\.9k/, "a sum missing a category is not shown as the total");
+  assert.match(context, /Your messages 4\.4%/);
+});
+
+test("counts Kiro gave are never replaced by an estimate", () => {
+  const context = contextOf(draw({ contextPercent: 7 }, { breakdown: BREAKDOWN }));
+  assert.match(context, /7% · 13\.8k of 256k/);
+  assert.doesNotMatch(context, /~/);
 });

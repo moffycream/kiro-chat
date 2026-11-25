@@ -290,12 +290,59 @@
       .replace(/"/g, "&quot;");
   }
 
+  /*
+   * One line of already-escaped text, with its inline markup turned into tags.
+   *
+   * Code spans, links and bare URLs are set aside as placeholders before any
+   * emphasis runs, and put back at the end. Emphasis used to run over all of
+   * it, so `**` inside backticks went bold, and with underscore emphasis and
+   * autolinks added a `snake_case_name` in code or a URL with underscores in it
+   * would have come out italic and broken. Link text is still emphasised, on
+   * its own, because `[**this**](…)` is ordinary markdown.
+   */
   function inline(text) {
+    const held = [];
+    const hold = (html) => `\u0001${held.push(html) - 1}\u0001`;
+    // Escaped text: `&` arrives as `&amp;`, and `<` `>` `"` as entities that end
+    // a URL. A placeholder ends one too, or a URL would swallow the code after it.
+    const URL_BODY = "(?:[^\\s&\\u0001]|&amp;)+";
+    const link = (href, label) => `<a href="${href}">${label}</a>`;
+    const autolink = (url) => {
+      // Sentence punctuation after a URL is the sentence's, not the URL's —
+      // and so is a closing bracket the URL never opened.
+      let end = url.length;
+      while (end > 0 && /[.,;:!?'*_~]/.test(url[end - 1])) end -= 1;
+      if (url[end - 1] === ")" && !url.slice(0, end).includes("(")) end -= 1;
+      return hold(link(url.slice(0, end), url.slice(0, end))) + url.slice(end);
+    };
+    const out = text
+      .replace(/`([^`]+)`/g, (_, code) => hold(`<code>${code}</code>`))
+      .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, (_, label, href) =>
+        hold(link(href, emphasis(label)))
+      )
+      // `<https://…>`, markdown's explicit autolink; the brackets are not shown.
+      .replace(new RegExp(`&lt;(https?:\\/\\/${URL_BODY})&gt;`, "g"), (_, url) => hold(link(url, url)))
+      .replace(new RegExp(`\\bhttps?:\\/\\/${URL_BODY}`, "g"), autolink);
+    return emphasis(out).replace(/\u0001(\d+)\u0001/g, (_, n) => held[Number(n)]);
+  }
+
+  /*
+   * Bold, italic and strikethrough.
+   *
+   * The delimiters must hug the text — `*` or `_` followed by a space opens
+   * nothing — so "2 * 3 * 4" stays arithmetic. Underscores additionally
+   * cannot sit inside a word, which is GFM's rule and the whole reason it
+   * exists: `snake_case_name` in prose is a name, not two italics.
+   */
+  function emphasis(text) {
+    // Each body is one non-space character, optionally running on to another:
+    // that is what lets `*a*` through while `* a *` and `**` stay as written.
     return text
-      .replace(/`([^`]+)`/g, (_, code) => `<code>${code}</code>`)
-      .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
-      .replace(/(^|[^*])\*([^*]+)\*/g, "$1<em>$2</em>")
-      .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2">$1</a>');
+      .replace(/\*\*([^\s*](?:[^*]*?[^\s*])?)\*\*/g, "<strong>$1</strong>")
+      .replace(/(^|\W)__([^\s_](?:[^_]*?[^\s_])?)__(?!\w)/g, "$1<strong>$2</strong>")
+      .replace(/(^|[^*])\*([^\s*](?:[^*]*?[^\s*])?)\*(?!\*)/g, "$1<em>$2</em>")
+      .replace(/(^|\W)_([^\s_](?:[^_]*?[^\s_])?)_(?!\w)/g, "$1<em>$2</em>")
+      .replace(/~~([^\s~](?:[^~]*?[^\s~])?)~~/g, "<del>$1</del>");
   }
 
   /*
@@ -462,13 +509,28 @@
      * Models indent by two, three or four and are not always consistent, so
      * one column either way is the same level and two or more in is a child.
      */
+    /*
+     * `- [ ]` and `- [x]` are a checklist: the box is drawn and the brackets are
+     * not. It is a disabled checkbox rather than a glyph because that is what it
+     * is — a state that can be read and not changed — and a screen reader then
+     * says "checked" or "not checked" without being told.
+     */
+    const itemOpen = (text) => {
+      const task = text.match(/^\[([ xX])\]\s+(.*)$/);
+      if (!task) return `<li>${inline(text)}`;
+      const done = task[1] !== " ";
+      return `<li class="task-item"><input type="checkbox" class="task-box" disabled${
+        done ? " checked" : ""
+      }> ${inline(task[2])}`;
+    };
+
     const addListItem = (width, number, text) => {
       const tag = number === undefined ? "ul" : "ol";
       while (listStack.length && width < topList().indent - 1) closeTopList();
       let indent = width;
       if (listStack.length && width <= topList().indent + 1) {
         if (topList().tag === tag) {
-          html.push(`</li><li>${inline(text)}`);
+          html.push(`</li>${itemOpen(text)}`);
           return;
         }
         indent = topList().indent;
@@ -476,7 +538,7 @@
       }
       // A list that resumes after something interrupted it keeps counting.
       const start = tag === "ol" && Number(number) !== 1 ? ` start="${Number(number)}"` : "";
-      html.push(`<${tag}${start}><li>${inline(text)}`);
+      html.push(`<${tag}${start}>${itemOpen(text)}`);
       listStack.push({ tag, indent });
     };
 
@@ -501,6 +563,9 @@
       return widthOf(line.match(/^[ \t]*/)[0]) >= listStack[0].indent + 2;
     };
     let afterBlankLine = false;
+    // Where the paragraph a following line may join sits in `html`. Anything
+    // pushed after it moves the end on, which is what ends the paragraph.
+    let paragraphAt = -1;
 
     /*
      * GFM pipe tables.
@@ -583,6 +648,41 @@
       }
       const followsBlank = afterBlankLine;
       afterBlankLine = false;
+      /*
+       * `---`, `***` or `___`, spaced or not. Checked before list items,
+       * because `* * *` is one of those too. A `---` under a line of text is a
+       * heading underline in strict markdown; models use it as a divider, so
+       * it is read as one. The table check above has already had first claim.
+       */
+      if (/^ {0,3}([-*_])(?:[ \t]*\1){2,}[ \t]*$/.test(line)) {
+        closeList();
+        html.push("<hr>");
+        continue;
+      }
+      /*
+       * A quote is a run of `>` lines, and its inside is markdown of its own:
+       * a list, bold, another quote one level in. So the run is put back to
+       * the text it was before escaping and rendered by this same function,
+       * which escapes it again — the round trip is exact, because
+       * `escapeHtml` is the only thing that has touched it.
+       */
+      if (/^ {0,3}&gt;/.test(line)) {
+        closeList();
+        const quoted = [];
+        while (i < lines.length && /^ {0,3}&gt;/.test(lines[i])) {
+          quoted.push(lines[i].replace(/^ {0,3}&gt; ?/, ""));
+          i += 1;
+        }
+        i -= 1;
+        const inner = quoted
+          .join("\n")
+          .replace(/&lt;/g, "<")
+          .replace(/&gt;/g, ">")
+          .replace(/&quot;/g, '"')
+          .replace(/&amp;/g, "&");
+        html.push(`<blockquote>${renderMarkdown(inner)}</blockquote>`);
+        continue;
+      }
       const heading = line.match(/^(#{1,6})\s+(.*)$/);
       if (heading) {
         closeList();
@@ -604,7 +704,22 @@
         continue;
       }
       closeList();
-      html.push(`<p>${inline(line)}</p>`);
+      /*
+       * Lines that follow one another are one paragraph, with the break kept.
+       *
+       * Each line used to be a `<p>` of its own, so a reply wrapped at eighty
+       * columns came out as a stack of paragraphs with a gap after every line.
+       * Strict markdown would join them with a space; a chat keeps the break,
+       * as GitHub's comments do, because models also put one thing per line on
+       * purpose ("Step 1: …" / "Step 2: …") and joining those runs them
+       * together. Only a blank line starts a new paragraph.
+       */
+      if (!followsBlank && paragraphAt >= 0 && paragraphAt === html.length - 1) {
+        html[paragraphAt] = html[paragraphAt].replace(/<\/p>$/, `<br>${inline(line)}</p>`);
+      } else {
+        html.push(`<p>${inline(line)}</p>`);
+        paragraphAt = html.length - 1;
+      }
     }
     closeList();
     return html.join("");
@@ -2208,6 +2323,11 @@
       modelMenu.appendChild(empty);
     }
 
+    // First, not after the list: below 21 two-line model rows it was a long
+    // scroll away, and it is the control most often changed mid-conversation.
+    const control = effortControl();
+    if (control) modelMenu.appendChild(control);
+
     for (const m of models) {
       const row = document.createElement("button");
       row.type = "button";
@@ -2251,15 +2371,13 @@
       modelMenu.appendChild(row);
     }
 
-    const control = effortControl();
-    if (control) modelMenu.appendChild(control);
-
     modelMenu.appendChild(creditsFooter());
   }
 
   /*
-   * How hard the current model thinks, under the list that chose it, which is
-   * where the Kiro IDE puts it too. Kiro only sends levels for a model that has
+   * How hard the current model thinks, at the top of the menu. It sat under
+   * the list, where the Kiro IDE puts it, but with twenty-odd models that was a
+   * long scroll to reach. Kiro only sends levels for a model that has
    * them, so nothing is drawn for `auto` and the older models. Segments are
    * `.mode-row`s for the same reason as `editModeSegments`, and like them they
    * wait for the extension: the highlight moves when `models` comes back.
@@ -3451,6 +3569,38 @@
     return String(Math.round(value));
   }
 
+  /*
+   * A category's tokens, filled in from its share when Kiro left them out.
+   *
+   * Measured on 3.1.0 (`test/fixtures/kiro-session-info.json`): `yourPrompts`
+   * arrived as `percent: 4.4` with `tokens: 0` — the largest category, with
+   * no count. Taking the zero at its word hid that row and made the header
+   * read "6% · 4.9k" when 6% of the window is three times that. A count Kiro
+   * did give is never replaced; only a missing one is estimated, and it says
+   * so with a `~`. With no window to measure against, there is nothing to
+   * estimate from, and `undefined` says that rather than a zero.
+   */
+  function categoryTokens(category, capacity) {
+    if (category.tokens > 0) return { tokens: category.tokens, estimated: false };
+    if (!(category.percent > 0)) return { tokens: 0, estimated: false };
+    if (!capacity) return undefined;
+    return { tokens: Math.round((category.percent / 100) * capacity), estimated: true };
+  }
+
+  /** The header's token figure: every category's, or none if one is unknown. */
+  function breakdownTokens(capacity) {
+    if (!contextBreakdown) return undefined;
+    let total = 0;
+    let estimated = false;
+    for (const category of contextBreakdown.categories) {
+      const counted = categoryTokens(category, capacity);
+      if (!counted) return undefined;
+      total += counted.tokens;
+      estimated = estimated || counted.estimated;
+    }
+    return total > 0 ? { total, estimated } : undefined;
+  }
+
   /**
    * What is in Kiro's context, and how full it is.
    *
@@ -3472,7 +3622,7 @@
     title.textContent = "Context";
     const figure = document.createElement("span");
     figure.className = "context-figure";
-    const used = contextBreakdown && contextBreakdown.totalTokens;
+    const used = breakdownTokens(capacity);
     /*
      * Rounded. Kiro reports 6.218999862670898, and the difference between
      * that and "6%" is not a difference anyone can act on — while two
@@ -3482,7 +3632,7 @@
       percent === undefined
         ? "not reported"
         : used
-          ? `${Math.round(percent)}% · ${contextTokens(used)}${capacity ? ` of ${contextTokens(capacity)}` : ""}`
+          ? `${Math.round(percent)}% · ${used.estimated ? "~" : ""}${contextTokens(used.total)}${capacity ? ` of ${contextTokens(capacity)}` : ""}`
           : `${Math.round(percent)}%`;
     /*
      * The chat's spend rides on this line, not in a section of its own.
@@ -3565,10 +3715,15 @@
       return;
     }
 
+    const { capacity } = contextState();
     for (const category of contextBreakdown.categories) {
       // A category holding nothing is a row saying zero. There is no shortage
-      // of those in a fresh chat and none of them is worth a line.
-      if (!category.tokens && !category.items.some((item) => item.tokens)) continue;
+      // of those in a fresh chat and none of them is worth a line. A share
+      // with no count is not nothing — see `categoryTokens`.
+      if (!category.tokens && !(category.percent > 0) && !category.items.some((item) => item.tokens)) {
+        continue;
+      }
+      const counted = categoryTokens(category, capacity);
 
       const row = document.createElement("div");
       row.className = "context-row";
@@ -3581,7 +3736,14 @@
        * the whole window is arithmetic anyone can do from the headline, and
        * "58  0.03%" is two numbers where the second says less than the first.
        */
-      amount.textContent = contextTokens(category.tokens);
+      if (!counted) {
+        amount.textContent = `${Number(category.percent.toFixed(1))}%`;
+      } else if (counted.estimated) {
+        amount.textContent = `~${contextTokens(counted.tokens)}`;
+        amount.title = `Estimated from its share of the window — ${agentName} reported no token count.`;
+      } else {
+        amount.textContent = contextTokens(counted.tokens);
+      }
       row.append(name, amount);
       section.appendChild(row);
 

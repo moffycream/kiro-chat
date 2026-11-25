@@ -95,7 +95,8 @@ test("the context panel shows Kiro's own breakdown, not prose", () => {
   };
   vm.createContext(sandbox);
   for (const name of [
-    "credits", "contextState", "contextTokens", "renderContextPanel", "renderContextBreakdown",
+    "credits", "contextState", "contextTokens", "categoryTokens", "breakdownTokens",
+    "renderContextPanel", "renderContextBreakdown",
   ]) {
     vm.runInContext(sliceFrom(js, `function ${name}(`), sandbox);
   }
@@ -758,6 +759,80 @@ test("every prefix of a streaming nested list is balanced", () => {
       assert.equal(opened, closed, `<${tag}> unbalanced after ${n} characters: ${html}`);
     }
   }
+});
+
+/*
+ * The markdown that used to arrive as plain text: quotes, rules, checklists,
+ * strikethrough, underscore emphasis and bare URLs — and lines that followed
+ * one another, which each became a paragraph with a gap after it.
+ */
+test("a quote is rendered, with markdown inside it", () => {
+  assert.equal(
+    loadRenderer()("> quoted **bold**\n> - item\n>\n> > nested\n\nafter"),
+    "<blockquote><p>quoted <strong>bold</strong></p><ul><li>item</li></ul>" +
+      "<blockquote><p>nested</p></blockquote></blockquote><p>after</p>"
+  );
+});
+
+test("a quote's inside is escaped once, not twice and not never", () => {
+  const html = loadRenderer()("> a < b & \"c\" <script>");
+  assert.equal(html, "<blockquote><p>a &lt; b &amp; &quot;c&quot; &lt;script&gt;</p></blockquote>");
+  assert.equal(loadRenderer()("x > y"), "<p>x &gt; y</p>", "a > mid-line is not a quote");
+});
+
+test("---, *** and * * * are rules, and a rule is not a list item", () => {
+  assert.equal(loadRenderer()("a\n\n---\n\nb\n* * *\n___"), "<p>a</p><hr><p>b</p><hr><hr>");
+});
+
+test("a checklist draws read-only boxes in place of the brackets", () => {
+  assert.equal(
+    loadRenderer()("- [ ] todo\n- [x] done\n- plain"),
+    '<ul><li class="task-item"><input type="checkbox" class="task-box" disabled> todo</li>' +
+      '<li class="task-item"><input type="checkbox" class="task-box" disabled checked> done</li>' +
+      "<li>plain</li></ul>"
+  );
+});
+
+test("strikethrough needs two tildes", () => {
+  assert.equal(loadRenderer()("~~gone~~ and ~not~"), "<p><del>gone</del> and ~not~</p>");
+});
+
+test("underscores emphasise, but never inside a word or a code span", () => {
+  assert.equal(
+    loadRenderer()("`snake_case_name` and snake_case_name and _it_ and __bo__"),
+    "<p><code>snake_case_name</code> and snake_case_name and <em>it</em> and <strong>bo</strong></p>"
+  );
+});
+
+test("emphasis needs text against its markers, so arithmetic stays arithmetic", () => {
+  const render = loadRenderer();
+  assert.equal(render("2 * 3 * 4"), "<p>2 * 3 * 4</p>");
+  assert.equal(render("*a* and **b** and ***c***"), "<p><em>a</em> and <strong>b</strong> and <em><strong>c</strong></em></p>");
+  assert.equal(render("`**not bold**`"), "<p><code>**not bold**</code></p>", "code is never emphasised");
+});
+
+test("a bare URL is a link, without the punctuation after it", () => {
+  assert.equal(
+    loadRenderer()("see https://example.com/a_b_c. and (https://x.io/path) and <https://y.dev?q=1&r=2>"),
+    '<p>see <a href="https://example.com/a_b_c">https://example.com/a_b_c</a>. and ' +
+      '(<a href="https://x.io/path">https://x.io/path</a>) and ' +
+      '<a href="https://y.dev?q=1&amp;r=2">https://y.dev?q=1&amp;r=2</a></p>'
+  );
+});
+
+test("a written link keeps its emphasis, and a URL stops at the code after it", () => {
+  assert.equal(
+    loadRenderer()("[**bold link**](https://e.com) then https://z.com`code`"),
+    '<p><a href="https://e.com"><strong>bold link</strong></a> then ' +
+      '<a href="https://z.com">https://z.com</a><code>code</code></p>'
+  );
+});
+
+test("lines that follow one another are one paragraph, with the break kept", () => {
+  const render = loadRenderer();
+  assert.equal(render("line one\nline two\n\nnew para"), "<p>line one<br>line two</p><p>new para</p>");
+  assert.equal(render("1. a\n2. b\ntext right after"), "<ol><li>a</li><li>b</li></ol><p>text right after</p>");
+  assert.equal(render("## Head\nunder it"), "<h3>Head</h3><p>under it</p>", "a heading is not joined");
 });
 
 /*
@@ -4126,6 +4201,13 @@ test("the effort control follows Kiro and claims nothing until it answers", () =
   assert.match(control, /if \(!effort \|\| !effort\.levels \|\| effort\.levels\.length === 0\) return null/);
   assert.match(control, /effort\.levels/);
   assert.match(control, /level\.value === effort\.current/, "the highlight is Kiro's current value");
+
+  // At the top: under twenty-odd model rows it was a long scroll away.
+  const menu = sliceFrom(js, "function renderModelMenu()");
+  assert.ok(
+    menu.indexOf("effortControl()") < menu.indexOf("for (const m of models)"),
+    "effort comes before the model list"
+  );
 
   const click = sliceFrom(js, 'modelMenu.addEventListener("click"');
   const branch = click.slice(0, click.indexOf('closest(".model-row")'));

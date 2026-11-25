@@ -2181,7 +2181,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
   private async changeEffort(level: string): Promise<void> {
     if (!level) return;
     try {
-      await this.session.setEffort(level);
+      await this.session.setEffort(level, true);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       vscode.window.showWarningMessage(`Could not change effort: ${message}`);

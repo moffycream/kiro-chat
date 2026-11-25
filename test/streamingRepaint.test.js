@@ -68,6 +68,10 @@ const REPLIES = {
   listInterrupted: "1. one\n2. two\n\nA paragraph between.\n\n3. three\n4. four\n\nEnd.\n",
   listThenHeading: "- a\n- b\n\n## Next\n\n- c\n\n```\ncode\n```\n\n| t |\n|---|\n| 1 |\n\nAfter table.\n",
   quoteThenText: "> one\n\nplain\n\n> two\n> more\n\nlast\n",
+  wrappedLines: "A reply wrapped\nat eighty columns\nby the model.\n\nThen a second\nparagraph.\n",
+  newerMarkdown:
+    "> **Note** with https://example.com/a_b.\n> > nested\n\n- [ ] todo\n- [x] done\n\n" +
+    "~~old~~ and _new_ and __strong__\n\n***\n\n<https://x.dev>\n\nEnd.\n",
   mixed:
     "Intro.\n\n### Plan\n\n- a\n- b\n\n```diff\n- old\n+ new\n```\n\n| x | y |\n|---|---|\n| 1 | 2 |\n\n" +
     "> note\n\n---\n\nThe end.\n",

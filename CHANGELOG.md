@@ -1,5 +1,39 @@
 # Changelog
 
+## 0.42.6
+
+- **The context panel no longer undercounts tokens.** Kiro reports your messages' share of the
+  window with a token count of 0, so the header added up to about a third of the real figure
+  ("6% · 4.9k" where 6% of the window is about 16k) and the *Your messages* row, usually the
+  largest, was hidden. A missing count is now estimated from its share and marked `~`; counts
+  Kiro does give are shown as they are. With no window size to estimate from (`auto`), the
+  row shows its percentage and the header leaves the token count out.
+
+## 0.42.5
+
+- **More of Kiro's markdown is rendered.** Quotes (`>`, including nested ones and markdown
+  inside them), horizontal rules (`---`, `***`), checklists (`- [ ]` / `- [x]`, drawn as
+  read-only boxes), `~~strikethrough~~`, `_italic_` / `__bold__`, and bare links such as
+  `https://example.com` all used to show as plain text.
+- **Lines that follow one another are one paragraph.** Each line was a paragraph of its own,
+  so a reply wrapped by the model came out with a gap after every line. The line breaks are
+  kept; only a blank line starts a new paragraph.
+- **`snake_case` names and URLs with underscores are left alone**, and `**` inside backticks
+  is no longer turned bold. `2 * 3 * 4` stays arithmetic.
+
+## 0.42.4
+
+- **Effort is at the top of the model menu.** It sat below the whole model list, so reaching it
+  meant scrolling past every model.
+
+## 0.42.3
+
+- **The effort level is remembered for each model.** A level picked in the model menu is now
+  the one that model starts on in every new chat, and when you switch back to it. It used to
+  reset to the model's default with each new chat. It is kept per model, in the new
+  `kiroChat.effortByModel` setting, because levels differ between models. A reopened chat and
+  a rewind keep the level they had. `/effort` still changes only the chat you type it in.
+
 ## 0.42.2
 
 - **Reading or editing a file outside your open folders now asks first**, unless auto-approve

@@ -443,6 +443,50 @@ body {
 
 .msg a {
   color: var(--vscode-textLink-foreground);
+  /* A bare URL has no spaces to wrap at, and a sidebar is three inches wide. */
+  overflow-wrap: anywhere;
+}
+
+/*
+ * A quote, a rule and a checklist, in the theme's own colours.
+ *
+ * `textBlockQuote.*` is what VS Code's own markdown preview uses, so a quote
+ * here looks like a quote there. The quote's last child drops its margin for
+ * the same reason `.msg p:last-child` does: the quote's padding is the gap.
+ */
+.msg blockquote {
+  margin: 0 0 0.7em;
+  padding: 2px 0 2px 10px;
+  border-left: 3px solid var(--vscode-textBlockQuote-border, var(--menu-separator));
+  background: var(--vscode-textBlockQuote-background, transparent);
+  color: var(--vscode-descriptionForeground);
+}
+
+.msg blockquote > :last-child {
+  margin-bottom: 0;
+}
+
+.msg hr {
+  height: 0;
+  margin: 0.9em 0;
+  border: none;
+  border-top: 1px solid var(--vscode-textSeparator-foreground, var(--menu-separator));
+}
+
+/* The box stands where the bullet was, so a checklist has one marker per row. */
+.msg li.task-item {
+  list-style: none;
+  margin-left: -1.2em;
+}
+
+.msg .task-box {
+  margin: 0 0.35em 0 0;
+  vertical-align: -0.12em;
+  accent-color: var(--vscode-focusBorder);
+}
+
+.msg del {
+  opacity: 0.75;
 }
 
 .msg code {
@@ -2561,9 +2605,11 @@ button:disabled {
   background: var(--vscode-button-secondaryBackground);
 }
 
+/* Heads the menu, so its rule is underneath, separating it from the model list. */
 .model-effort {
-  padding: 6px 0;
-  border-top: 1px solid var(--menu-separator);
+  padding: 4px 0 6px;
+  margin-bottom: 4px;
+  border-bottom: 1px solid var(--menu-separator);
 }
 
 .model-effort-head,

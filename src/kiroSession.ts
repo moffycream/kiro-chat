@@ -438,6 +438,12 @@ export class KiroSession {
   /** `kiroChat.model`, waiting for Kiro to finish listing what it offers. */
   private savedModelToRestore: string | undefined;
   /**
+   * A new conversation should be put on the effort remembered for its model,
+   * and has not been yet. Only a new one: a reload keeps its own level, and a
+   * rewind puts back the level it had.
+   */
+  private effortToRestore = false;
+  /**
    * Settles once the remembered model is in place, or known not to be coming.
    *
    * The first message waits on it. The restore used to be fired and left, so a
@@ -646,6 +652,36 @@ export class KiroSession {
     return this.agent === "kiro" ? "model" : "qoderModel";
   }
 
+  /**
+   * `kiroChat.effortByModel`: model id → the level last picked for it.
+   *
+   * Per model, because levels are: a level one model has may not exist on the
+   * next, and "max on Opus" says nothing about what Sonnet should use.
+   */
+  private rememberedEfforts(): Record<string, string> {
+    const stored = vscode.workspace.getConfiguration("kiroChat").get<unknown>("effortByModel", {});
+    if (!stored || typeof stored !== "object" || Array.isArray(stored)) return {};
+    const out: Record<string, string> = {};
+    for (const [model, level] of Object.entries(stored as Record<string, unknown>)) {
+      if (typeof level === "string" && level.trim()) out[model] = level.trim();
+    }
+    return out;
+  }
+
+  /**
+   * Put the current model on the level remembered for it, if it has one and
+   * still offers it. A level Kiro no longer lists is skipped, not refused:
+   * the model's default is the honest fallback.
+   */
+  private async applyRememberedEffort(): Promise<void> {
+    const effort = this.effort;
+    if (!effort) return;
+    const wanted = this.rememberedEfforts()[this.currentModelId];
+    if (!wanted || wanted === effort.current) return;
+    if (!effort.levels.some((level) => level.value === wanted)) return;
+    await this.setEffort(wanted, false);
+  }
+
   get canLoadSessions(): boolean {
     return this.supportsLoad;
   }
@@ -720,7 +756,7 @@ export class KiroSession {
    */
   private async restoreAfterFork(model: string, level: string | undefined): Promise<void> {
     try {
-      if (model && model !== this.currentModelId) await this.setModel(model, false);
+      if (model && model !== this.currentModelId) await this.setModel(model, false, false);
       if (level && this.effort && this.effort.current !== level) await this.setEffort(level);
     } catch (err) {
       this.output.appendLine(`Could not restore the model after rewinding: ${String(err)}`);
@@ -790,8 +826,9 @@ export class KiroSession {
     // Rebuilt from the replay, and a breakdown describes the chat being left.
     this.turnLog = [];
     this.contextData = undefined;
-    // A reopened chat keeps the model it was using.
+    // A reopened chat keeps the model and effort it was using.
     this.savedModelToRestore = undefined;
+    this.effortToRestore = false;
     this.finishModelRestore();
     try {
       const load = () =>
@@ -1207,6 +1244,8 @@ export class KiroSession {
           .getConfiguration("kiroChat")
           .get<string>(this.modelSettingKey(), "")
           .trim() || undefined;
+      // Nothing to wait for unless a level was ever picked.
+      this.effortToRestore = Object.keys(this.rememberedEfforts()).length > 0;
       this.armModelRestore();
       this.restoreSavedModel();
     } catch (err) {
@@ -1983,24 +2022,45 @@ export class KiroSession {
    */
   private restoreSavedModel(): void {
     const saved = this.savedModelToRestore;
-    if (!saved || !this.sessionId) {
-      if (!saved) this.finishModelRestore();
+    if (!this.sessionId) {
+      if (!saved && !this.effortToRestore) this.finishModelRestore();
+      return;
+    }
+    // Before the list arrives there is no effort option to read either.
+    if (this.models.length < 2 && (this.effortToRestore || saved)) {
+      if (!saved || !this.models.some((model) => model.modelId === saved)) return;
+    }
+    if (!saved) {
+      this.restoreSavedEffort();
       return;
     }
     const listed = this.models.some((model) => model.modelId === saved);
-    if (!listed && this.models.length < 2) return;
     this.savedModelToRestore = undefined;
     if (!listed) {
       this.output.appendLine(`The remembered model "${saved}" is no longer offered.`);
-      this.finishModelRestore();
+      this.restoreSavedEffort();
       return;
     }
     if (saved === this.currentModelId) {
+      this.restoreSavedEffort();
+      return;
+    }
+    // `setModel` puts the effort remembered for that model back itself.
+    this.effortToRestore = false;
+    this.setModel(saved, false)
+      .catch((err) => this.output.appendLine(`Could not restore model "${saved}": ${String(err)}`))
+      .finally(() => this.finishModelRestore());
+  }
+
+  /** The last step of a new conversation's restore; the first message waits for it. */
+  private restoreSavedEffort(): void {
+    if (!this.effortToRestore) {
       this.finishModelRestore();
       return;
     }
-    this.setModel(saved, false)
-      .catch((err) => this.output.appendLine(`Could not restore model "${saved}": ${String(err)}`))
+    this.effortToRestore = false;
+    this.applyRememberedEffort()
+      .catch((err) => this.output.appendLine(`Could not restore effort: ${String(err)}`))
       .finally(() => this.finishModelRestore());
   }
 
@@ -2055,7 +2115,12 @@ export class KiroSession {
     return this.applyConfig(result?.configOptions);
   }
 
-  async setModel(modelId: string, remember = true): Promise<void> {
+  /**
+   * Switch model. Kiro resets effort to the new model's default, so the level
+   * remembered for that model is put back after — unless the caller is about
+   * to set one itself, as a rewind does.
+   */
+  async setModel(modelId: string, remember = true, withEffort = true): Promise<void> {
     const config = await this.setConfigOption(this.modelConfigId, modelId);
     if (config?.currentModelId !== modelId) {
       throw new Error(`${this.profile.label} did not switch to "${modelId}".`);
@@ -2066,16 +2131,24 @@ export class KiroSession {
         .getConfiguration("kiroChat")
         .update(this.modelSettingKey(), modelId, vscode.ConfigurationTarget.Global);
     }
+    if (withEffort) {
+      // The model did switch; a level that will not apply is logged, not thrown.
+      await this.applyRememberedEffort().catch((err) =>
+        this.output.appendLine(`Could not restore effort for "${modelId}": ${String(err)}`)
+      );
+    }
   }
 
   /**
    * Set how hard the current model thinks, from the next message on.
    *
-   * Lasts for this conversation and survives it being reopened. Changing model
-   * puts it back to that model's default, which is Kiro's rule, so a choice is
-   * not carried across: a level one model has may not exist on the next.
+   * Lasts for this conversation and survives it being reopened. With
+   * `remember` — the picker, not `/effort`, for the reason `/model` does not
+   * write the setting — it is also the level this model starts on in a new
+   * chat, and when it is switched back to. Kept per model: Kiro resets effort
+   * on a model change, and a level one model has may not exist on the next.
    */
-  async setEffort(level: string): Promise<void> {
+  async setEffort(level: string, remember = false): Promise<void> {
     const effort = this.effort;
     if (!effort) throw new Error("This model has no effort levels.");
     if (!effort.levels.some((candidate) => candidate.value === level)) {
@@ -2084,6 +2157,15 @@ export class KiroSession {
     const config = await this.setConfigOption(effort.configId, level);
     if (config?.effort?.current !== level) throw new Error(`${this.profile.label} did not set effort to "${level}".`);
     this.output.appendLine(`Effort set to "${level}".`);
+    if (remember && this.currentModelId) {
+      await vscode.workspace
+        .getConfiguration("kiroChat")
+        .update(
+          "effortByModel",
+          { ...this.rememberedEfforts(), [this.currentModelId]: level },
+          vscode.ConfigurationTarget.Global
+        );
+    }
   }
 
   // ---- messages coming from Kiro -------------------------------------

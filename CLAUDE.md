@@ -642,6 +642,15 @@ Three traps:
   model and effort; **a fork does not** (it comes back on `auto`), so `restoreAfterFork` puts them
   back.
 
+**Effort is remembered per model, in `kiroChat.effortByModel`.** Only the picker writes it
+(`setEffort(level, true)`); `/effort` does not, for the reason `/model` does not write
+`kiroChat.model`. It is put back in two places: a new session's restore (`restoreSavedEffort`,
+the last step before `modelRestore` settles, so the first message waits for it), and every
+`setModel`, because Kiro resets effort on a model change. `restoreAfterFork` passes
+`withEffort: false` since it sets the fork's own level next, and a load clears
+`effortToRestore` because a reopened chat keeps its level. `effortToRestore` is only armed when
+something is remembered, so a user who never picked a level waits on nothing.
+
 **Context and credits arrive as `session_info_update`**, told apart by `_meta.kiro.kind`.
 `readSessionInfo` reads them: `context_usage` (with the category breakdown that needed a
 `/context` command on v2), `turn_completion` (one turn's cost), `session_usage` (Kiro's own running
@@ -1465,6 +1474,15 @@ against. The 80% and 95% thresholds are one line of advice and trigger nothing. 
 usage still reads "not reported" rather than zero. Model and usage updates redraw an open
 panel.
 
+**A share with no count is estimated, and only then.** Measured on 3.1.0 (the captured
+`context_usage` in `test/fixtures/kiro-session-info.json`), `yourPrompts` arrives as
+`percent: 4.4, tokens: 0` — the largest category, with no count. Believing the zero hid that
+row and made the header's sum a third of what the percentage says. `categoryTokens` fills
+only a missing count, from the share times the model's window, and marks it `~`; a count Kiro
+gave is never replaced. With no window it returns `undefined`, and `breakdownTokens` then
+drops the header's count rather than show a sum missing a category. The percentage is always
+Kiro's own; only the token figures are touched.
+
 **The panel is figures, not prose.** It used to derive four rows from the meter percentage
 times the capacity and sit them under two paragraphs explaining that the categories were
 unavailable and the tokens were estimates — an apology where the numbers should have been.
@@ -1530,6 +1548,21 @@ being fixed. Rows shorter than the header are padded rather than dropped, becaus
 missing cell shifts every column after it. The table is wrapped in `.table-wrap`, which
 scrolls on its own — a sidebar is three inches wide, and the alternative is a horizontal
 scrollbar on the whole conversation.
+
+**`inline` holds code spans, links and bare URLs aside before `emphasis` runs.** Emphasis
+used to run over everything, so `**` inside backticks went bold; with `_italic_` and
+autolinks added, a `snake_case_name` in code or a URL with underscores would have broken the
+same way. Placeholders are `\u0001n\u0001`, and `URL_BODY` stops at one or a URL would swallow
+the code after it. Everything here runs on *escaped* text — `>` is `&gt;`, `&` is `&amp;` —
+which is why the quote test reads `&gt;` and a URL ends at `&lt;`/`&gt;`/`&quot;`. Underscores
+never emphasise inside a word (GFM's rule), and every marker must hug its text, so
+`2 * 3 * 4` is left alone. A quote is rendered by unescaping its run of lines and calling
+`renderMarkdown` on it again, which escapes it once more; the round trip is exact only because
+`escapeHtml` is the one thing that has touched it. `---` is always a rule, never a setext
+underline: models use it as a divider. Consecutive lines join one `<p>` with `<br>` between,
+the way GitHub comments render, because models also put one thing per line on purpose;
+`paragraphAt` marks the paragraph a next line may join, and anything else pushed after it
+ends it.
 
 **Text that resumes after a tool step starts a new paragraph.** Kiro says something, calls
 a tool, then says something else, and all of it is appended to one `buffer` — so the two

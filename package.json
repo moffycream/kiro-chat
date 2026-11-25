@@ -2,7 +2,7 @@
   "name": "kiro-agent-chat",
   "displayName": "Kiro Agent Chat (Unofficial)",
   "description": "Chat with the Kiro agent inside VS Code, like Copilot Chat.",
-  "version": "0.42.2",
+  "version": "0.42.6",
   "publisher": "moffycream",
   "license": "MIT",
   "engines": {
@@ -246,6 +246,14 @@
           "type": "string",
           "default": "",
           "description": "The model Kiro uses. Leave empty for Kiro's default, which picks one per task. The dropdown in the chat panel sets this for you."
+        },
+        "kiroChat.effortByModel": {
+          "type": "object",
+          "default": {},
+          "additionalProperties": {
+            "type": "string"
+          },
+          "markdownDescription": "The effort level each model starts on in a new chat, keyed by model id, for example `{ \"claude-opus-4.6\": \"max\" }`. Picking a level in the chat panel's model menu sets this for you; `/effort` changes only the current chat. A level the model no longer offers is ignored and the model's default is used."
         },
         "kiroChat.qoderCommand": {
           "scope": "machine",
